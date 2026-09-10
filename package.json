@@ -18,7 +18,9 @@
     "test:watch": "vitest",
     "test:e2e": "wdio run wdio.conf.mjs",
     "simulator": "python tools/simulator/modbus_sim.py",
-    "rebuild": "electron-rebuild -f -w better-sqlite3,serialport"
+    "rebuild": "electron-rebuild -f -w better-sqlite3,serialport",
+    "natives:node": "cd node_modules/better-sqlite3 && npx prebuild-install -r node",
+    "natives:electron": "npx electron-rebuild -f -w better-sqlite3,serialport"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.6.1",
@@ -81,5 +83,6 @@
     "serialport": "^12.0.0",
     "zod": "^3.24.1",
     "zustand": "^5.0.2"
-  }
+  },
+  "author": "Modbus Debugger Team"
 }

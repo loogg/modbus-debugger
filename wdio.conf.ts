@@ -45,6 +45,8 @@ export const config = {
   runner: 'local',
   specs: ['./tests/e2e/**/*.e2e.ts'],
   maxInstances: 1,
+  specFileRetries: 1,
+  specFileRetryInterval: 3,
   capabilities: [
     {
       browserName: 'electron',

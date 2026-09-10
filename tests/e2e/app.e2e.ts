@@ -81,6 +81,39 @@ describe('Modbus Debugger packaged app E2E', () => {
     await shot('11-trend-1440');
   });
 
+  it('slave scan discovers simulator units', async () => {
+    await $('//button[contains(., "设备")]').click();
+    await browser.pause(400);
+    await $('//button[text()="扫描"]').click();
+    await browser.pause(400);
+    await $('//div[text()="起始 Unit"]/following-sibling::input').setValue('1');
+    await $('//div[text()="结束 Unit"]/following-sibling::input').setValue('3');
+    await $('//button[text()="开始扫描"]').click();
+    await browser.waitUntil(async () => /已发现 [1-9] 个从站/.test(await bodyText()), { timeout: 90000 });
+    const text = await bodyText();
+    expect(text).toContain('扫描摘要');
+    expect(text).toMatch(/已发现 [1-9] 个从站/);
+    await shot('17-scan-1440');
+  });
+
+  it('temporary read returns registers and offers save-as-block', async () => {
+    await $('//button[text()="临时读取"]').click();
+    await browser.pause(400);
+    await $('//button[text()="读取"]').click();
+    await browser.pause(1500);
+    console.log('DEBUG temp body:', JSON.stringify((await bodyText()).slice(0, 400)));
+    try {
+      const logs = await browser.getLogs('browser');
+      console.log('DEBUG console logs:', JSON.stringify((logs as Array<{ message: string }>).slice(-6).map((l) => l.message.slice(0, 200))));
+    } catch (err) {
+      console.log('DEBUG no browser logs', String(err).slice(0, 120));
+    }
+    await browser.waitUntil(async () => (await bodyText()).includes('读取成功'), { timeout: 20000 });
+    const text = await bodyText();
+    expect(text).toContain('保存为数据块');
+    await shot('18-temp-read-1440');
+  });
+
   it('compact window keeps engineering columns via internal scrolling', async () => {
     await setViewport(1024, 680);
     await $('//button[contains(., "实时")]').click();

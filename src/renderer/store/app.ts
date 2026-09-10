@@ -16,6 +16,7 @@ export interface Selection {
   historyTab: 'trend' | 'events' | 'data' | 'signals';
   trendTab: 'signals' | 'chart';
   realtimeScope: 'device' | 'block';
+  deviceView: 'topology' | 'scan' | 'temp';
   templateEditing: boolean;
   editBlockId: string | null;
 }
@@ -111,6 +112,7 @@ export const useApp = create<AppState>((set, get) => ({
     trendTab: 'signals',
     realtimeScope: 'device',
     templateEditing: false,
+    deviceView: 'topology',
     editBlockId: null,
   },
   sidebarWidth: 244,

@@ -104,7 +104,7 @@ function SidebarShell(props: { title: string; children: React.ReactNode }) {
   );
 }
 
-function TreeConnection(props: { connectionId: string; children?: React.ReactNode }) {
+function TreeConnection(props: { connectionId: string; children?: React.ReactNode; actions?: React.ReactNode }) {
   const snapshot = useApp((s) => s.snapshot);
   const conn = snapshot?.workspace.connections.find((c) => c.id === props.connectionId);
   const state = snapshot?.connections[props.connectionId];
@@ -121,6 +121,7 @@ function TreeConnection(props: { connectionId: string; children?: React.ReactNod
       </button>
       {conn.transport === 'rtu' && conn.rtu ? <div className="ml-6 text-xs text-ink2">{conn.rtu.baudRate} · {conn.rtu.dataBits}{conn.rtu.parity.charAt(0).toUpperCase()}{conn.rtu.stopBits}</div> : null}
       {conn.transport === 'tcp' && conn.tcp ? <div className="ml-6 text-xs text-ink2">{conn.tcp.host}:{conn.tcp.port}</div> : null}
+      {props.actions ? <div className="ml-6 mt-1 flex gap-3 text-xs text-accent">{props.actions}</div> : null}
       {open ? <div className="ml-3 mt-1">{props.children}</div> : null}
     </div>
   );
@@ -169,6 +170,7 @@ function DevicesSidebar() {
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
   const openOverlay = useApp((s) => s.openOverlay);
+
   return (
     <SidebarShell title="设备">
       <Button variant="secondary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-connection' })}>
@@ -177,9 +179,19 @@ function DevicesSidebar() {
       <div className="mt-5 mb-2 text-xs text-ink2">连接与从站</div>
       {snapshot?.workspace.connections.length === 0 ? <div className="text-xs text-ink2 py-2">还没有连接</div> : null}
       {snapshot?.workspace.connections.map((c) => (
-        <TreeConnection key={c.id} connectionId={c.id}>
+        <TreeConnection
+          key={c.id}
+          connectionId={c.id}
+          actions={
+            <>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'scan' })}>扫描</button>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'temp' })}>临时读取</button>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: c.id })}>＋ 添加从站</button>
+            </>
+          }
+        >
           {snapshot.workspace.slaves.filter((s) => s.connectionId === c.id).map((s) => (
-            <SlaveCard key={s.id} slaveId={s.id} showBlocks={false} selectedSlave={selection.slaveId === s.id} onSelectSlave={() => select({ slaveId: s.id, connectionId: c.id })} />
+            <SlaveCard key={s.id} slaveId={s.id} showBlocks selectedSlave={selection.slaveId === s.id} onSelectSlave={() => select({ slaveId: s.id, connectionId: c.id, deviceView: 'topology' })} />
           ))}
         </TreeConnection>
       ))}
