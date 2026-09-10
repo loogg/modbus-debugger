@@ -230,6 +230,7 @@ export class RuntimeManager {
     view.engNumber = Number.isFinite(eng) ? eng : null;
     view.finite = Number.isFinite(eng);
     view.engText = Number.isFinite(eng) ? fmtNumber(eng) : '非有限数值';
+    if (ref.point.displayFormat === 'hex' && Number.isFinite(eng)) view.engText = view.rawText;
     return view;
   }
 
