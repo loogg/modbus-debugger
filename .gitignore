@@ -1,0 +1,10 @@
+node_modules/
+.webpack/
+out/
+dist/
+coverage/
+*.log
+.DS_Store
+.figma/
+tests/e2e/screenshots/actual/
+tools/simulator/__pycache__/

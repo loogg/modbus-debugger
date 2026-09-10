@@ -1,0 +1,9 @@
+{
+  "source": "Modbus Application Protocol V1.1b3 / Serial Line V1.02",
+  "generated_by": "tools/gen_protocol_fixtures.py (independent of the TypeScript codec)",
+  "limits": {
+    "max_pdu": 253,
+    "max_rtu_adu": 256,
+    "max_tcp_adu": 260
+  }
+}
