@@ -1,4 +1,6 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
+import fs from 'node:fs';
+import path from 'node:path';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
@@ -14,6 +16,15 @@ const config: ForgeConfig = {
   },
   rebuildConfig: {},
   hooks: {
+    packageAfterCopy: async (_config: unknown, buildPath: string) => {
+      const src = path.resolve(__dirname, 'node_modules');
+      const dest = path.join(buildPath, 'node_modules');
+      const dirs = ['better-sqlite3', 'bindings', 'file-uri-to-path', 'debug', 'ms', 'node-gyp-build', 'node-addon-api', 'serialport', '@serialport'];
+      for (const d of dirs) {
+        const from = path.join(src, d);
+        if (fs.existsSync(from)) fs.cpSync(from, path.join(dest, d), { recursive: true });
+      }
+    },
     // Native modules (better-sqlite3, serialport) must be rebuilt for the Electron ABI.
     postPackage: async (_config, options) => {
       void options;
@@ -26,8 +37,7 @@ const config: ForgeConfig = {
     }),
     new MakerZIP({}, ['darwin']),
   ],
-  plugins: [
-    new AutoUnpackNativesPlugin({}),
+  plugins: [    new AutoUnpackNativesPlugin({}),
     new WebpackPlugin({
       mainConfig,
       renderer: {

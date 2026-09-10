@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "name": "E2E 演示工作区",
+  "connections": [
+    {
+      "id": "conn-tcp",
+      "name": "生产线 TCP",
+      "transport": "tcp",
+      "tcp": { "host": "127.0.0.1", "port": 50520 },
+      "timeoutMs": 800,
+      "retries": 1,
+      "reconnect": "auto",
+      "interFrameMs": 0,
+      "rtsControl": "none",
+      "logLevel": "info"
+    }
+  ],
+  "slaves": [
+    { "id": "slave-1", "connectionId": "conn-tcp", "unitId": 1, "name": "伺服驱动器 A", "templateId": "tpl-servo", "enabled": true }
+  ],
+  "templates": [
+    {
+      "id": "tpl-servo",
+      "name": "ServoDrive V2",
+      "version": "2.1",
+      "description": "E2E demo template",
+      "blocks": [
+        { "id": "blk-ctrl", "name": "控制寄存器", "area": 3, "start": 0, "length": 12, "periodMs": 200 },
+        { "id": "blk-tel", "name": "遥测数据", "area": 4, "start": 0, "length": 4, "periodMs": 500 }
+      ],
+      "points": [
+        { "id": "pt-volt", "blockId": "blk-ctrl", "name": "母线电压", "mapping": { "rawType": "Float32", "offset": 0, "registerCount": 2, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 0, "bitWidth": 16, "stringLength": 0, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "V", "access": "ro", "displayFormat": "auto", "enumMap": {}, "highRisk": false, "description": "" },
+        { "id": "pt-cur", "blockId": "blk-ctrl", "name": "电机电流", "mapping": { "rawType": "Float32", "offset": 2, "registerCount": 2, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 0, "bitWidth": 16, "stringLength": 0, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "A", "access": "ro", "displayFormat": "auto", "enumMap": {}, "highRisk": false, "description": "" },
+        { "id": "pt-status", "blockId": "blk-ctrl", "name": "状态字", "mapping": { "rawType": "UInt16", "offset": 4, "registerCount": 1, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 0, "bitWidth": 16, "stringLength": 0, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "", "access": "ro", "displayFormat": "hex", "enumMap": {}, "highRisk": false, "description": "" },
+        { "id": "pt-enable", "blockId": "blk-ctrl", "name": "使能", "mapping": { "rawType": "Bool", "offset": 4, "registerCount": 1, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 0, "bitWidth": 1, "stringLength": 0, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "", "access": "rw", "displayFormat": "auto", "enumMap": {}, "highRisk": false, "description": "" },
+        { "id": "pt-mode", "blockId": "blk-ctrl", "name": "模式", "mapping": { "rawType": "BitField", "offset": 4, "registerCount": 1, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 4, "bitWidth": 3, "stringLength": 0, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "", "access": "rw", "displayFormat": "auto", "enumMap": { "0": "位置", "1": "速度", "2": "转矩" }, "highRisk": false, "description": "" },
+        { "id": "pt-speed", "blockId": "blk-ctrl", "name": "目标转速", "mapping": { "rawType": "Int16", "offset": 6, "registerCount": 1, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 0, "bitWidth": 16, "stringLength": 0, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "rpm", "access": "rw", "displayFormat": "auto", "enumMap": {}, "highRisk": false, "description": "" },
+        { "id": "pt-fw", "blockId": "blk-ctrl", "name": "固件版本", "mapping": { "rawType": "String", "offset": 8, "registerCount": 4, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 0, "bitWidth": 16, "stringLength": 8, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "", "access": "ro", "displayFormat": "auto", "enumMap": {}, "highRisk": false, "description": "" },
+        { "id": "pt-temp", "blockId": "blk-tel", "name": "温度", "mapping": { "rawType": "Float32", "offset": 0, "registerCount": 2, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 0, "bitWidth": 16, "stringLength": 0, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "°C", "access": "ro", "displayFormat": "auto", "enumMap": {}, "highRisk": false, "description": "" },
+        { "id": "pt-vin", "blockId": "blk-tel", "name": "输入电压", "mapping": { "rawType": "Float32", "offset": 2, "registerCount": 2, "wordOrder": "ABCD", "byteSelector": "low", "bitOffset": 0, "bitWidth": 16, "stringLength": 0, "stringEncoding": "ascii" }, "scale": 1, "offset": 0, "unit": "V", "access": "ro", "displayFormat": "auto", "enumMap": {}, "highRisk": false, "description": "" }
+      ]
+    }
+  ],
+  "trendGroups": [
+    {
+      "id": "g-power",
+      "name": "功耗分析",
+      "windowSec": 60,
+      "description": "",
+      "signals": [
+        { "id": "sig-volt", "pointRef": { "connectionId": "conn-tcp", "slaveId": "slave-1", "pointId": "pt-volt" }, "visible": true },
+        { "id": "sig-temp", "pointRef": { "connectionId": "conn-tcp", "slaveId": "slave-1", "pointId": "pt-temp" }, "visible": true },
+        { "id": "sig-enable", "pointRef": { "connectionId": "conn-tcp", "slaveId": "slave-1", "pointId": "pt-enable" }, "visible": true },
+        { "id": "sig-fw", "pointRef": { "connectionId": "conn-tcp", "slaveId": "slave-1", "pointId": "pt-fw" }, "visible": true }
+      ]
+    }
+  ],
+  "layout": { "module": "devices", "selection": {} }
+}

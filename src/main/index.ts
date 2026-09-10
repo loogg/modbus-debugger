@@ -1,3 +1,9 @@
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+
+process.on('uncaughtException', (err) => { try { fs.writeFileSync(path.join(os.tmpdir(), 'mb-crash.txt'), String(err && err.stack)); } catch { /* ignore */ } });
+fs.writeFileSync(path.join(os.tmpdir(), 'mb-main-boot.txt'), 'boot ' + new Date().toISOString() + ' pid ' + String(process.pid));
 import { app, BrowserWindow, screen } from 'electron';
 import log from 'electron-log';
 import { RuntimeManager } from './runtime/manager';
@@ -14,7 +20,14 @@ let manager: RuntimeManager | null = null;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 if (require('electron-squirrel-startup')) app.quit();
 
+
+// E2E harness: expose a fixed Chrome DevTools port so WebdriverIO can attach.
+if (process.env.MODBUS_E2E === '1') {
+  app.commandLine.appendSwitch('remote-debugging-port', '9222');
+}
+
 log.initialize();
+log.info('app starting, userData =', app.getPath('userData'));
 
 function clampToBounds(x: number, y: number, width: number, height: number): Electron.Rectangle {
   const displays = screen.getAllDisplays();
@@ -38,7 +51,8 @@ async function createWindow(): Promise<void> {
   const wsSvc = new WorkspaceService(app.getPath('userData'));
   const history = new HistoryStore(wsSvc.defaultHistoryDbPath());
   manager = new RuntimeManager(wsSvc, history);
-  wsSvc.loadFrom(null);
+  const loaded = wsSvc.loadFrom(process.env.MODBUS_E2E_WORKSPACE || null);
+  log.info('workspace loaded:', loaded.ok, wsSvc.currentPath);
   manager.start();
 
   const prefs = wsSvc.getPrefs();

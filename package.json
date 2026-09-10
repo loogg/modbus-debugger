@@ -39,6 +39,7 @@
     "@typescript-eslint/parser": "^8.18.2",
     "@vercel/webpack-asset-relocator-loader": "1.7.3",
     "@wdio/cli": "^9.4.5",
+    "@wdio/electron-service": "^10.3.0",
     "@wdio/local-runner": "^9.4.5",
     "@wdio/mocha-framework": "^9.4.4",
     "@wdio/spec-reporter": "^9.4.4",
@@ -50,12 +51,12 @@
     "node-loader": "^2.1.0",
     "postcss": "^8.4.49",
     "postcss-loader": "^8.1.1",
+    "puppeteer-core": "^25.10.0",
     "style-loader": "^4.0.0",
     "tailwindcss": "^3.4.17",
     "ts-loader": "^9.5.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8",
-    "wdio-electron-service": "^7.3.1",
     "webpack": "^5.97.1"
   },
   "dependencies": {

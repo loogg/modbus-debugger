@@ -11,6 +11,6 @@ export const mainConfig: Configuration = {
       '@shared': __dirname + '/src/shared',
     },
   },
-  externals: ['better-sqlite3', 'serialport', '@serialport/binding-mock', 'exceljs'],
+  externals: ['better-sqlite3', 'serialport', /^@serialport\//, 'bindings', 'node-gyp-build'],
   node: { __dirname: false },
 };
