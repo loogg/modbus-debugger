@@ -1,34 +1,49 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
-
-process.on('uncaughtException', (err) => { try { fs.writeFileSync(path.join(os.tmpdir(), 'mb-crash.txt'), String(err && err.stack)); } catch { /* ignore */ } });
-fs.writeFileSync(path.join(os.tmpdir(), 'mb-main-boot.txt'), 'boot ' + new Date().toISOString() + ' pid ' + String(process.pid));
-import { app, BrowserWindow, nativeImage, screen } from 'electron';
+import { app, BrowserWindow, nativeImage, net, protocol, screen } from 'electron';
+import { pathToFileURL } from 'node:url';
 import log from 'electron-log';
+import squirrelStartup from 'electron-squirrel-startup';
 import { RuntimeManager } from './runtime/manager';
 import { WorkspaceService } from './services/workspace';
 import { HistoryStore } from './services/history';
 import { registerIpc } from './ipc';
 
-declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
-declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
-
 let mainWindow: BrowserWindow | null = null;
 let manager: RuntimeManager | null = null;
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-if (require('electron-squirrel-startup')) app.quit();
-
+// Squirrel.Windows relaunches the app once during install/update with a --squirrel-*
+// flag; the handler fixes up shortcuts and the process must exit right after.
+if (squirrelStartup) app.quit();
 
 // E2E harness: expose a fixed Chrome DevTools port so WebdriverIO can attach.
 if (process.env.MODBUS_E2E === '1') {
   app.commandLine.appendSwitch('remote-debugging-port', '9222');
 }
 
+// Registered once: createWindow() can run again on macOS "activate".
+let appProtocolRegistered = false;
+function registerAppProtocol(): void {
+  if (appProtocolRegistered) return;
+  appProtocolRegistered = true;
+  const rendererDir = path.join(__dirname, '../renderer', MAIN_WINDOW_VITE_NAME);
+  protocol.handle('app', (request) => {
+    const url = new URL(request.url);
+    const rel = decodeURIComponent(url.pathname).replace(/^\//, '');
+    const file = path.join(rendererDir, rel === '' ? 'index.html' : rel);
+    return net.fetch(pathToFileURL(file).toString());
+  });
+}
+
 function execDir(): string {
   return app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd();
 }
+
+// Serve the packaged renderer over a privileged standard scheme: ES-module scripts
+// cannot load from file:// (CORS), and a custom scheme keeps webSecurity enabled.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+]);
 
 // Logs live in the execution directory (never the system profile drive).
 const logDir = path.join(execDir(), 'logs');
@@ -91,7 +106,7 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
-      preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
@@ -113,7 +128,12 @@ async function createWindow(): Promise<void> {
   });
 
   registerIpc(manager, () => mainWindow);
-  await mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    await mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+  } else {
+    registerAppProtocol();
+    await mainWindow.loadURL('app://./index.html');
+  }
 }
 
 app.whenReady().then(() => {

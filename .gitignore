@@ -1,10 +1,12 @@
 node_modules/
-.webpack/
+.vite/
 out/
 dist/
 coverage/
+tools/natives-electron/
 *.log
 .DS_Store
 .figma/
 tests/e2e/screenshots/actual/
+tests/e2e/cd-logs/
 tools/simulator/__pycache__/

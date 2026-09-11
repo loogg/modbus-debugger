@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import initSqlJs, { type Database } from 'sql.js';
 
@@ -64,7 +65,9 @@ export class HistoryStore {
 
   static async open(dbPath: string): Promise<HistoryStore> {
     // sql.js is a webpack external in main, plain source in tests: probe the layouts.
+    const req = createRequire(typeof __filename !== 'undefined' ? __filename : import.meta.url);
     const candidates = [
+      path.join(path.dirname(req.resolve('sql.js')), 'sql-wasm.wasm'),
       path.join(__dirname, '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
       path.join(__dirname, '..', '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
       path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),

@@ -13,10 +13,11 @@
 
 ### 固定工程基线
 
-- Electron + Forge Webpack + React + TypeScript strict + Tailwind。
+- Electron + Forge **Vite**（`@electron-forge/plugin-vite`）+ React + TypeScript strict + Tailwind。
 - Radix UI + Fluent Icons；本项目启用 Zustand / TanStack Table+Virtual / ECharts。
-- Zod、`better-sqlite3`、`serialport`、Node `net.Socket`、`electron-log`、`exceljs`。
-- Unit / Integration 使用 Vitest + React Testing Library；Electron E2E 使用 WebdriverIO + Electron Service；npm + lockfile。
+- Zod、`sql.js`（历史库，WASM，见 architecture.md Override）、`serialport`、Node `net.Socket`、`electron-log`、`exceljs`。
+- Unit / Integration 使用 Vitest + React Testing Library；Electron E2E 使用 WebdriverIO + Electron Service（针对**打包版** + PyModbus 模拟器）；npm + lockfile。
+- ESLint 启用 `react-hooks/rules-of-hooks`（error）：条件调用 Hook 会让 React 抛错并卸载整棵树（窗口白屏），不得绕过。
 - `nodeIntegration=false`、`contextIsolation=true`、Renderer sandbox 开启；Preload 只暴露最小 typed API。
 - 第三方依赖优先成熟、维护活跃、社区广泛使用的开源方案；默认优先 MIT / BSD / ISC / Apache-2.0 等可免费商用许可证。
 - 禁止引入闭源收费、商业授权受限或存在明显商业版权风险的依赖；GPL / AGPL / LGPL / EPL / MPL、双许可证及授权不明确的依赖必须先评审。
@@ -38,7 +39,10 @@
 
 ### 执行方式
 
-按 Domain → Persistence → Transport / Codec → Scheduler / Block Cache → Simulator → UI Shell / Components → 功能页面 → E2E → 全页面视觉审核 → Production Build 推进。
+按 Domain → Persistence → Transport / Codec → Scheduler / Block Cache → Simulator → UI Shell / Components → 功能页面 → E2E → 全页面视觉审核 → Production Build → Installer Smoke 推进。
+
+构建：`npm start`（Vite dev server + Electron）、`npm run package`（`.vite/build` + `.vite/renderer/main_window`）、`npm run make`（Squirrel 安装包）。
+Main / Preload 打包为 CJS；生产渲染层通过特权 `app://` scheme 提供（保持 webSecurity 与 sandbox 开启）。
 
 可自行解决的问题直接修复；公共组件、Domain、Scheduler 或 IPC 修改后回归所有受影响路径。
 
