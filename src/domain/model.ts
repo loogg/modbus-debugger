@@ -79,6 +79,7 @@ export const connectionSchema = z.object({
   interFrameMs: z.number().min(0).max(100).default(0),
   rtsControl: z.enum(['none', 'toggle']).default('none'),
   logLevel: z.enum(['info', 'debug']).default('info'),
+
 });
 export type ConnectionDef = z.infer<typeof connectionSchema>;
 

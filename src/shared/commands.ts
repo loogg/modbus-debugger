@@ -42,6 +42,7 @@ export const commandSchema = z.discriminatedUnion('type', [
       z.object({ kind: z.literal('file'), path: z.string() }),
     ]),
   }),
+  z.object({ type: z.literal('serial.list') }),
   z.object({ type: z.literal('dialog.openFile'), accept: z.array(z.string()) }),
   z.object({ type: z.literal('dialog.saveFile'), defaultName: z.string() }),
 ]);

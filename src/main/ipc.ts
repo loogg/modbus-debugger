@@ -18,6 +18,23 @@ export function registerIpc(manager: RuntimeManager, getWindow: () => BrowserWin
       return { ok: false, error: `invalid command: ${parsed.error.message}` };
     }
     const cmd = parsed.data;
+    if (cmd.type === 'serial.list') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { SerialPort } = require('serialport') as { SerialPort: { list(): Promise<Array<Record<string, unknown>>> } };
+        const ports = await SerialPort.list();
+        return {
+          ok: true,
+          value: ports.map((p) => ({
+            path: String(p.path ?? ''),
+            manufacturer: p.manufacturer ? String(p.manufacturer) : null,
+            serialNumber: p.serialNumber ? String(p.serialNumber) : null,
+          })),
+        };
+      } catch (err) {
+        return { ok: false, error: String(err) };
+      }
+    }
     if (cmd.type === 'dialog.openFile') {
       const win = getWindow();
       const opts = { properties: ['openFile'] as Array<'openFile'>, filters: [{ name: '导入文件', extensions: cmd.accept }] };

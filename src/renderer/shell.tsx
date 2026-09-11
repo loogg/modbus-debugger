@@ -438,7 +438,7 @@ function TemplatesSidebar() {
       </div>
       <div className="mt-5 mb-2 text-xs text-ink2">模板操作</div>
       <div className="flex flex-col gap-1.5 text-xs text-accent">
-        <button className="focus-ring cursor-pointer text-left hover:underline" onClick={() => selection.templateId && openOverlay({ kind: 'screen', id: 'import-registers', templateId: selection.templateId })}>导入寄存器表</button>
+        <button className="focus-ring cursor-pointer text-left hover:underline" onClick={() => openOverlay({ kind: 'screen', id: 'import-registers', templateId: selection.templateId ?? snapshot?.workspace.templates[0]?.id ?? '' })}>导入寄存器表</button>
         <button
           className="focus-ring cursor-pointer text-left hover:underline"
           onClick={async () => {

@@ -1,5 +1,5 @@
 import { checkCrc } from './crc';
-import { rtuTimings, RTU_MAX_ADU } from './rtu';
+import { RTU_MAX_ADU } from './rtu';
 import { mbapLengthValid, MBAP_LENGTH, TCP_MAX_ADU } from './tcp';
 import { FC } from './types';
 
@@ -17,7 +17,7 @@ export const systemClock: Clock = {
   },
 };
 
-export type ParseErrorKind = 'crc' | 'malformed' | 'truncated' | 'overflow' | 'gap';
+export type ParseErrorKind = 'crc' | 'malformed' | 'truncated' | 'overflow';
 
 export type FramerEvent =
   | { type: 'adu'; bytes: Uint8Array }
@@ -42,8 +42,6 @@ export interface Framer {
   pendingBytes(): number;
   /** monotonic time of last received byte, or null when idle */
   lastByteTime(): number | null;
-  /** true when the line has been silent long enough to trust a frame boundary */
-  silenceReached(atMs?: number): boolean;
 }
 
 const DEFAULT_MAX_BUFFER = 4096;
@@ -113,10 +111,6 @@ export class TcpStreamingFramer implements Framer {
   }
   lastByteTime(): number | null {
     return this.lastByte;
-  }
-  silenceReached(atMs?: number): boolean {
-    if (this.lastByte === null) return true;
-    return (atMs ?? this.clock.now()) - this.lastByte >= 5;
   }
   reset(): void {
     this.buf = new Uint8Array(0);
@@ -220,19 +214,13 @@ export class RtuStreamingFramer implements Framer {
   private buf: Uint8Array = new Uint8Array(0);
   private lastByte: number | null = null;
   private candidateStart = 0;
-  private gapBroken = false;
   private readonly clock: Clock;
-  private readonly t15: number;
-  private readonly t35: number;
   private readonly maxBuffer: number;
   private readonly incompleteTimeoutMs: number;
   private readonly hooks: FramerHooks;
 
   constructor(opts: RtuFramerOptions = {}) {
     this.clock = opts.clock ?? systemClock;
-    const t = rtuTimings(opts.baudRate ?? 9600);
-    this.t15 = t.t15;
-    this.t35 = t.t35;
     this.maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
     this.incompleteTimeoutMs = opts.incompleteTimeoutMs ?? DEFAULT_INCOMPLETE_TIMEOUT_MS;
     this.hooks = opts;
@@ -247,158 +235,101 @@ export class RtuStreamingFramer implements Framer {
   reset(): void {
     this.buf = new Uint8Array(0);
     this.lastByte = null;
-    this.gapBroken = false;
-  }
-
-  /** True when the line has been silent for at least t3.5 (trusted frame boundary). */
-  silenceReached(atMs?: number): boolean {
-    if (this.lastByte === null) return true;
-    const at = atMs ?? this.clock.now();
-    return at - this.lastByte >= this.t35;
   }
 
   push(chunk: Uint8Array, atMs?: number): FramerEvent[] {
     const at = atMs ?? this.clock.now();
-    const events: FramerEvent[] = [];
-    if (this.buf.length > 0 && this.lastByte !== null) {
-      const gap = at - this.lastByte;
-      if (gap >= this.t35) {
-        events.push(...this.finalize(at));
-      } else if (gap > this.t15) {
-        // Inter-character gap above t1.5: current candidate is protocol-incomplete.
-        this.gapBroken = true;
-      }
-    }
-    if (this.buf.length === 0) {
-      this.candidateStart = at;
-      this.gapBroken = false;
-    }
+    if (this.buf.length === 0) this.candidateStart = at;
     this.buf = concat(this.buf, chunk);
     this.lastByte = at;
-    events.push(...this.tryLengthCompletion(at));
-    return events;
+    return this.drain(at);
   }
 
   tick(atMs?: number): FramerEvent[] {
-    const at = atMs ?? this.clock.now();
+    return this.drain(atMs ?? this.clock.now());
+  }
+
+  /**
+   * Timing-free framing: expected response length first, otherwise a trusted-boundary
+   * CRC scan. Inter-chunk gaps play no role at all.
+   */
+  private drain(at: number): FramerEvent[] {
     const events: FramerEvent[] = [];
-    if (this.buf.length === 0) return events;
-    if (this.lastByte !== null && at - this.lastByte >= this.t35) {
-      events.push(...this.finalize(at));
+    for (;;) {
+      if (this.buf.length > this.maxBuffer) {
+        const raw = this.buf;
+        const recovered = recoverRtuFrames(raw);
+        events.push({ type: 'parse-error', kind: 'overflow', reason: `receive buffer exceeded ${this.maxBuffer} bytes`, raw, discarded: raw.length, recovered });
+        for (const r of recovered) events.push({ type: 'adu', bytes: r });
+        this.buf = new Uint8Array(0);
+        continue;
+      }
+      const expected = this.hooks.expectedAduLength?.() ?? null;
+      if (expected !== null && this.buf.length >= expected) {
+        const cand = this.buf.slice(0, expected);
+        this.buf = this.buf.slice(expected);
+        if (this.buf.length) this.candidateStart = at;
+        events.push(...this.evaluate(cand));
+        continue;
+      }
+      if (expected === null && this.buf.length >= 4) {
+        const hit = this.scanTrustedFrame();
+        if (hit) {
+          if (hit.offset > 0) {
+            events.push({
+              type: 'parse-error',
+              kind: 'malformed',
+              reason: 'resync: discarded unrecoverable prefix before trusted CRC boundary',
+              raw: this.buf.slice(0, hit.offset),
+              discarded: hit.offset,
+              recovered: [hit.frame],
+            });
+          }
+          this.buf = this.buf.slice(hit.offset + hit.frame.length);
+          if (this.buf.length) this.candidateStart = at;
+          events.push({ type: 'adu', bytes: hit.frame });
+          continue;
+        }
+      }
+      if (this.buf.length > 0 && at - this.candidateStart > this.incompleteTimeoutMs) {
+        const raw = this.buf;
+        const recovered = recoverRtuFrames(raw);
+        events.push({ type: 'parse-error', kind: 'truncated', reason: 'candidate frame never completed within wait budget', raw, discarded: raw.length, recovered });
+        for (const r of recovered) events.push({ type: 'adu', bytes: r });
+        this.buf = new Uint8Array(0);
+        continue;
+      }
       return events;
     }
-    if (at - this.candidateStart > this.incompleteTimeoutMs) {
-      events.push(...this.finalize(at, true));
-    }
-    return events;
   }
 
-  private tryLengthCompletion(at: number): FramerEvent[] {
-    const expected = this.hooks.expectedAduLength?.() ?? null;
-    if (expected === null || this.gapBroken) return [];
-    if (this.buf.length < expected) return [];
-    const events: FramerEvent[] = [];
-    const head = this.buf.slice(0, expected);
-    const rest = this.buf.slice(expected);
-    this.buf = rest;
-    if (rest.length) this.candidateStart = at;
-    events.push(...this.evaluate(head, at));
-    return events;
+  /** First CRC-valid frame at offset 0, else first offset where a CRC-valid frame starts. */
+  private scanTrustedFrame(): { offset: number; frame: Uint8Array } | null {
+    const maxLen = Math.min(RTU_MAX_ADU, this.buf.length);
+    for (let o = 0; o + 4 <= this.buf.length; o++) {
+      const limit = Math.min(maxLen, this.buf.length - o);
+      for (let len = 4; len <= limit; len++) {
+        if (checkCrc(this.buf.subarray(o, o + len))) return { offset: o, frame: this.buf.slice(o, o + len) };
+      }
+    }
+    return null;
   }
 
-  private finalize(at: number, forced = false): FramerEvent[] {
-    const cand = this.buf;
-    const broken = this.gapBroken;
-    this.buf = new Uint8Array(0);
-    this.gapBroken = false;
-    if (cand.length === 0) return [];
-    if (forced && !checkCrc(cand)) {
-      const recovered = recoverRtuFrames(cand);
-      const events: FramerEvent[] = [
-        {
-          type: 'parse-error',
-          kind: 'truncated',
-          reason: 'candidate frame never completed within wait budget',
-          raw: cand,
-          discarded: cand.length,
-          recovered,
-        },
-      ];
-      for (const r of recovered) events.push({ type: 'adu', bytes: r });
-      return events;
-    }
-    if (broken) {
-      const recovered = recoverRtuFrames(cand);
-      const events: FramerEvent[] = [
-        {
-          type: 'parse-error',
-          kind: 'gap',
-          reason: 'inter-character gap above t1.5 inside frame (incomplete frame)',
-          raw: cand,
-          discarded: cand.length,
-          recovered,
-        },
-      ];
-      for (const r of recovered) events.push({ type: 'adu', bytes: r });
-      return events;
-    }
-    return this.evaluate(cand, at);
-  }
-
-  private evaluate(cand: Uint8Array, at: number): FramerEvent[] {
-    void at;
-    if (cand.length > this.maxBuffer) {
-      const recovered = recoverRtuFrames(cand);
-      return [
-        {
-          type: 'parse-error',
-          kind: 'overflow',
-          reason: `candidate exceeds receive buffer (${cand.length} bytes)`,
-          raw: cand,
-          discarded: cand.length,
-          recovered,
-        },
-        ...recovered.map((r) => ({ type: 'adu' as const, bytes: r })),
-      ];
-    }
+  private evaluate(cand: Uint8Array): FramerEvent[] {
     if (cand.length > RTU_MAX_ADU) {
       const recovered = recoverRtuFrames(cand);
       return [
-        {
-          type: 'parse-error',
-          kind: 'malformed',
-          reason: `candidate exceeds RTU ADU limit (${cand.length} > ${RTU_MAX_ADU})`,
-          raw: cand,
-          discarded: cand.length,
-          recovered,
-        },
+        { type: 'parse-error', kind: 'malformed', reason: `candidate exceeds RTU ADU limit (${cand.length} > ${RTU_MAX_ADU})`, raw: cand, discarded: cand.length, recovered },
         ...recovered.map((r) => ({ type: 'adu' as const, bytes: r })),
       ];
     }
     if (cand.length < 4) {
-      return [
-        {
-          type: 'parse-error',
-          kind: 'malformed',
-          reason: 'noise: candidate shorter than minimum RTU ADU',
-          raw: cand,
-          discarded: cand.length,
-          recovered: [],
-        },
-      ];
+      return [{ type: 'parse-error', kind: 'malformed', reason: 'noise: candidate shorter than minimum RTU ADU', raw: cand, discarded: cand.length, recovered: [] }];
     }
     if (!checkCrc(cand)) {
-      // Bad frame: report it, but recover any legal frame glued inside the same segment.
       const recovered = recoverRtuFrames(cand);
       return [
-        {
-          type: 'parse-error',
-          kind: 'crc',
-          reason: 'CRC mismatch',
-          raw: cand,
-          discarded: cand.length,
-          recovered,
-        },
+        { type: 'parse-error', kind: 'crc', reason: 'CRC mismatch', raw: cand, discarded: cand.length, recovered },
         ...recovered.map((r) => ({ type: 'adu' as const, bytes: r })),
       ];
     }

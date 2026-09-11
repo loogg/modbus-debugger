@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { TcpStreamingFramer, RtuStreamingFramer, type FramerEvent } from '../../src/domain/protocol/framer';
+import { buildRtuAdu } from '../../src/domain/protocol/rtu';
+import { encodeResponsePdu } from '../../src/domain/protocol/pdu';
 import { FakeClock, unhex, hex } from '../support/fake';
 import { LIMITS } from '../../src/domain/protocol/types';
 
@@ -98,11 +100,10 @@ describe('TCP streaming framer', () => {
 
 describe('RTU streaming framer', () => {
   const s = scenarios as Record<string, { frame?: string; frames?: string[]; chunks: string[] }>;
-  const baud = 9600;
 
   it('single frame split across reads (length context completes it)', () => {
     const frame = unhex(s.rtu_single_frame_split!.frame as string);
-    const f = new RtuStreamingFramer({ baudRate: baud, expectedAduLength: () => frame.length });
+    const f = new RtuStreamingFramer({ expectedAduLength: () => frame.length });
     let out: FramerEvent[] = [];
     let t = 0;
     for (const c of s.rtu_single_frame_split!.chunks) {
@@ -112,96 +113,102 @@ describe('RTU streaming framer', () => {
     expect(adus(out)).toEqual([hex(frame)]);
   });
 
-  it('silence (>= t3.5) delimits frames when no length context is known', () => {
-    const clock = new FakeClock();
-    const f = new RtuStreamingFramer({ clock, baudRate: baud });
+  it('without length context, trusted CRC scan extracts complete frames (no timing involved)', () => {
+    const f = new RtuStreamingFramer({});
     const frame = unhex(s.rtu_single_frame_split!.frame as string);
-    let out = f.push(frame, 0);
-    expect(adus(out)).toEqual([]);
-    clock.advance(10);
-    out = f.tick(10);
+    const out = f.push(frame, 0);
     expect(adus(out)).toEqual([hex(frame)]);
   });
 
-  it('inter-character gap > t1.5 marks the frame incomplete and reports it at the next silence', () => {
-    const clock = new FakeClock();
-    const f = new RtuStreamingFramer({ clock, baudRate: baud });
+  it('arbitrary inter-chunk gaps are irrelevant: expected length frames the response', () => {
     const frame = unhex(s.rtu_single_frame_split!.frame as string);
-    f.push(frame.subarray(0, 5), 0);
-    // 2 ms gap at 9600 baud: t1.5 = 1.72 ms, t3.5 = 4.01 ms -> inside-frame gap
-    let out = f.push(frame.subarray(5), 2.5);
-    clock.advance(20);
-    out = out.concat(f.tick(22.5));
-    const err = errors(out);
-    expect(err.length).toBe(1);
-    expect(err[0]).toMatchObject({ kind: 'gap' });
+    const f = new RtuStreamingFramer({ expectedAduLength: () => frame.length });
+    let out = f.push(frame.subarray(0, 5), 0);
+    out = out.concat(f.push(frame.subarray(5), 5000));
+    expect(errors(out).length).toBe(0);
+    expect(adus(out)).toEqual([hex(frame)]);
   });
 
-  it('continuous multi-frame input with silence boundaries', () => {
-    const clock = new FakeClock();
-    const f = new RtuStreamingFramer({ clock, baudRate: baud });
+  it('continuous multi-frame input is segmented by CRC scan without timing', () => {
+    const f = new RtuStreamingFramer({});
     const sc = s.rtu_multi_frame_one_chunk!;
-    const both = unhex(sc.chunks[0] as string);
-    const first = unhex(sc.frames![0] as string);
-    let out = f.push(first, 0);
-    out = out.concat(f.push(both.subarray(first.length), 10));
-    clock.advance(30);
-    out = out.concat(f.tick(30));
+    const out = f.push(unhex(sc.chunks[0] as string), 0);
     expect(adus(out)).toEqual(sc.frames);
+  });
+
+  it('half + sticky mix frames by expected length (A tail + B whole + C head)', () => {
+    const a = buildRtuAdu(1, encodeResponsePdu({ kind: 'registers', fc: 0x03, registers: [1, 2, 3, 4] }));
+    const b = buildRtuAdu(1, encodeResponsePdu({ kind: 'registers', fc: 0x03, registers: [5, 6, 7, 8] }));
+    const f = new RtuStreamingFramer({ expectedAduLength: () => a.length });
+    let out: FramerEvent[] = [];
+    out = out.concat(f.push(a.subarray(0, 3), 0));
+    out = out.concat(f.push(concatAll([a.subarray(3), b.subarray(0, 6)]), 1));
+    out = out.concat(f.push(b.subarray(6), 2));
+    expect(errors(out).length).toBe(0);
+    expect(adus(out)).toEqual([hex(a), hex(b)]);
   });
 
   it('CRC-bad frame glued to a good frame: bad reported, good recovered', () => {
-    const clock = new FakeClock();
-    const f = new RtuStreamingFramer({ clock, baudRate: baud });
+    const f = new RtuStreamingFramer({});
     const sc = s.rtu_bad_crc_glued_then_good!;
-    let out = f.push(unhex(sc.chunks[0] as string), 0);
-    clock.advance(20);
-    out = out.concat(f.tick(20));
+    const out = f.push(unhex(sc.chunks[0] as string), 0);
     const err = errors(out);
     expect(err.length).toBe(1);
-    expect(err[0]).toMatchObject({ kind: 'crc' });
+    expect(err[0]).toMatchObject({ kind: 'malformed' });
     expect(adus(out)).toEqual(sc.frames);
     const e0 = err[0] as Extract<FramerEvent, { type: 'parse-error' }>;
     expect(e0.recovered.length).toBe(1);
+    expect(e0.discarded).toBeGreaterThan(0);
   });
 
-  it('noise segment separated by silence is dropped without losing the next frame', () => {
-    const clock = new FakeClock();
-    const f = new RtuStreamingFramer({ clock, baudRate: baud });
+  it('noise prefix is discarded by resync without losing the following frame', () => {
+    const f = new RtuStreamingFramer({});
     const sc = s.rtu_noise_then_good!;
     let out = f.push(unhex(sc.chunks[0] as string), 0);
-    clock.advance(10);
-    out = out.concat(f.tick(10));
-    expect(errors(out).length).toBe(1);
+    expect(errors(out).length).toBe(0);
     out = out.concat(f.push(unhex(sc.chunks[1] as string), 20));
-    clock.advance(30);
-    out = out.concat(f.tick(30));
+    const err = errors(out);
+    expect(err.length).toBe(1);
+    expect(err[0]).toMatchObject({ kind: 'malformed' });
     expect(adus(out)).toEqual(sc.frames);
   });
 
-  it('truncated frame then good frame: truncation reported, good frame parsed', () => {
+  it('truncated frame then good frame: resync reports discard and parses the good frame', () => {
     const clock = new FakeClock();
-    const f = new RtuStreamingFramer({ clock, baudRate: baud });
     const sc = s.rtu_truncated_then_good!;
+    const f = new RtuStreamingFramer({ clock });
     let out = f.push(unhex(sc.chunks[0] as string), 0);
-    clock.advance(10);
-    out = out.concat(f.tick(10));
-    expect(errors(out).length).toBe(1);
+    expect(errors(out).length).toBe(0);
     out = out.concat(f.push(unhex(sc.chunks[1] as string), 20));
-    clock.advance(30);
-    out = out.concat(f.tick(30));
+    const err = errors(out);
+    expect(err.length).toBe(1);
+    expect(err[0]).toMatchObject({ kind: 'malformed' });
     expect(adus(out)).toEqual(sc.frames);
+    const f2 = new RtuStreamingFramer({ clock, incompleteTimeoutMs: 200 });
+    let out2 = f2.push(unhex(sc.chunks[0] as string), 100);
+    out2 = out2.concat(f2.tick(600));
+    expect(errors(out2)[0]).toMatchObject({ kind: 'truncated' });
   });
 
   it('buffer is bounded: continuous garbage cannot grow memory forever', () => {
     const clock = new FakeClock();
-    const f = new RtuStreamingFramer({ clock, baudRate: baud, maxBuffer: 512 });
+    const f = new RtuStreamingFramer({ clock, maxBuffer: 512 });
     const garbage = new Uint8Array(300).fill(0x5a);
-    f.push(garbage, 0);
-    f.push(garbage, 1);
-    clock.advance(10);
-    const out = f.tick(10);
+    let out = f.push(garbage, 0);
+    out = out.concat(f.push(garbage, 1));
+    out = out.concat(f.tick(10));
     expect(errors(out).length).toBeGreaterThanOrEqual(1);
     expect(f.pendingBytes()).toBeLessThanOrEqual(512);
   });
 });
+
+function concatAll(list: Uint8Array[]): Uint8Array {
+  const total = list.reduce((a, b) => a + b.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const b of list) {
+    out.set(b, o);
+    o += b.length;
+  }
+  return out;
+}

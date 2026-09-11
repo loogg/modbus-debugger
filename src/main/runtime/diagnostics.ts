@@ -30,7 +30,7 @@ export interface TransactionRecord {
 export interface ParseEventRecord {
   id: string;
   connectionId: string;
-  kind: 'crc' | 'malformed' | 'unexpected' | 'truncated' | 'overflow' | 'gap' | 'resync';
+  kind: 'crc' | 'malformed' | 'unexpected' | 'truncated' | 'overflow';
   reason: string;
   rawHex: string;
   discarded: number;

@@ -13,6 +13,8 @@ const config: ForgeConfig = {
     asar: true,
     name: 'Modbus Debugger',
     executableName: 'modbus-debugger',
+    icon: path.resolve(__dirname, 'build', 'icon.ico'),
+    extraResource: [path.resolve(__dirname, 'build', 'icon.png')],
   },
   rebuildConfig: {},
   hooks: {
@@ -28,7 +30,7 @@ const config: ForgeConfig = {
   },
   makers: [
     new MakerSquirrel({
-      setupIcon: undefined,
+      setupIcon: path.resolve(__dirname, 'build', 'icon.ico'),
       name: 'modbus-debugger',
     }),
     new MakerZIP({}, ['darwin']),

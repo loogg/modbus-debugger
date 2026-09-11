@@ -171,7 +171,7 @@ export class ConnectionRuntime {
       if (ev.type === 'parse-error') {
         this.diagnostics.recordParseEvent({
           connectionId: this.connectionId,
-          kind: ev.kind === 'crc' ? 'crc' : ev.kind === 'truncated' ? 'truncated' : ev.kind === 'overflow' ? 'overflow' : ev.kind === 'gap' ? 'gap' : 'malformed',
+          kind: ev.kind,
           reason: ev.reason,
           rawHex: hex(ev.raw),
           discarded: ev.discarded,
@@ -412,7 +412,7 @@ export class ConnectionRuntime {
     if (this.state !== 'online') return;
     const events = this.framer.tick(now);
     if (events.length) this.handleFramerEvents(events);
-    if (this.transport.kind === 'rtu' && this.drainUntil && now >= this.drainUntil && this.framer.silenceReached(now)) {
+    if (this.transport.kind === 'rtu' && this.drainUntil && now >= this.drainUntil) {
       this.drainUntil = 0;
       // Drop anything the drain window absorbed so it can never reach a later request.
       this.framer.reset();

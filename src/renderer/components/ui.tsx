@@ -324,3 +324,76 @@ export function formatClock(iso: string | null | undefined): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+/* ------------------------------- editable combo ------------------------------- */
+
+/**
+ * Input + dropdown hybrid: the list can be refreshed every time it opens
+ * (e.g. re-enumerate serial ports) while still accepting free-form values
+ * (e.g. custom baud rates).
+ */
+export function ComboInput(props: {
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label: string }>;
+  onOpen?: () => void;
+  placeholder?: string;
+  disabled?: boolean;
+  testId?: string;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+  return (
+    <div ref={ref} className="relative">
+      <input
+        className={inputClass}
+        data-testid={props.testId}
+        value={props.value}
+        placeholder={props.placeholder}
+        disabled={props.disabled}
+        onChange={(e) => props.onChange(e.target.value)}
+        onFocus={() => {
+          props.onOpen?.();
+          setOpen(true);
+        }}
+      />
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label="展开选项"
+        className="focus-ring absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-ink2"
+        onClick={() => {
+          props.onOpen?.();
+          setOpen(!open);
+        }}
+      >
+        <svg width="12" height="8" viewBox="0 0 12 8" fill="none">
+          <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="1.5" />
+        </svg>
+      </button>
+      {open && props.options.length > 0 ? (
+        <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-ctl border border-line bg-surface py-1 shadow-lg">
+          {props.options.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              className={`focus-ring block w-full cursor-pointer px-3 py-1.5 text-left text-sm hover:bg-surface2 ${o.value === props.value ? 'text-accent font-medium' : ''}`}
+              onClick={() => {
+                props.onChange(o.value);
+                setOpen(false);
+              }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}

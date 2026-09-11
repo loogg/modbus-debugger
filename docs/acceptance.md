@@ -91,3 +91,25 @@
 - Production Build：npm run package 成功；打包版无 ABI 敏感原生依赖（历史存储 sql.js/WASM，串口 serialport N-API prebuilds）。
 - Installer Smoke：Squirrel Setup 静默安装 → 启动已安装应用并确认窗口/页面目标 → Update.exe --uninstall 执行（残留目录由 Squirrel 在下次更新/重启时清理）。
 - 模拟器：tools/simulator/modbus_sim.py（PyModbus 3.15，独立实现）提供 units 1-3、动态数值/Bool 边沿/Enum/String/写支持。
+
+## 上位机全量功能自测（tests/e2e/full-features.e2e.ts，打包版 + 模拟器）
+
+- [x] 添加连接：串口下拉每次打开重新枚举可用串口；波特率预设 + 自定义输入；高级设置（帧间隔/RTS/日志级别）。
+- [x] 添加从站：对话框字段与 Unit ID 冲突检查。
+- [x] 实时表：双击进入编辑态、Esc 取消、确认值不被污染。
+- [x] 模板编辑：点位表、映射详情、编辑点位抽屉（内存映射/缩放/枚举/映射预览）。
+- [x] 导入寄存器表：字段映射 / 预览与转换 / 数据块策略 步骤界面。
+- [x] 趋势记录 → 历史会话 → 会话信号页（Schema Snapshot / 记录方式）全链路。
+- [x] 通信：连接健康指标卡与数据块性能表；点位追踪来源追踪与原始帧。
+- [x] 设置：工作区文件 / 地址规则 / 记录与历史 / 写入安全。
+- [x] 扫描 / 临时读取 / 保存为数据块入口（app.e2e.ts）。
+- [x] 窗口自适应：1440 与 1024 截图审核（app.e2e.ts）。
+
+## 本轮迭代证据（UI 反馈修复）
+
+- [x] 串口为下拉选择：每次打开下拉通过 serial.list 重新枚举当前可用串口，仍可手工输入（添加连接对话框）。
+- [x] 波特率下拉扩展预设（1200…1000000）并支持自定义输入。
+- [x] 临时读取 / 添加从站 入口修复：无从站时设备页工具入口与空态按钮均可用（E2E 覆盖）。
+- [x] 应用图标：build/icon.ico + icon.png（Fluent 蓝 + RTU 方波 + 寄存器网格），用于 exe / 安装器 / 窗口图标。
+- [x] RTU 分帧不再使用 t1.5/t3.5 时序（不作判决也不作 hint）：预期长度 + CRC + 可信边界扫描 + 有界等待；strict 模式不保留。
+- [x] 全量功能自测：tests/e2e/full-features.e2e.ts 8 项 + app.e2e.ts 8 项 = 16 项全部通过（打包版 + PyModbus 模拟器）。

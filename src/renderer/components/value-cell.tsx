@@ -128,7 +128,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
 
   return (
     <span
-      className="inline-flex items-center gap-1.5"
+      className="inline-flex w-full items-center gap-1.5"
       onDoubleClick={() => {
         if (!writable) return;
         setDraft(isBool ? (view?.boolValue ? 'ON' : 'OFF') : confirmedText);

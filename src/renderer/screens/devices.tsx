@@ -12,6 +12,11 @@ export function DevicesScreen() {
   const setModule = useApp((s) => s.setModule);
   const slave = snapshot?.workspace.slaves.find((s) => s.id === selection.slaveId) ?? snapshot?.workspace.slaves[0];
   const connection = snapshot?.workspace.connections.find((c) => c.id === slave?.connectionId);
+  const activeConnection =
+    snapshot?.workspace.connections.find((c) => c.id === selection.connectionId) ?? connection ?? snapshot?.workspace.connections[0];
+
+  if (selection.deviceView === 'scan' && activeConnection) return <ScanView connectionId={activeConnection.id} />;
+  if (selection.deviceView === 'temp' && activeConnection) return <TempReadView connectionId={activeConnection.id} />;
   const template = snapshot?.workspace.templates.find((t) => t.id === slave?.templateId);
   const connState = slave ? snapshot?.connections[slave.connectionId] : undefined;
 
@@ -32,11 +37,26 @@ export function DevicesScreen() {
   }
 
   if (!slave) {
-    return <EmptyState title="还没有从站" message="在左侧连接上添加从站并绑定设备模板。" actions={<Button variant="primary" onClick={() => connection && openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: connection.id })}>＋ 添加从站</Button>} />;
+    return (
+      <EmptyState
+        title="还没有从站"
+        message="在左侧连接上添加从站并绑定设备模板。"
+        actions={
+          <Button
+            variant="primary"
+            disabled={!activeConnection}
+            onClick={() => {
+              if (!activeConnection) return;
+              select({ connectionId: activeConnection.id, deviceView: 'topology' });
+              openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: activeConnection.id });
+            }}
+          >
+            ＋ 添加从站
+          </Button>
+        }
+      />
+    );
   }
-
-  if (selection.deviceView === 'scan' && connection) return <ScanView connectionId={connection.id} />;
-  if (selection.deviceView === 'temp' && connection) return <TempReadView connectionId={connection.id} />;
 
   return (
     <>
@@ -238,7 +258,17 @@ export function TempReadView(props: { connectionId: string }) {
               <div className="text-sm">{rows.length} 个寄存器 · 地址 {start}–{Number(start) + rows.length - 1} · FC0{area} · {result.ms.toFixed(1)} ms</div>
             </div>
             <div className="flex gap-3">
-              <Button size="sm" onClick={() => openOverlay({ kind: 'drawer', id: 'inspector', pointId: '' })}>原始数据</Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  const firstSlave = snapshot?.workspace.slaves.find((s2) => s2.connectionId === props.connectionId);
+                  const tpl = snapshot?.workspace.templates.find((t2) => t2.id === firstSlave?.templateId);
+                  const firstPoint = tpl?.points.find((p2) => p2.blockId === tpl.blocks[0]?.id);
+                  if (firstPoint) openOverlay({ kind: 'drawer', id: 'inspector', pointId: firstPoint.id });
+                }}
+              >
+                原始数据
+              </Button>
               <Button
                 size="sm"
                 variant="primary"

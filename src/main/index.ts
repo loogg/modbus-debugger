@@ -4,7 +4,7 @@ import os from 'node:os';
 
 process.on('uncaughtException', (err) => { try { fs.writeFileSync(path.join(os.tmpdir(), 'mb-crash.txt'), String(err && err.stack)); } catch { /* ignore */ } });
 fs.writeFileSync(path.join(os.tmpdir(), 'mb-main-boot.txt'), 'boot ' + new Date().toISOString() + ' pid ' + String(process.pid));
-import { app, BrowserWindow, screen } from 'electron';
+import { app, BrowserWindow, nativeImage, screen } from 'electron';
 import log from 'electron-log';
 import { RuntimeManager } from './runtime/manager';
 import { WorkspaceService } from './services/workspace';
@@ -69,6 +69,10 @@ async function createWindow(): Promise<void> {
     minHeight: 680,
     title: 'Modbus 调试工具',
     backgroundColor: '#F6F7F9',
+    icon: (() => {
+      const p = path.join(process.resourcesPath, 'build', 'icon.png');
+      return fs.existsSync(p) ? nativeImage.createFromPath(p) : undefined;
+    })(),
     show: false,
     webPreferences: {
       nodeIntegration: false,

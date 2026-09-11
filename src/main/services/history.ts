@@ -63,9 +63,14 @@ export class HistoryStore {
   ) {}
 
   static async open(dbPath: string): Promise<HistoryStore> {
-    // sql.js is a webpack external; locate its wasm next to the app node_modules.
-    // Works in dev (.webpack/main) and packaged (app.asar/.webpack/main) layouts.
-    const wasmPath = path.join(__dirname, '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm');
+    // sql.js is a webpack external in main, plain source in tests: probe the layouts.
+    const candidates = [
+      path.join(__dirname, '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+      path.join(__dirname, '..', '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+      path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+    ];
+    const wasmPath = candidates.find((c) => fs.existsSync(c));
+    if (!wasmPath) throw new Error('sql-wasm.wasm not found in any known layout');
     const wasm = fs.readFileSync(wasmPath);
     const SQL = await initSqlJs({ wasmBinary: wasm.buffer.slice(wasm.byteOffset, wasm.byteOffset + wasm.byteLength) });
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });

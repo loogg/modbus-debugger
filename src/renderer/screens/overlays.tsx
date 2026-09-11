@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../store/app';
-import { Button, Checkbox, Dialog, Drawer, Field, InfoBand, Select, TextInput } from '../components/ui';
+import { Button, Checkbox, ComboInput, Dialog, Drawer, Field, InfoBand, Select, TextInput } from '../components/ui';
 import { AREAS } from '../../domain/address';
 import { findBlockOverlaps } from '../../domain/overlap';
 import { registersForType, type RawType } from '../../domain/mapping';
@@ -39,7 +39,16 @@ function AddConnectionDialog() {
   const [name, setName] = useState('生产线 RS485');
   const [protocol, setProtocol] = useState<'rtu' | 'tcp'>('rtu');
   const [port, setPort] = useState('COM3');
+  const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [baud, setBaud] = useState('115200');
+  const [rts, setRts] = useState<'none' | 'toggle'>('none');
+  const [logLevel, setLogLevel] = useState<'info' | 'debug'>('info');
+  const [interFrame, setInterFrame] = useState('0');
+  const refreshPorts = () => {
+    void command<{ path: string; manufacturer: string | null }[]>({ type: 'serial.list' }).then((res) => {
+      if (res.ok) setPortOptions(res.value.map((p) => ({ value: p.path, label: p.manufacturer ? `${p.path} · ${p.manufacturer}` : p.path })));
+    });
+  };
   const [dataBits, setDataBits] = useState('8');
   const [parity, setParity] = useState<'none' | 'even' | 'odd'>('none');
   const [stopBits, setStopBits] = useState('1');
@@ -61,9 +70,9 @@ function AddConnectionDialog() {
       timeoutMs: Number(timeout),
       retries: Number(retries),
       reconnect,
-      interFrameMs: 0,
-      rtsControl: 'none' as const,
-      logLevel: 'info' as const,
+      interFrameMs: Number(interFrame) || 0,
+      rtsControl: rts,
+      logLevel,
     };
     await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, connections: [...snapshot.workspace.connections, conn] } });
     toast({ kind: 'success', title: '连接已创建', message: '可继续添加从站。' });
@@ -86,8 +95,12 @@ function AddConnectionDialog() {
       {protocol === 'rtu' ? (
         <>
           <div className="mt-4 grid grid-cols-2 gap-4">
-            <Field label="串口"><TextInput value={port} onChange={(e) => setPort(e.target.value)} /></Field>
-            <Field label="波特率"><Select value={baud} onChange={setBaud} options={['9600', '19200', '38400', '57600', '115200'].map((b) => ({ value: b, label: b }))} /></Field>
+            <Field label="串口" hint="打开下拉时重新枚举当前可用串口，也可直接输入">
+              <ComboInput testId="port-combo" value={port} onChange={setPort} options={portOptions} onOpen={refreshPorts} placeholder="COM3" />
+            </Field>
+            <Field label="波特率" hint="支持自定义波特率输入">
+              <ComboInput testId="baud-combo" value={baud} onChange={setBaud} options={['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600', '1000000'].map((b) => ({ value: b, label: b }))} />
+            </Field>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-4">
             <Field label="数据位"><Select value={dataBits} onChange={setDataBits} options={[{ value: '8', label: '8' }, { value: '7', label: '7' }]} /></Field>
@@ -110,7 +123,11 @@ function AddConnectionDialog() {
         <div className="text-sm font-bold text-accent mb-1">创建后</div>
         <div className="text-sm">创建连接后可继续添加从站。</div>
       </InfoBand>
-      <div className="mt-3 text-xs text-ink2">+ 高级设置 · 帧间隔 · RTS 控制 · 日志级别</div>
+      <div className="mt-5 grid grid-cols-3 gap-4">
+        <Field label="帧间隔 (ms)"><TextInput type="number" value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
+        <Field label="RTS 控制"><Select value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
+        <Field label="日志级别"><Select value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
+      </div>
     </Dialog>
   );
 }
