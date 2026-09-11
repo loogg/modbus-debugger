@@ -1,1 +1,0 @@
-const {app,BrowserWindow}=require('electron');app.whenReady().then(()=>{const w=new BrowserWindow({show:false});setTimeout(()=>app.quit(),8000);});
