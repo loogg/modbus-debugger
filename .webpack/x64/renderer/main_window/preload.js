@@ -1,2 +1,0 @@
-(()=>{"use strict";const e=require("electron"),n="app:delta",r={getSnapshot:()=>e.ipcRenderer.invoke("app:snapshot"),command:n=>e.ipcRenderer.invoke("app:command",n),onDelta:r=>{const o=(e,n)=>r(n);return e.ipcRenderer.on(n,o),()=>{e.ipcRenderer.removeListener(n,o)}},versions:()=>e.ipcRenderer.invoke("app:versions")};e.contextBridge.exposeInMainWorld("modbus",r)})();
-//# sourceMappingURL=preload.js.map

@@ -1,5 +1,6 @@
 node_modules/
 .vite/
+.webpack/
 out/
 dist/
 coverage/
