@@ -47,13 +47,23 @@ export function Button(props: {
 
 /* ------------------------------- inputs ------------------------------- */
 
+/**
+ * Caption + control stack. Deliberately NOT a <label>: a label forwards a click on any
+ * non-interactive descendant (e.g. a dropdown option's text span) to its labelled control.
+ * For ComboInput that meant a second, trusted click on the input right after a selection,
+ * which reopened the list we had just closed - and it only happened when the click point
+ * landed on the option text (long labels like "COM1 · ELTIMA Software"), never when it
+ * landed on the option button's padding (short labels like "19200"). role="group" plus
+ * aria-labelledby keeps the screen-reader association without any click forwarding.
+ */
 export function Field(props: { label: string; children: React.ReactNode; hint?: string }) {
+  const captionId = React.useId();
   return (
-    <label className="block">
-      <div className="text-xs text-ink2 mb-1.5">{props.label}</div>
+    <div className="block" role="group" aria-labelledby={captionId}>
+      <div id={captionId} className="text-xs text-ink2 mb-1.5">{props.label}</div>
       {props.children}
       {props.hint ? <div className="text-xs text-ink2 mt-1">{props.hint}</div> : null}
-    </label>
+    </div>
   );
 }
 
@@ -386,16 +396,6 @@ export function ComboInput(props: {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
   const blurTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  // After a real mouse selection Chrome retargets a second click onto the input (the option
-  // node unmounts while the click is dispatching). Without this guard the input's
-  // reopen-on-click handler would immediately reopen the list we just closed, so the dropdown
-  // appeared "stuck open" until the user clicked elsewhere. Synthetic clicks never produce the
-  // retargeted event, which is why only real usage hit it.
-  const reopenBlockedUntil = React.useRef(0);
-  const blockReopen = React.useCallback(() => {
-    reopenBlockedUntil.current = Date.now() + 200;
-  }, []);
-  const reopenBlocked = React.useCallback(() => Date.now() < reopenBlockedUntil.current, []);
   React.useEffect(() => {
     if (open) openComboLists += 1;
     return () => {
@@ -430,7 +430,6 @@ export function ComboInput(props: {
         onFocus={() => {
           if (blurTimer.current) clearTimeout(blurTimer.current);
           blurTimer.current = null;
-          if (reopenBlocked()) return;
           props.onOpen?.();
           setOpen(true);
         }}
@@ -439,7 +438,6 @@ export function ComboInput(props: {
           // picking an option), so the list has to reopen on click as well.
           if (blurTimer.current) clearTimeout(blurTimer.current);
           blurTimer.current = null;
-          if (reopenBlocked()) return;
           if (!open) {
             props.onOpen?.();
             setOpen(true);
@@ -488,7 +486,6 @@ export function ComboInput(props: {
               className={`focus-ring outline-none ${dropdownOptionClass} ${o.value === props.value ? 'bg-accentsoft font-medium text-accent' : ''}`}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
-                blockReopen();
                 props.onChange(o.value);
                 closeList();
               }}
