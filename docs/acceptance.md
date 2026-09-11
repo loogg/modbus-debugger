@@ -86,8 +86,8 @@
 ## 验收证据（2026-09-11）
 
 - lint：eslint 0 error；typecheck：tsc --noEmit 0 error。
-- unit + integration + UI 组件：Vitest 120 tests passed（协议 Golden、流式分帧/Resync、校验分类、映射/缩放、重叠、Workspace/History 持久化、Runtime 调度/RMW/Scanner/TemporaryRead、诊断游标/健康序列、Manager snapshot-delta 管线、PyModbus 模拟器互操作、ComboInput 下拉生命周期、DataTable 行 memo）。
-- E2E：WebdriverIO + @wdio/electron-service 针对打包版 21 tests passed（app.e2e.ts 9：拓扑、实时刷新、写+回读、通信日志+帧详情+健康曲线、趋势图表、从站扫描、临时读取、连接设置锁定态、1024 紧凑窗口；full-features.e2e.ts 12：添加连接/下拉自动关闭、串口默认首口与选中即关闭、添加从站与 Unit ID 冲突、无模板添加从站、实时表编辑态、模板编辑、导入寄存器表、趋势→历史全链路、连接健康与点位追踪、连接设置 断开→改→保存→连接→再锁定、下拉生命周期四路径、设置页），截图存 tests/e2e/screenshots/。
+- unit + integration + UI 组件：Vitest 136 tests passed（协议 Golden、流式分帧/Resync、校验分类、映射/缩放、重叠、Workspace/History 持久化、Runtime 调度/RMW/Scanner/TemporaryRead、诊断游标/健康序列、Manager snapshot-delta 管线、PyModbus 模拟器互操作、ComboInput 下拉生命周期、DataTable 行 memo）。
+- E2E：WebdriverIO + @wdio/electron-service 针对打包版 21 tests passed（app.e2e.ts 9：拓扑、实时刷新、写+回读、通信日志+帧详情+健康曲线、趋势图表、从站扫描、临时读取、连接设置锁定态、1024 紧凑窗口；full-features.e2e.ts 13：添加连接/下拉自动关闭、串口默认首口与选中即关闭、添加从站与 Unit ID 冲突、无模板添加从站、实时表编辑态、模板编辑、导入寄存器表、趋势→历史全链路、连接健康与点位追踪、连接设置 断开→改→保存→连接→再锁定、下拉生命周期四路径、设置页），截图存 tests/e2e/screenshots/。
 - Production Build：npm run package 成功；打包版无 ABI 敏感原生依赖（历史存储 sql.js/WASM，串口 serialport N-API prebuilds）。
 - Installer Smoke（tools/smoke-installer.mjs，任一步失败即 exit 1）：Squirrel Setup 静默安装 → 校验 `%LocalAppData%\modbus-debugger\app-<version>` → 启动已安装 exe 并断言窗口标题 → 结束进程 → `Update.exe --uninstall -s` → 断言安装树已删除。
 - 模拟器：tools/simulator/modbus_sim.py（PyModbus 3.15，独立实现）提供 units 1-3、动态数值/Bool 边沿/Enum/String/写支持。
@@ -107,6 +107,10 @@
 - [x] 串口在添加连接与连接设置中均为下拉（每次打开重新枚举）+ 可手工输入；新建连接默认填入本机第一个可用串口；选中选项后下拉自动关闭。
 - [x] 下拉视觉统一：Radix Select 与 ComboInput 共用面板/行样式（触发器等宽面板、圆角、投影、hover/选中态、选中标记），锁定态输入有禁用样式。
 - [x] 从站状态诚实显示：enabled 且连接 online 才显示「在线」，否则 离线/连接中/连接异常/停用。
+- [x] 时间显示统一：侧栏会话时间与详情页表头为同一时区的同一时刻；设置页可切换时区（跟随系统 / IANA 名称），切换后侧栏、表头、报文、图表轴整体偏移；存储与日志仍为 UTC（time 单元 6 项 + E2E 断言 UTC 与本机 +8 偏移）。
+- [x] 多语言接口：i18next + react-i18next，类型化分片词典（缺失 key 编译期报错），设置页语言选择并持久化；当前仅接入简体中文，渲染层文案全部经 t() 输出。
+- [x]  prefs / dirty / warnings 由 Main 经 delta 下发（独立变更追踪，快照对齐游标）；Renderer 在事务分支 early return 之前应用 prefs，轮询期间的 prefs.set 不再被静默丢弃（store 单元 5 项 + Manager 集成 3 项回归）。
+- [x]  历史回放时间轴为会话内偏移（xMode="duration"），与事件表/回放游标一致；实时趋势轴为显示时区墙钟；不再出现 epoch 0 刻度。
 - [x] 下拉框自动关闭：选择选项 / 失焦 / Esc（分层：先关列表再关 Dialog）/ 点击外部 四条路径均有 E2E 与组件测试。
 - [x] 无模板添加从站：模板下拉含「（暂不绑定模板）」，Unit ID 冲突是唯一的禁用条件；未绑定从站不参与轮询。
 - [x] 扫描 / 临时读取 / 保存为数据块入口（app.e2e.ts）。
@@ -169,3 +173,13 @@
 - [x] 从站状态改为诚实显示（enabled 且连接 online 才「在线」；否则 离线/连接中/连接异常/停用），设置页与侧栏一致。
 - [x] ConnectionRuntime.start() 幂等（重复 start 不叠加调度定时器）。
 - [x] 截图审核：01B-connection-settings-1440（锁定态）、01C-connection-settings-offline-1440（可编辑态）、25-combo-open-1440、26-select-open-1440。
+
+## 本轮迭代（显示时区 / 多语言 / prefs delta 修复，v0.4.0）
+
+- [x]  时间显示统一：侧栏会话时间、详情页表头、报文表、图表轴共用 `src/renderer/time.ts`（Intl + 配置时区）；消除 UTC slice 与 OS 本地 `toTimeString()` 混用造成的 8 小时偏差。
+- [x]  设置页新增「时区」（跟随系统 / 12 个 IANA 选项）与「语言」下拉并持久化到 prefs；切换后侧栏、表头、报文、图表整体偏移，存储与日志仍为 UTC。E2E 断言：侧栏与表头同一时刻、切 UTC 后小时 -8、切回跟随系统后还原。
+- [x]  多语言接口落地：i18next + react-i18next，12 个按界面区域分片的类型化词典（shell/devices/overlays/realtime/trend/comm/history/templates/settings/ui），渲染层 0 处中文硬编码（仅注释保留）；缺失 key 编译期报错；当前仅接入 zh-CN。
+- [x]  修复 prefs / dirty / warnings 从不进 delta 的架构缺陷，以及 `applyDelta` 事务分支 early return 吞掉 prefs 的顺序缺陷；`prefs.set` 的 zod schema 显式声明 timezone / language 并不再 passthrough 未知键。
+- [x]  修复历史回放把会话内偏移当 epoch 渲染的缺陷（图表轴 / tooltip / StateTrack 边沿时间），新增 `xMode="duration"`；会话开始时间改用显示时区格式化。
+- [x]  新增截图：12-templates-1440、14-history-1440、21-settings-1440（含时区/语言控件断言）、22-history-utc-1440（UTC 偏移证据）。
+- [x]  回归：lint 0、tsc 0、Vitest 136、E2E 22（打包版 + PyModbus）、npm run package、npm run make、tools/smoke-installer.mjs 全通过。
