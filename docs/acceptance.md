@@ -113,3 +113,6 @@
 - [x] 应用图标：build/icon.ico + icon.png（Fluent 蓝 + RTU 方波 + 寄存器网格），用于 exe / 安装器 / 窗口图标。
 - [x] RTU 分帧不再使用 t1.5/t3.5 时序（不作判决也不作 hint）：预期长度 + CRC + 可信边界扫描 + 有界等待；strict 模式不保留。
 - [x] 全量功能自测：tests/e2e/full-features.e2e.ts 8 项 + app.e2e.ts 8 项 = 16 项全部通过（打包版 + PyModbus 模拟器）。
+
+- [x] 重试策略：读类 timeout/transport 按 retries 重试（50ms 退避），exception 不重试；写 timeout/CRC 不重试、仅 transport 重试（集成测试 3 项覆盖）。
+- [x] 日志级别：info=应用内通信诊断；debug=额外记录 TX/RX 原始 ADU 与重试决策到 electron-log。

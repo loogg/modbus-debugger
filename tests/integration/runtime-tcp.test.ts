@@ -249,3 +249,53 @@ describe('ConnectionRuntime over fake TCP transport', () => {
 
   void unhex;
 });
+describe('retry policy', () => {
+  function make(retries: number) {
+    const cache = new BlockCache();
+    const diag = new DiagnosticsStore();
+    const transport = new FakeTransport('tcp');
+    const cfg: ConnectionDef = { ...conn, retries };
+    const runtime = new ConnectionRuntime({ config: cfg, transport, cache, diagnostics: diag, hooks: { onChange: () => undefined, onState: () => undefined } });
+    runtime.configure([{ slave, block }]);
+    return { runtime, transport, cache, diag };
+  }
+
+  it('reads retry on timeout up to config.retries and then succeed', async () => {
+    const ctx = make(1);
+    let calls = 0;
+    ctx.transport.onResponse((adu) => {
+      calls++;
+      if (calls === 1) return null;
+      return [respRegs([9, 9, 9, 9], tidOf(adu))];
+    });
+    await ctx.runtime.start();
+    await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok', 4000);
+    const txs = ctx.diag.recentTransactions(20).filter((t) => t.sourceKind === 'poll');
+    expect(txs.some((t) => t.result === 'timeout')).toBe(true);
+    expect(txs.some((t) => t.result === 'ok')).toBe(true);
+    await ctx.runtime.stop();
+  });
+
+  it('reads do NOT retry on exception responses (device refused)', async () => {
+    const ctx = make(2);
+    ctx.transport.onResponse((adu) => [respExc(0x03, 0x02, tidOf(adu))]);
+    await ctx.runtime.start();
+    await new Promise((r) => setTimeout(r, 300));
+    const outcome = await ctx.runtime.temporaryRead(1, 3, 0, 4);
+    expect(outcome.result).toBe('exception');
+    const txs = ctx.diag.recentTransactions(40).filter((t) => t.sourceKind === 'temporary-read');
+    expect(txs.length).toBe(1);
+    await ctx.runtime.stop();
+  });
+  it('writes do NOT retry on timeout (read-back resolves truth)', async () => {
+    const ctx = make(2);
+    ctx.transport.onResponse((adu) => (adu[7] === 0x06 ? null : [respRegs([1, 0, 0, 0], tidOf(adu))]));
+    await ctx.runtime.start();
+    await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
+    const res = await ctx.runtime.writePoint({ slave, block, mapping: point.mapping, rawValue: 42, pointId: 'p1', readBackRange: { start: 0, length: 4 } });
+    expect(res.result).toBe('timeout');
+    const fc06 = ctx.diag.recentTransactions(40).filter((t) => t.functionCode === 0x06);
+    expect(fc06.length).toBe(1);
+    await ctx.runtime.stop();
+  });
+});

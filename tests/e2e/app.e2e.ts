@@ -17,6 +17,15 @@ async function setViewport(width: number, height: number): Promise<void> {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
 }
 
+async function setNative(selector: string, value: string): Promise<void> {
+  await browser.execute((sel, v) => {
+    const input = document.querySelector(sel) as HTMLInputElement | null;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, v);
+    input?.dispatchEvent(new Event('input', { bubbles: true }));
+  }, selector, value);
+  await browser.pause(200);
+}
 async function bodyText(): Promise<string> {
   return (await browser.execute(() => document.body.innerText)) as string;
 }
@@ -28,7 +37,7 @@ async function shot(name: string): Promise<void> {
 
 describe('Modbus Debugger packaged app E2E', () => {
   it('launches with the demo workspace and device topology', async () => {
-    await browser.waitUntil(async () => (await bodyText()).includes('Modbus 调试工具'), { timeout: 30000 });
+    await browser.waitUntil(async () => (await bodyText()).includes('Modbus 调试工具'), { timeout: 25000 });
     const text = await bodyText();
     expect(text).toContain('伺服驱动器 A');
     expect(text).toContain('生产线 TCP');
@@ -86,13 +95,14 @@ describe('Modbus Debugger packaged app E2E', () => {
     await browser.pause(400);
     await $('//button[text()="扫描"]').click();
     await browser.pause(400);
-    await $('//div[text()="起始 Unit"]/following-sibling::input').setValue('1');
-    await $('//div[text()="结束 Unit"]/following-sibling::input').setValue('3');
+    await setNative('input[data-testid="scan-from"]', '1');
+    await setNative('input[data-testid="scan-to"]', '20');
     await $('//button[text()="开始扫描"]').click();
-    await browser.waitUntil(async () => /已发现 [1-9] 个从站/.test(await bodyText()), { timeout: 90000 });
+    await browser.pause(500);
+    await browser.waitUntil(async () => /已发现 [1-9][0-9]* 个从站/.test(await bodyText()), { timeout: 25000 });
     const text = await bodyText();
     expect(text).toContain('扫描摘要');
-    expect(text).toMatch(/已发现 [1-9] 个从站/);
+    expect(text).toMatch(/已发现 [1-9][0-9]* 个从站/);
     await shot('17-scan-1440');
   });
 

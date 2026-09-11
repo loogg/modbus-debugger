@@ -62,3 +62,13 @@ flowchart LR
 - 决定：history.db 改由 sql.js（MIT，SQLite 的 WASM 构建）承载，零原生二进制；落盘文件仍为标准 SQLite 数据库（sql.js export 字节），外部工具可直接打开；写入采用事务 + 去抖原子落盘（临时文件 + rename）。
 - 保留：serialport（N-API prebuilds，ABI 稳定，Node/Electron 通用）。
 - 影响面：仅 src/main/services/history.ts 与其调用方（main 启动、持久化测试）；对外 API 不变。
+
+
+### 重试与日志级别语义
+
+- 重试策略（Connection Scheduler）：
+  - 读类请求（周期轮询 / 临时读取 / 扫描 / 回读 / RMW 读）：仅在 	imeout 或 	ransport（请求未发出）时按 connection.retries 追加尝试，退避 50ms；xception 不重试（设备明确拒绝）。
+  - 写请求：	imeout / CRC 类失败不重试（写可能已生效，盲重试会双重写入；强制 ReadBack 判定真实状态）；仅 	ransport（未发出）时重试。
+- 日志级别（连接级 logLevel）：
+  - info：事务仅记录到应用内通信诊断（UI）。
+  - debug：额外将每次 TX/RX 原始 ADU hex、Validator 判决、重试决策写入 electron-log（userData/logs/main.log）。

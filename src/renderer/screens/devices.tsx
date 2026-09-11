@@ -153,8 +153,8 @@ export function ScanView(props: { connectionId: string }) {
       />
       <InfoBand tone="blue" className="mt-4">扫描期间当前连接的周期轮询会暂时挂起；扫描完成或取消后自动恢复。</InfoBand>
       <div className="mt-4 flex gap-4">
-        <div className="w-32"><div className="text-xs text-ink2 mb-1.5">起始 Unit</div><TextInput type="number" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-        <div className="w-32"><div className="text-xs text-ink2 mb-1.5">结束 Unit</div><TextInput type="number" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+        <div className="w-32"><div className="text-xs text-ink2 mb-1.5">起始 Unit</div><TextInput data-testid="scan-from" type="number" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+        <div className="w-32"><div className="text-xs text-ink2 mb-1.5">结束 Unit</div><TextInput data-testid="scan-to" type="number" value={to} onChange={(e) => setTo(e.target.value)} /></div>
       </div>
       <SectionTitle>扫描结果</SectionTitle>
       <div className="text-xs text-ink2 -mt-1 mb-3">已发现 {rows.length} 个从站</div>

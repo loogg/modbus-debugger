@@ -1,3 +1,4 @@
+import log from 'electron-log';
 import { BlockCache, blockKey } from './block-cache';
 import { DiagnosticsStore, type ResultKind, type SourceKind, type TransactionRecord } from './diagnostics';
 import { Transport } from './transport';
@@ -36,6 +37,7 @@ interface PendingWaiter {
 }
 
 const PRIORITY = { write: 0, manual: 1, poll: 2 } as const;
+const RETRY_BACKOFF_MS = 50;
 
 function hex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('hex');
@@ -45,6 +47,7 @@ export class ConnectionRuntime {
   readonly connectionId: string;
   state: ConnectionState = 'offline';
   private transport: Transport;
+  private readonly config: ConnectionDef;
   private framer: Framer;
   private cache: BlockCache;
   private diagnostics: DiagnosticsStore;
@@ -76,6 +79,7 @@ export class ConnectionRuntime {
   }) {
     this.connectionId = opts.config.id;
     this.transport = opts.transport;
+    this.config = opts.config;
     this.cache = opts.cache;
     this.diagnostics = opts.diagnostics;
     this.clock = opts.clock ?? systemClock;
@@ -223,6 +227,7 @@ export class ConnectionRuntime {
       return;
     }
     const verdict = validateAdu(adu, waiter.ctx);
+    this.logTrace('rx ' + hex(adu) + ' -> ' + verdict.type);
     if (verdict.type === 'unexpected') {
       this.diagnostics.recordParseEvent({
         connectionId: this.connectionId,
@@ -274,7 +279,11 @@ export class ConnectionRuntime {
     return this.tidCounter;
   }
 
-  async executeRequest(
+  private logTrace(msg: string): void {
+    if (this.config.logLevel === 'debug') log.debug('[conn ' + this.connectionId + '] ' + msg);
+  }
+
+  private async attemptRequest(
     unitId: number,
     req: ModbusRequest,
     opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number },
@@ -359,6 +368,7 @@ export class ConnectionRuntime {
         },
       };
 
+      this.logTrace('tx ' + hex(adu));
       this.transport.write(adu).catch((err: Error) => {
         if (this.waiter?.traceId === traceId) {
           this.waiter = null;
@@ -399,6 +409,34 @@ export class ConnectionRuntime {
     return outcome;
   }
 
+  /**
+   * Retry policy:
+   * - reads (poll / temporary / scanner / read-back / RMW read): retry on timeout / transport,
+   *   up to config.retries extra attempts with a small backoff. Exception responses are NEVER
+   *   retried (the device explicitly refused).
+   * - writes: NEVER retried on timeout / CRC (the write may already have been applied; the
+   *   mandatory read-back resolves the true state). Retried only when nothing was sent (transport).
+   */
+  async executeRequest(
+    unitId: number,
+    req: ModbusRequest,
+    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number },
+  ): Promise<RequestOutcome> {
+    const isRead = req.kind === 'read';
+    const maxAttempts = 1 + Math.max(0, this.config.retries ?? 0);
+    let last: RequestOutcome | null = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      last = await this.attemptRequest(unitId, req, opts);
+      const retryable = isRead
+        ? last.result === 'timeout' || last.result === 'transport'
+        : last.result === 'transport';
+      this.logTrace(`attempt ${attempt + 1}/${maxAttempts} ${summarizeRequest(req)} -> ${last.result}`);
+      if (!retryable || attempt === maxAttempts - 1) break;
+      this.logTrace(`retrying ${summarizeRequest(req)} after ${last.result}`);
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS));
+    }
+    return last as RequestOutcome;
+  }
   /* ------------------------- scheduler ------------------------- */
 
   private tick(): void {
