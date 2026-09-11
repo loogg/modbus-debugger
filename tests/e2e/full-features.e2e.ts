@@ -96,6 +96,8 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
 
   it('模板编辑：点位表、映射详情与编辑点位抽屉', async () => {
     await rail('模板');
+    await browser.pause(400);
+    await shot('12-templates-1440');
     await clickText('编辑模板');
     let text = await bodyText();
     expect(text).toContain('点位映射');
@@ -139,6 +141,8 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     });
     await browser.pause(1000);
     await rail('历史');
+    await browser.pause(400);
+    await shot('14-history-1440');
     let text = await bodyText();
     expect(text).toContain('功耗分析');
     await browser.execute(() => {
@@ -216,6 +220,62 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     await browser.waitUntil(async () => (await bodyText()).includes('已连接：参数已锁定'), { timeout: 20000 });
   });
 
+  it('时区：侧栏与表头同一时区，切换 UTC 后整体偏移 8 小时', async () => {
+    await rail('历史');
+    await browser.pause(600);
+    const readFirstSessionTime = () =>
+      browser.execute(() => {
+        const el = [...document.querySelectorAll('div.mono')]
+          .map((d) => d.textContent ?? '')
+          .find((x) => /\d{2}:\d{2}:\d{2} – /.test(x));
+        return el ?? '';
+      });
+    const before = await readFirstSessionTime();
+    expect(before).toMatch(/\d{2}:\d{2}:\d{2} – /);
+
+    // the detail header must show the SAME wall clock as the sidebar card
+    await browser.execute((stamp) => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes(stamp));
+      (b as HTMLElement | undefined)?.click();
+    }, before.slice(0, 8));
+    await browser.pause(700);
+    const head = await bodyText();
+    const m = head.match(/(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) –/);
+    expect(m).not.toBeNull();
+    expect(m![2]).toBe(before.slice(0, 8));
+
+    // Radix Select opens on pointerdown, so options need a real mouse click (element.click()
+    // inside browser.execute is ignored). Asserting the trigger text afterwards proves the pref
+    // round-tripped through Main before we compare rendered timestamps.
+    const tzTrigger = '//div[text()="时区"]/following-sibling::button[1]';
+    const pickTimezone = async (label: string) => {
+      await (await $(tzTrigger)).click();
+      await browser.pause(400);
+      const option = await $(`//*[@role="option"][normalize-space(.)="${label}"]`);
+      expect(await option.isExisting()).toBe(true);
+      await option.click();
+      await browser.pause(700);
+      expect(await (await $(tzTrigger)).getText()).toContain(label);
+    };
+
+    // switch to UTC: this machine runs UTC+8, so every displayed hour shifts by -8
+    await rail('设置');
+    await pickTimezone('UTC');
+    await rail('历史');
+    await browser.pause(600);
+    await shot('22-history-utc-1440');
+    const utc = await readFirstSessionTime();
+    const hour = (s: string) => Number(s.slice(0, 2));
+    expect(hour(utc)).toBe((hour(before) + 24 - 8) % 24);
+
+    // back to following the OS
+    await rail('设置');
+    await pickTimezone('跟随系统');
+    await rail('历史');
+    await browser.pause(600);
+    expect(await readFirstSessionTime()).toBe(before);
+  });
+
   it('添加连接：串口默认第一个可用口，选中选项后下拉自动关闭', async () => {
     await rail('设备');
     await clickText('添加连接');
@@ -249,11 +309,18 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
   });
   it('设置页：工作区文件 / 地址规则 / 记录与历史 / 写入安全', async () => {
     await rail('设置');
+    await browser.pause(400);
+    await shot('21-settings-1440');
     const text = await bodyText();
     expect(text).toContain('工作区文件');
     expect(text).toContain('协议地址固定为 0-based');
     expect(text).toContain('记录与历史');
     expect(text).toContain('写入安全');
+    // 显示偏好：时区与语言必须可见且已接入当前值
+    expect(text).toContain('时区');
+    expect(text).toContain('跟随系统');
+    expect(text).toContain('语言');
+    expect(text).toContain('简体中文');
   });
 });
 

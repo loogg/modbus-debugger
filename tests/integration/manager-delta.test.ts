@@ -193,6 +193,64 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
     expect(commandSchema.safeParse({ type: 'diagnostics.healthSeries', windowMs: 300000 }).success).toBe(false);
   });
 
+  it('streams a prefs.set change as a delta even while polling floods transactions', async () => {
+    const { mgr, deltas, history, svc } = await harness();
+    expect(mgr.buildSnapshot().prefs.timezone).toBe('local');
+
+    await mgr.handleCommand(commandSchema.parse({ type: 'connection.connect', connectionId: 'c1' }));
+    mgr.start();
+    await sleep(300);
+    // A silent transport keeps producing timeout transactions: this is the exact condition
+    // under which the renderer used to lose prefs changes.
+    expect(deltas.some((d) => (d.transactions ?? []).length > 0)).toBe(true);
+    deltas.length = 0;
+
+    const res = await mgr.handleCommand(commandSchema.parse({ type: 'prefs.set', patch: { timezone: 'UTC' } }));
+    expect(res.ok).toBe(true);
+    await sleep(250);
+    await mgr.stop();
+    history.close();
+
+    const prefsDelta = deltas.find((d) => d.prefs);
+    expect(prefsDelta?.prefs?.timezone).toBe('UTC');
+    expect(svc.getPrefs().timezone).toBe('UTC');
+  });
+
+  it('does not re-emit prefs in every tick once the renderer has them', async () => {
+    const { mgr, deltas, history } = await harness();
+    mgr.buildSnapshot();
+    mgr.start();
+    await sleep(300);
+    expect(deltas.filter((d) => d.prefs).length).toBe(0);
+    await mgr.handleCommand(commandSchema.parse({ type: 'prefs.set', patch: { timezone: 'Asia/Tokyo' } }));
+    await sleep(300);
+    await mgr.stop();
+    history.close();
+    expect(deltas.filter((d) => d.prefs).length).toBe(1);
+    expect(deltas.find((d) => d.prefs)?.prefs?.timezone).toBe('Asia/Tokyo');
+  });
+
+  it('streams the unsaved-workspace flag as a delta', async () => {
+    const { dir, mgr, deltas, history, svc } = await harness();
+    // adopt() always marks the workspace dirty, so save once to reach a clean baseline
+    expect(svc.saveTo(path.join(dir, 'ws.json')).ok).toBe(true);
+    const snap = mgr.buildSnapshot();
+    expect(snap.dirty).toBe(false);
+
+    mgr.start();
+    await sleep(200);
+    deltas.length = 0;
+    svc.mutate((ws) => ({ ...ws, name: 'renamed' }));
+    await sleep(250);
+    // read the flag before stop(): stop() flushes the autosave, which legitimately clears it
+    const dirtyAfterEdit = svc.isDirty();
+    await mgr.stop();
+    history.close();
+
+    expect(dirtyAfterEdit).toBe(true);
+    expect(deltas.some((d) => d.dirty === true)).toBe(true);
+  });
+
   it('reports the last successful response without scanning the transaction ring', async () => {
     const { mgr, history } = await harness();
     expect(mgr.buildSnapshot().connections['c1']?.lastResponseUtc).toBeNull();
