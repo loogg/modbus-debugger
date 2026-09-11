@@ -116,3 +116,8 @@
 
 - [x] 重试策略：读类 timeout/transport 按 retries 重试（50ms 退避），exception 不重试；写 timeout/CRC 不重试、仅 transport 重试（集成测试 3 项覆盖）。
 - [x] 日志级别：info=应用内通信诊断；debug=额外记录 TX/RX 原始 ADU 与重试决策到 electron-log。
+
+- [x] 日志落盘在执行目录 <exe>/logs/（不放系统盘）；history.db 默认 <exe>/data/，设置页显示真实路径。
+- [x] 连接参数可编辑：设备页连接行「编辑」→ 添加连接对话框编辑模式 → 保存即更新运行时（E2E 覆盖）。
+- [x] 收到合法 Exception Response 立即结算（不再等超时）；坏帧/不匹配帧仍等超时后按重试策略处理（集成测试断言结算耗时 < timeout）。
+- [x] 关闭上位机优雅释放资源：before-quit await 停止全部 Runtime（串口/TCP/定时器）+ flush history/workspace（集成测试覆盖 transport 关闭）。

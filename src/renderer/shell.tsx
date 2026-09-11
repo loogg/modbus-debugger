@@ -184,6 +184,7 @@ function DevicesSidebar() {
           connectionId={c.id}
           actions={
             <>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-connection', connectionId: c.id })}>编辑</button>
               <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'scan' })}>扫描</button>
               <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'temp' })}>临时读取</button>
               <button className="focus-ring cursor-pointer hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: c.id })}>＋ 添加从站</button>

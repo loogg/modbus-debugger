@@ -249,6 +249,10 @@ describe('ConnectionRuntime over fake TCP transport', () => {
 
   void unhex;
 });
+function cfgTimeout(): number {
+  return 60;
+}
+
 describe('retry policy', () => {
   function make(retries: number) {
     const cache = new BlockCache();
@@ -281,8 +285,11 @@ describe('retry policy', () => {
     ctx.transport.onResponse((adu) => [respExc(0x03, 0x02, tidOf(adu))]);
     await ctx.runtime.start();
     await new Promise((r) => setTimeout(r, 300));
+    const t0 = Date.now();
     const outcome = await ctx.runtime.temporaryRead(1, 3, 0, 4);
     expect(outcome.result).toBe('exception');
+    // exception response settles immediately: no waiting for the timeout budget
+    expect(Date.now() - t0).toBeLessThan(cfgTimeout());
     const txs = ctx.diag.recentTransactions(40).filter((t) => t.sourceKind === 'temporary-read');
     expect(txs.length).toBe(1);
     await ctx.runtime.stop();
@@ -297,5 +304,20 @@ describe('retry policy', () => {
     const fc06 = ctx.diag.recentTransactions(40).filter((t) => t.functionCode === 0x06);
     expect(fc06.length).toBe(1);
     await ctx.runtime.stop();
+  });
+});
+
+describe('resource release', () => {
+  it('stop() closes the transport (serial/socket released)', async () => {
+    const cache = new BlockCache();
+    const diag = new DiagnosticsStore();
+    const transport = new FakeTransport('tcp');
+    const runtime = new ConnectionRuntime({ config: conn, transport, cache, diagnostics: diag, hooks: { onChange: () => undefined, onState: () => undefined } });
+    runtime.configure([{ slave, block }]);
+    transport.onResponse((adu: Uint8Array) => [respRegs([1, 2, 3, 4], tidOf(adu))]);
+    await runtime.start();
+    expect(transport.connected).toBe(true);
+    await runtime.stop();
+    expect(transport.connected).toBe(false);
   });
 });

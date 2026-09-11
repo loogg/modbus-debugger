@@ -68,6 +68,7 @@ export interface AppSnapshot {
   sessions: SessionSummary[];
   warnings: string[];
   prefs: Prefs;
+  historyDbPath: string;
 }
 
 export interface AppDelta {

@@ -60,9 +60,6 @@ export class WorkspaceService {
     return this.prefs;
   }
 
-  defaultHistoryDbPath(): string {
-    return this.prefs.historyDbPath ?? path.join(this.userDataDir, 'history.db');
-  }
 
   /* ---------------- workspace io ---------------- */
 

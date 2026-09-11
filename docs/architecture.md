@@ -72,3 +72,15 @@ flowchart LR
 - 日志级别（连接级 logLevel）：
   - info：事务仅记录到应用内通信诊断（UI）。
   - debug：额外将每次 TX/RX 原始 ADU hex、Validator 判决、重试决策写入 electron-log（userData/logs/main.log）。
+
+
+### 日志与数据落盘位置（不使用系统盘）
+
+- 运行日志：<执行目录>/logs/main.log（打包版为 exe 所在目录；开发模式为项目目录）。执行目录不可写时禁用文件日志并告警，不回退到 %APPDATA%。
+- 历史数据库：默认 <执行目录>/data/history.db，可在设置中改到任意路径（prefs.historyDbPath）；设置页显示真实生效路径。
+- 工作区文件：用户显式选择的路径；自动保存为临时文件 + 原子替换。
+
+### 退出资源释放
+
+- before-quit 拦截退出 → await RuntimeManager.stop()：停止所有 Scheduler 定时器、结算 in-flight 请求、关闭串口（serialport.close）与 TCP socket、flush 并关闭 history.db、flush 工作区 → 然后 app.exit(0)。
+- 异常崩溃时由操作系统回收句柄；正常关闭路径保证优雅释放（集成测试覆盖 stop() 后 transport.connected === false）。

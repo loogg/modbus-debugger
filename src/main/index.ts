@@ -26,6 +26,18 @@ if (process.env.MODBUS_E2E === '1') {
   app.commandLine.appendSwitch('remote-debugging-port', '9222');
 }
 
+function execDir(): string {
+  return app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd();
+}
+
+// Logs live in the execution directory (never the system profile drive).
+const logDir = path.join(execDir(), 'logs');
+try {
+  fs.mkdirSync(logDir, { recursive: true });
+  log.transports.file.resolvePathFn = () => path.join(logDir, 'main.log');
+} catch {
+  log.transports.file.level = false;
+}
 log.initialize();
 log.info('app starting, userData =', app.getPath('userData'));
 
@@ -49,7 +61,8 @@ function clampToBounds(x: number, y: number, width: number, height: number): Ele
 
 async function createWindow(): Promise<void> {
   const wsSvc = new WorkspaceService(app.getPath('userData'));
-  const history = await HistoryStore.open(wsSvc.defaultHistoryDbPath());
+  const historyPath = wsSvc.getPrefs().historyDbPath ?? path.join(execDir(), 'data', 'history.db');
+  const history = await HistoryStore.open(historyPath);
   manager = new RuntimeManager(wsSvc, history);
   const loaded = wsSvc.loadFrom(process.env.MODBUS_E2E_WORKSPACE || null);
   log.info('workspace loaded:', loaded.ok, wsSvc.currentPath);
@@ -114,8 +127,14 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
-  if (manager) void manager.stop();
+let quitting = false;
+app.on('before-quit', (e) => {
+  if (quitting) return;
+  e.preventDefault();
+  quitting = true;
+  const done = () => app.exit(0);
+  if (manager) void manager.stop().then(done, done);
+  else done();
 });
 
 process.on('uncaughtException', (err) => {

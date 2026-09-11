@@ -87,6 +87,7 @@ export class RuntimeManager {
     this.timer = null;
     if (this.recording) this.stopRecording();
     for (const rt of this.runtimes.values()) await rt.stop();
+    this.history.close();
     this.runtimes.clear();
     this.workspaceService.flushAutosave();
   }
@@ -301,6 +302,7 @@ export class RuntimeManager {
       sessions: this.history.listSessions(),
       warnings: this.warnings,
       prefs: this.workspaceService.getPrefs(),
+      historyDbPath: this.history.dbPath,
     };
   }
 

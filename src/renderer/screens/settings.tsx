@@ -56,7 +56,7 @@ export function SettingsScreen() {
         <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           <div>
             <div className="text-xs text-ink2 mb-1">历史数据库</div>
-            <div className="text-sm mono break-all">D:/ModbusStudio/history.db</div>
+            <div className="text-sm mono break-all">{snapshot.historyDbPath}</div>
           </div>
           <div>
             <div className="text-xs text-ink2 mb-1">记录方式</div>

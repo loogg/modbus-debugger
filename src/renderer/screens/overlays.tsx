@@ -14,7 +14,7 @@ export function Overlays() {
   if (!overlay) return null;
   switch (overlay.kind) {
     case 'dialog':
-      if (overlay.id === 'add-connection') return <AddConnectionDialog />;
+      if (overlay.id === 'add-connection') return <AddConnectionDialog connectionId={overlay.connectionId} />;
       if (overlay.id === 'add-slave') return <AddSlaveDialog connectionId={overlay.connectionId} slaveId={overlay.slaveId} />;
       if (overlay.id === 'edit-block') return <EditBlockDialog templateId={overlay.templateId} blockId={overlay.blockId} />;
       if (overlay.id === 'new-trend-group') return <NewTrendGroupDialog />;
@@ -31,19 +31,20 @@ export function Overlays() {
   }
 }
 
-function AddConnectionDialog() {
+function AddConnectionDialog(props: { connectionId?: string }) {
+  const existingConn = useApp((s) => s.snapshot)?.workspace.connections.find((c) => c.id === props.connectionId);
   const snapshot = useApp((s) => s.snapshot);
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const toast = useApp((s) => s.toast);
   const [name, setName] = useState('生产线 RS485');
-  const [protocol, setProtocol] = useState<'rtu' | 'tcp'>('rtu');
-  const [port, setPort] = useState('COM3');
+  const [protocol, setProtocol] = useState<'rtu' | 'tcp'>(existingConn?.transport ?? 'rtu');
+  const [port, setPort] = useState(existingConn?.rtu?.port ?? 'COM3');
   const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
-  const [baud, setBaud] = useState('115200');
-  const [rts, setRts] = useState<'none' | 'toggle'>('none');
-  const [logLevel, setLogLevel] = useState<'info' | 'debug'>('info');
-  const [interFrame, setInterFrame] = useState('0');
+  const [baud, setBaud] = useState(String(existingConn?.rtu?.baudRate ?? 115200));
+  const [rts, setRts] = useState<'none' | 'toggle'>(existingConn?.rtsControl ?? 'none');
+  const [logLevel, setLogLevel] = useState<'info' | 'debug'>(existingConn?.logLevel ?? 'info');
+  const [interFrame, setInterFrame] = useState(String(existingConn?.interFrameMs ?? 0));
   const refreshPorts = () => {
     void command<{ path: string; manufacturer: string | null }[]>({ type: 'serial.list' }).then((res) => {
       if (res.ok) setPortOptions(res.value.map((p) => ({ value: p.path, label: p.manufacturer ? `${p.path} · ${p.manufacturer}` : p.path })));
@@ -52,15 +53,15 @@ function AddConnectionDialog() {
   const [dataBits, setDataBits] = useState('8');
   const [parity, setParity] = useState<'none' | 'even' | 'odd'>('none');
   const [stopBits, setStopBits] = useState('1');
-  const [host, setHost] = useState('192.168.1.50');
-  const [tcpPort, setTcpPort] = useState('502');
-  const [timeout, setTimeoutMs] = useState('500');
-  const [retries, setRetries] = useState('1');
-  const [reconnect, setReconnect] = useState<'auto' | 'manual'>('auto');
+  const [host, setHost] = useState(existingConn?.tcp?.host ?? '192.168.1.50');
+  const [tcpPort, setTcpPort] = useState(String(existingConn?.tcp?.port ?? 502));
+  const [timeout, setTimeoutMs] = useState(String(existingConn?.timeoutMs ?? 500));
+  const [retries, setRetries] = useState(String(existingConn?.retries ?? 1));
+  const [reconnect, setReconnect] = useState<'auto' | 'manual'>(existingConn?.reconnect ?? 'auto');
 
   const create = async () => {
     if (!snapshot) return;
-    const id = uid('conn');
+    const id = existingConn?.id ?? uid('conn');
     const conn = {
       id,
       name,
@@ -74,13 +75,16 @@ function AddConnectionDialog() {
       rtsControl: rts,
       logLevel,
     };
-    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, connections: [...snapshot.workspace.connections, conn] } });
-    toast({ kind: 'success', title: '连接已创建', message: '可继续添加从站。' });
+    const connections = existingConn
+      ? snapshot.workspace.connections.map((c) => (c.id === existingConn.id ? conn : c))
+      : [...snapshot.workspace.connections, conn];
+    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, connections } });
+    toast({ kind: 'success', title: existingConn ? '连接已更新' : '连接已创建', message: existingConn ? '参数已应用到运行时。' : '可继续添加从站。' });
     close();
   };
 
   return (
-    <Dialog title="添加连接" subtitle="配置 RTU / TCP 通信参数。" width={660} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" onClick={() => void create()}>创建连接</Button></>}>
+    <Dialog title={existingConn ? '编辑连接' : '添加连接'} subtitle="配置 RTU / TCP 通信参数。" width={660} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" onClick={() => void create()}>{existingConn ? '保存修改' : '创建连接'}</Button></>}>
       <Field label="连接名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
       <div className="mt-4">
         <div className="text-xs text-ink2 mb-1.5">协议</div>
@@ -115,7 +119,7 @@ function AddConnectionDialog() {
         </div>
       )}
       <div className="mt-4 grid grid-cols-3 gap-4">
-        <Field label="超时"><TextInput value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
+        <Field label="超时"><TextInput data-testid="timeout-input" value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
         <Field label="重试"><TextInput value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
         <Field label="重连策略"><Select value={reconnect} onChange={(v) => setReconnect(v as typeof reconnect)} options={[{ value: 'auto', label: '自动重连' }, { value: 'manual', label: '手动' }]} /></Field>
       </div>

@@ -1,5 +1,15 @@
 import { browser, $, expect } from '@wdio/globals';
 
+/** Set a controlled input value through the native setter (React-safe). */
+async function setNative(selector: string, value: string): Promise<void> {
+  await browser.execute((sel, v) => {
+    const input = document.querySelector(sel) as HTMLInputElement | null;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, v);
+    input?.dispatchEvent(new Event('input', { bubbles: true }));
+  }, selector, value);
+  await browser.pause(200);
+}
 async function bodyText(): Promise<string> {
   return (await browser.execute(() => document.body.innerText)) as string;
 }
@@ -38,7 +48,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     await baudInput.click();
     await browser.pause(300);
     expect(await bodyText()).toContain('921600');
-    await baudInput.setValue('123456');
+    await setNative('input[data-testid="baud-combo"]', '123456');
     expect(await baudInput.getValue()).toBe('123456');
     const portInput = await $('//div[text()="串口"]/following-sibling::div//input');
     await portInput.click();
@@ -146,6 +156,25 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     expect(text).toContain('原始帧');
   });
 
+  it('编辑连接：修改参数并保存后生效', async () => {
+    await rail('设备');
+    await browser.execute(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').trim() === '取消'); (b as HTMLElement | undefined)?.click(); });
+    await browser.pause(400);
+    await clickText('编辑');
+    const text = await bodyText();
+    expect(text).toContain('编辑连接');
+    const timeoutSel = 'input[data-testid="timeout-input"]';
+    const tInput = await $(timeoutSel);
+    expect(await tInput.getValue()).toBe('800');
+    await setNative(timeoutSel, '700');
+    await clickText('保存修改');
+    await waitGone('编辑连接');
+    await clickText('编辑');
+    expect(await (await $(timeoutSel)).getValue()).toBe('700');
+    await setNative(timeoutSel, '800');
+    await clickText('保存修改');
+    await waitGone('编辑连接');
+  });
   it('设置页：工作区文件 / 地址规则 / 记录与历史 / 写入安全', async () => {
     await rail('设置');
     const text = await bodyText();
