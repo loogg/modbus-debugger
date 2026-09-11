@@ -30,7 +30,7 @@ const settle = async (ms = 200) => {
 afterEach(() => cleanup());
 
 describe('ComboInput dropdown lifecycle', () => {
-  it('opens on focus and re-enumerates through onOpen every time it opens', () => {
+  it('opens on focus and re-enumerates through onOpen every time it opens', async () => {
     const onOpen = vi.fn();
     render(<Harness onOpen={onOpen} />);
     expect(listOpen()).toBe(false);
@@ -41,7 +41,13 @@ describe('ComboInput dropdown lifecycle', () => {
     fireEvent.click(screen.getByText('9600'));
     expect(input().value).toBe('9600');
     expect(listOpen()).toBe(false);
-    // clicking the already-focused field must reopen it (focus does not fire again)
+    // a real mouse selection makes Chrome retarget a second click onto the input; that click
+    // must NOT reopen the list we just closed (the "dropdown stuck open" bug)
+    fireEvent.click(input());
+    expect(listOpen()).toBe(false);
+    // once the suppression window passes, clicking the already-focused field reopens it
+    // (focus does not fire again, so the list has to reopen on click as well)
+    await settle(250);
     fireEvent.click(input());
     expect(listOpen()).toBe(true);
     expect(onOpen).toHaveBeenCalledTimes(2);
@@ -126,6 +132,32 @@ describe('ComboInput dropdown lifecycle', () => {
     fireEvent.click(chevron);
     expect(listOpen()).toBe(true);
     fireEvent.click(chevron);
+    expect(listOpen()).toBe(false);
+  });
+
+  it('opening from the chevron while the input is focused survives the blur grace timer', async () => {
+    render(<Harness />);
+    fireEvent.focus(input());
+    fireEvent.click(screen.getByText('9600')); // closes; input keeps focus
+    expect(listOpen()).toBe(false);
+    await settle(250); // past the reopen-suppression window
+
+    // real chevron click: the input blurs towards the chevron first, then the click opens
+    const chevron = screen.getByLabelText('展开选项');
+    fireEvent.blur(input(), { relatedTarget: chevron });
+    fireEvent.click(chevron);
+    expect(listOpen()).toBe(true);
+    // the old blur grace timer used to close this list ~120 ms later
+    await settle(250);
+    expect(listOpen()).toBe(true);
+  });
+
+  it('still closes on blur when focus leaves the combobox entirely', async () => {
+    render(<Harness />);
+    fireEvent.focus(input());
+    expect(listOpen()).toBe(true);
+    fireEvent.blur(input(), { relatedTarget: screen.getByTestId('other') });
+    await settle(250);
     expect(listOpen()).toBe(false);
   });
 });

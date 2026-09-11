@@ -386,6 +386,16 @@ export function ComboInput(props: {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
   const blurTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // After a real mouse selection Chrome retargets a second click onto the input (the option
+  // node unmounts while the click is dispatching). Without this guard the input's
+  // reopen-on-click handler would immediately reopen the list we just closed, so the dropdown
+  // appeared "stuck open" until the user clicked elsewhere. Synthetic clicks never produce the
+  // retargeted event, which is why only real usage hit it.
+  const reopenBlockedUntil = React.useRef(0);
+  const blockReopen = React.useCallback(() => {
+    reopenBlockedUntil.current = Date.now() + 200;
+  }, []);
+  const reopenBlocked = React.useCallback(() => Date.now() < reopenBlockedUntil.current, []);
   React.useEffect(() => {
     if (open) openComboLists += 1;
     return () => {
@@ -419,6 +429,8 @@ export function ComboInput(props: {
         onChange={(e) => props.onChange(e.target.value)}
         onFocus={() => {
           if (blurTimer.current) clearTimeout(blurTimer.current);
+          blurTimer.current = null;
+          if (reopenBlocked()) return;
           props.onOpen?.();
           setOpen(true);
         }}
@@ -426,14 +438,21 @@ export function ComboInput(props: {
           // focus does not fire again when the field is already focused (e.g. right after
           // picking an option), so the list has to reopen on click as well.
           if (blurTimer.current) clearTimeout(blurTimer.current);
+          blurTimer.current = null;
+          if (reopenBlocked()) return;
           if (!open) {
             props.onOpen?.();
             setOpen(true);
           }
         }}
-        onBlur={() => {
+        onBlur={(e) => {
           // small grace period so an option click (mousedown prevented) still lands
           if (blurTimer.current) clearTimeout(blurTimer.current);
+          blurTimer.current = null;
+          // focus moving to our own chevron is not "leaving" the combobox: the grace timer
+          // would otherwise close a list the chevron click is about to open
+          const next = e.relatedTarget as Node | null;
+          if (next && ref.current && ref.current.contains(next)) return;
           blurTimer.current = setTimeout(() => setOpen(false), 120);
         }}
         onKeyDown={(e) => {
@@ -450,6 +469,8 @@ export function ComboInput(props: {
             closeList();
             return;
           }
+          if (blurTimer.current) clearTimeout(blurTimer.current);
+          blurTimer.current = null;
           props.onOpen?.();
           setOpen(true);
         }}
@@ -467,6 +488,7 @@ export function ComboInput(props: {
               className={`focus-ring outline-none ${dropdownOptionClass} ${o.value === props.value ? 'bg-accentsoft font-medium text-accent' : ''}`}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
+                blockReopen();
                 props.onChange(o.value);
                 closeList();
               }}

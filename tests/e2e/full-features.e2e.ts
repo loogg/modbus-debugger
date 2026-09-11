@@ -292,10 +292,9 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     );
     expect(labels.length).toBeGreaterThanOrEqual(1);
     const label = labels.find((x) => x !== prefilled) ?? labels[0]!;
-    await browser.execute((target) => {
-      const el = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === target);
-      (el as HTMLElement | undefined)?.click();
-    }, label);
+    // a REAL mouse click: synthetic el.click() never produces the second, retargeted click
+    // Chrome dispatches onto the input after the option node unmounts mid-click
+    await (await $(`//button[normalize-space(.)="${label}"]`)).click();
     await browser.pause(400);
 
     // value applied and the list is gone
@@ -335,10 +334,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     await (await $(baud)).click();
     await browser.pause(300);
     expect(await listOpen()).toBe(true);
-    await browser.execute(() => {
-      const opt = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === '19200');
-      (opt as HTMLElement | undefined)?.click();
-    });
+    await (await $('//button[normalize-space(.)="19200"]')).click();
     await browser.pause(300);
     expect(await (await $(baud)).getValue()).toBe('19200');
     expect(await listOpen()).toBe(false);
@@ -374,6 +370,12 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     });
     await browser.pause(300);
     expect(await listOpen()).toBe(false);
+
+    // 5) real chevron click while the field is focused: the blur stays inside the combobox,
+    //    so the list opens and STAYS open (the old blur grace timer closed it ~120 ms later)
+    await (await $('//input[@data-testid="baud-combo"]/following-sibling::button[1]')).click();
+    await browser.pause(400);
+    expect(await listOpen()).toBe(true);
 
     await clickText('取消');
     await waitGone('配置 RTU / TCP 通信参数');
