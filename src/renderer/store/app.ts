@@ -13,6 +13,8 @@ import type { Prefs } from '../../main/services/workspace';
 import type { SessionSummary } from '../../main/services/history';
 import type { Command, CommandResult } from '../../shared/commands';
 import type { ModbusApi } from '../../shared/preload-api';
+import { setDisplayTimeZone } from '../time';
+import { applyLanguage } from '../i18n';
 
 export type ModuleId = 'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates' | 'settings';
 
@@ -152,6 +154,8 @@ export const useApp = create<AppState>((set, get) => ({
 
   init: async (api) => {
     const snapshot = await api.getSnapshot();
+    setDisplayTimeZone(snapshot.prefs.timezone);
+    applyLanguage(snapshot.prefs.language);
     set({ api, snapshot, sidebarWidth: snapshot.prefs.sidebarWidth || 244 });
     api.onDelta((d) => get().applyDelta(d));
   },
@@ -187,6 +191,13 @@ export const useApp = create<AppState>((set, get) => ({
       warnings: d.warnings ?? prev.warnings,
       prefs: d.prefs ?? prev.prefs,
     };
+    // Display prefs must be applied before the transactions branch below: that branch
+    // early-returns, and while polling a prefs.set delta is routinely bundled with new
+    // transactions. Applying it late silently dropped timezone/language changes.
+    if (d.prefs) {
+      setDisplayTimeZone(d.prefs.timezone);
+      applyLanguage(d.prefs.language);
+    }
     // derive transient write states from newly appended transactions
     if (d.transactions) {
       const hasWriteTx = d.transactions.some((t) => t.sourceKind === 'write' || t.sourceKind === 'readback');

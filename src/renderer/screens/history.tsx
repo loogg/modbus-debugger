@@ -3,7 +3,9 @@ import { useApp, useSessions, useSnapshotReady } from '../store/app';
 import { Button, InfoBand, PageHeader, StatusDot, Tabs } from '../components/ui';
 import { NumericChart, type LineSeries } from '../components/chart';
 import { StateTrack } from '../components/state-track';
+import { fmtDateTime, fmtEpochDateTime } from '../time';
 import { DataTable, type Column } from '../components/table';
+import { useTranslation } from '../i18n';
 
 interface SessionSchemaEntry {
   signalId: string;
@@ -36,6 +38,9 @@ interface SessionData {
 const COLORS = ['#0078D4', '#D97706', '#178A4D', '#7A5AF8', '#C42B1C', '#0E7C86'];
 
 export function HistoryScreen() {
+  const { t } = useTranslation();
+  const kindLabel = (kind: string): string =>
+    kind === 'write' ? t('history.kindWrite') : kind === 'bool' ? 'Bool' : kind === 'enum' ? 'Enum' : kind === 'string' ? 'String' : kind === 'connection' ? t('history.kindConnection') : kind;
   const sessions = useSessions();
   const ready = useSnapshotReady();
   const selection = useApp((s) => s.selection);
@@ -98,8 +103,8 @@ export function HistoryScreen() {
   if (!session || !data) {
     return (
       <>
-        <PageHeader title="历史" subtitle="回放主动记录的会话" />
-        <InfoBand tone="blue">还没有记录会话。在趋势模块选择趋势组后点击“开始记录”。</InfoBand>
+        <PageHeader title={t('history.title')} subtitle={t('history.subtitle')} />
+        <InfoBand tone="blue">{t('history.empty')}</InfoBand>
       </>
     );
   }
@@ -112,7 +117,7 @@ export function HistoryScreen() {
     for (const s of data.samples) lines.push(`${s.signalId},${s.tMs},${s.value}`);
     for (const e of data.events) lines.push(`${e.signalId},${e.tMs},"${e.value}"`);
     void navigator.clipboard.writeText(lines.join('\n'));
-    toast({ kind: 'success', title: 'CSV 已复制到剪贴板' });
+    toast({ kind: 'success', title: t('history.csvToast') });
   };
 
   if (replay) {
@@ -120,13 +125,13 @@ export function HistoryScreen() {
     return (
       <>
         <PageHeader
-          title={`${data.detail.groupName} · 空载测试`}
-          subtitle={`离线回放 · ${data.detail.startUtc.replace('T', ' ').slice(0, 19)}`}
-          actions={<Button onClick={() => setReplay(false)}>返回历史</Button>}
+          title={t('history.replayTitle', { name: data.detail.groupName })}
+          subtitle={t('history.replaySubtitle', { time: fmtDateTime(data.detail.startUtc) })}
+          actions={<Button onClick={() => setReplay(false)}>{t('history.backToHistory')}</Button>}
         />
         <div className="mb-4 flex items-center gap-4 rounded-card bg-surface2 px-4 py-3">
-          <Button variant="primary" size="sm" onClick={() => setPlaying(!playing)}>{playing ? '暂停' : '▶ 播放'}</Button>
-          <span className="text-xs text-ink2">速度</span>
+          <Button variant="primary" size="sm" onClick={() => setPlaying(!playing)}>{playing ? t('history.pause') : t('history.play')}</Button>
+          <span className="text-xs text-ink2">{t('history.speed')}</span>
           <select className="focus-ring h-8 rounded-ctl border border-line bg-surface px-2 text-xs" value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
             <option value={1}>1 ×</option>
             <option value={2}>2 ×</option>
@@ -134,16 +139,16 @@ export function HistoryScreen() {
           </select>
           <span className="text-xs mono">{fmt(cursorMs)} / {fmt(total)}</span>
           <input type="range" min={0} max={total} value={cursorMs} onChange={(e) => setCursorMs(Number(e.target.value))} className="flex-1 accent-[#0078D4]" />
-          <button className="focus-ring cursor-pointer text-xs text-accent" onClick={() => jumpEvent(data, cursorMs, -1, setCursorMs)}>上一事件</button>
-          <button className="focus-ring cursor-pointer text-xs text-accent" onClick={() => jumpEvent(data, cursorMs, 1, setCursorMs)}>下一事件</button>
+          <button className="focus-ring cursor-pointer text-xs text-accent" onClick={() => jumpEvent(data, cursorMs, -1, setCursorMs)}>{t('history.prevEvent')}</button>
+          <button className="focus-ring cursor-pointer text-xs text-accent" onClick={() => jumpEvent(data, cursorMs, 1, setCursorMs)}>{t('history.nextEvent')}</button>
         </div>
         <div className="rounded-card border border-line bg-surface p-4 relative">
-          <NumericChart series={series.map((s) => ({ ...s, data: s.data.filter(([t]) => t <= cursorMs) }))} height={280} startMs={0} endMs={total} />
+          <NumericChart xMode="duration" series={series.map((s) => ({ ...s, data: s.data.filter(([t]) => t <= cursorMs) }))} height={280} startMs={0} endMs={total} />
           <div className="text-center text-xs text-[#7A5AF8] mono">{fmt(cursorMs)}</div>
         </div>
         <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
           <div>
-            <div className="text-sm font-bold mb-3">游标时刻数据</div>
+            <div className="text-sm font-bold mb-3">{t('history.cursorData')}</div>
             <div className="rounded-card border border-line bg-surface">
               {schema.map((s) => {
                 const samples = data.samples.filter((x) => x.signalId === s.signalId && x.tMs <= cursorMs);
@@ -159,7 +164,7 @@ export function HistoryScreen() {
             </div>
           </div>
           <div>
-            <div className="text-sm font-bold mb-3">事件与通信</div>
+            <div className="text-sm font-bold mb-3">{t('history.eventsAndComm')}</div>
             <div className="rounded-card border border-line bg-surface px-4 py-2">
               {cursorEvents.slice(-8).map((e, i) => (
                 <div key={i} className="flex gap-4 border-b border-[#E7EAEE] py-2 text-xs last:border-0">
@@ -168,56 +173,56 @@ export function HistoryScreen() {
                   <span className="flex-1">{e.value}</span>
                 </div>
               ))}
-              {data.rawComm.length ? <div className="py-2 text-xs text-ink2">原始通信 {data.rawComm.length} 条已记录</div> : null}
+              {data.rawComm.length ? <div className="py-2 text-xs text-ink2">{t('history.rawCommCount', { n: data.rawComm.length })}</div> : null}
             </div>
           </div>
         </div>
         <InfoBand tone="blue" className="mt-6">
-          <div className="text-sm font-bold text-accent">回放</div>
-          <div className="text-xs mt-1"><StatusDot tone="accent" label="离线 · 不需要设备连接" /></div>
-          <div className="text-xs text-ink2 mt-1"><StatusDot tone="ok" label={data.rawComm.length ? '此会话已记录原始通信' : '此会话未记录原始通信'} /></div>
+          <div className="text-sm font-bold text-accent">{t('history.replay')}</div>
+          <div className="text-xs mt-1"><StatusDot tone="accent" label={t('history.offlineNoDevice')} /></div>
+          <div className="text-xs text-ink2 mt-1"><StatusDot tone="ok" label={data.rawComm.length ? t('history.rawCommRecorded') : t('history.rawCommNotRecorded')} /></div>
         </InfoBand>
       </>
     );
   }
 
   const signalCols: Array<Column<(typeof schema)[number]>> = [
-    { id: 'name', header: '信号', width: 180, render: (r) => <span className="font-medium">{r.pointName}</span> },
-    { id: 'type', header: '类型', width: 100, render: (r) => <span className="text-xs text-ink2">{r.rawType}</span> },
-    { id: 'source', header: '来源', width: 260, render: (r) => <span className="text-xs text-ink2">{r.slaveName} / {r.blockName}</span> },
-    { id: 'mode', header: '记录方式', width: 160, render: (r) => <span className="text-xs">{r.recordMode === 'samples' ? '连续样本' : '初始值 + 变化'}</span> },
+    { id: 'name', header: t('history.colSignal'), width: 180, render: (r) => <span className="font-medium">{r.pointName}</span> },
+    { id: 'type', header: t('history.colType'), width: 100, render: (r) => <span className="text-xs text-ink2">{r.rawType}</span> },
+    { id: 'source', header: t('history.colSource'), width: 260, render: (r) => <span className="text-xs text-ink2">{r.slaveName} / {r.blockName}</span> },
+    { id: 'mode', header: t('history.colRecordMode'), width: 160, render: (r) => <span className="text-xs">{r.recordMode === 'samples' ? t('history.modeSamples') : t('history.modeEvents')}</span> },
   ];
 
   const eventCols: Array<Column<(typeof data.events)[number]>> = [
-    { id: 't', header: '时间', width: 100, render: (r) => <span className="mono text-xs text-ink2">{fmt(r.tMs)}</span> },
-    { id: 'kind', header: '类型', width: 80, render: (r) => <span className={`text-xs ${kindColor(r.kind)}`}>{kindLabel(r.kind)}</span> },
-    { id: 'value', header: '内容', width: 420, render: (r) => <span className="text-sm">{r.value}</span> },
-    { id: 'result', header: '结果', width: 100, render: (r) => (r.kind === 'write' ? <span className="text-xs text-ok">成功</span> : null) },
+    { id: 't', header: t('history.colTime'), width: 100, render: (r) => <span className="mono text-xs text-ink2">{fmt(r.tMs)}</span> },
+    { id: 'kind', header: t('history.colType'), width: 80, render: (r) => <span className={`text-xs ${kindColor(r.kind)}`}>{kindLabel(r.kind)}</span> },
+    { id: 'value', header: t('history.colContent'), width: 420, render: (r) => <span className="text-sm">{r.value}</span> },
+    { id: 'result', header: t('history.colResult'), width: 100, render: (r) => (r.kind === 'write' ? <span className="text-xs text-ok">{t('history.writeOk')}</span> : null) },
   ];
 
   const sampleRows = data.samples.slice(0, 500);
   const sampleCols: Array<Column<(typeof sampleRows)[number]>> = [
-    { id: 't', header: '时间', width: 110, render: (r) => <span className="mono text-xs">{fmt(r.tMs)}</span> },
-    { id: 'signal', header: '信号', width: 180, render: (r) => schema.find((s) => s.signalId === r.signalId)?.pointName ?? r.signalId },
-    { id: 'value', header: '值', width: 160, render: (r) => <span className="mono">{r.value}</span> },
-    { id: 'unit', header: '单位', width: 80, render: (r) => schema.find((s) => s.signalId === r.signalId)?.unit ?? '' },
+    { id: 't', header: t('history.colTime'), width: 110, render: (r) => <span className="mono text-xs">{fmt(r.tMs)}</span> },
+    { id: 'signal', header: t('history.colSignal'), width: 180, render: (r) => schema.find((s) => s.signalId === r.signalId)?.pointName ?? r.signalId },
+    { id: 'value', header: t('history.colValue'), width: 160, render: (r) => <span className="mono">{r.value}</span> },
+    { id: 'unit', header: t('history.colUnit'), width: 80, render: (r) => schema.find((s) => s.signalId === r.signalId)?.unit ?? '' },
   ];
 
   return (
     <>
       <PageHeader
         title={`${data.detail.groupName}`}
-        subtitle={`${data.detail.startUtc.replace('T', ' ').slice(0, 19)} – ${data.detail.endUtc ? data.detail.endUtc.replace('T', ' ').slice(0, 19) : '…'} · ${schema.length} 个信号`}
+        subtitle={t('history.headerSubtitle', { start: fmtDateTime(data.detail.startUtc), end: data.detail.endUtc ? fmtDateTime(data.detail.endUtc) : '…', n: schema.length })}
         actions={
           <>
-            <Button variant="quiet" onClick={() => { setReplay(true); setCursorMs(0); }}>回放</Button>
-            <Button onClick={() => toast({ kind: 'info', title: '备注功能：会话备注保存在 history.db' })}>添加备注</Button>
-            <Button variant="primary" onClick={exportCsv}>导出 CSV</Button>
+            <Button variant="quiet" onClick={() => { setReplay(true); setCursorMs(0); }}>{t('history.replay')}</Button>
+            <Button onClick={() => toast({ kind: 'info', title: t('history.noteToast') })}>{t('history.addNote')}</Button>
+            <Button variant="primary" onClick={exportCsv}>{t('history.exportCsv')}</Button>
           </>
         }
       />
       <Tabs
-        tabs={[{ id: 'trend', label: '趋势' }, { id: 'events', label: '状态与事件' }, { id: 'data', label: '数据' }, { id: 'signals', label: '信号' }]}
+        tabs={[{ id: 'trend', label: t('history.tabTrend') }, { id: 'events', label: t('history.tabEvents') }, { id: 'data', label: t('history.tabData') }, { id: 'signals', label: t('history.tabSignals') }]}
         active={selection.historyTab}
         onChange={(id) => select({ historyTab: id as typeof selection.historyTab })}
       />
@@ -231,19 +236,19 @@ export function HistoryScreen() {
               </span>
             ))}
             <div className="flex-1" />
-            <span className="text-xs text-ink2">纵轴：按单位独立</span>
-            <span className="text-xs text-ink2">时间范围：全部</span>
+            <span className="text-xs text-ink2">{t('history.axisNote')}</span>
+            <span className="text-xs text-ink2">{t('history.rangeAll')}</span>
           </div>
           <div className="rounded-card border border-line bg-surface p-4">
-            <NumericChart series={series} height={300} startMs={0} endMs={total} />
+            <NumericChart xMode="duration" series={series} height={300} startMs={0} endMs={total} />
           </div>
           <div className="mt-6 rounded-card bg-surface2 p-5">
-            <div className="text-sm font-bold mb-3">会话信息与事件</div>
+            <div className="text-sm font-bold mb-3">{t('history.sessionInfo')}</div>
             <div className="grid grid-cols-2 gap-6 md:grid-cols-4 text-sm mb-4">
-              <div><div className="text-xs text-ink2 mb-1">记录点位</div>{schema.length}</div>
-              <div><div className="text-xs text-ink2 mb-1">采样数</div>{data.detail.sampleCount.toLocaleString()}</div>
-              <div><div className="text-xs text-ink2 mb-1">存储</div>SQLite · {(data.detail.sizeBytes / 1e6).toFixed(1)} MB</div>
-              <div><div className="text-xs text-ink2 mb-1">事件数</div>{data.detail.eventCount}</div>
+              <div><div className="text-xs text-ink2 mb-1">{t('history.recordedPoints')}</div>{schema.length}</div>
+              <div><div className="text-xs text-ink2 mb-1">{t('history.sampleCount')}</div>{data.detail.sampleCount.toLocaleString()}</div>
+              <div><div className="text-xs text-ink2 mb-1">{t('history.storage')}</div>SQLite · {(data.detail.sizeBytes / 1e6).toFixed(1)} MB</div>
+              <div><div className="text-xs text-ink2 mb-1">{t('history.eventCount')}</div>{data.detail.eventCount}</div>
             </div>
             <DataTable columns={eventCols} rows={data.events.slice(0, 50)} rowKey={(r, i) => `${r.tMs}-${i}`} maxHeight={260} />
           </div>
@@ -259,6 +264,7 @@ export function HistoryScreen() {
               return (
                 <StateTrack
                   key={s.signalId}
+                  xMode="duration"
                   kind={kind}
                   label={s.pointName}
                   sublabel={kind === 'bool' ? 'Bool' : kind}
@@ -281,12 +287,12 @@ export function HistoryScreen() {
       {selection.historyTab === 'data' && <DataTable columns={sampleCols} rows={sampleRows} rowKey={(r, i) => `${r.tMs}-${r.signalId}-${i}`} maxHeight={520} />}
       {selection.historyTab === 'signals' && (
         <>
-          <div className="text-sm font-bold mb-1">记录信号</div>
-          <div className="text-xs text-ink2 mb-3">开始记录时冻结的信号与编码配置（Schema Snapshot，模板后续修改不影响本会话）</div>
+          <div className="text-sm font-bold mb-1">{t('history.recordedSignals')}</div>
+          <div className="text-xs text-ink2 mb-3">{t('history.recordedSignalsHint')}</div>
           <DataTable columns={signalCols} rows={schema} rowKey={(r) => r.signalId} />
         </>
       )}
-      <div className="mt-4 text-xs text-ink2">会话开始于 {new Date(startMs).toLocaleString('zh-CN')}</div>
+      <div className="mt-4 text-xs text-ink2">{t('history.sessionStartedAt', { time: fmtEpochDateTime(startMs) })}</div>
     </>
   );
 }
@@ -300,9 +306,6 @@ function fmt(ms: number): string {
   const s = Math.floor(ms / 1000);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
-}
-function kindLabel(kind: string): string {
-  return kind === 'write' ? '写入' : kind === 'bool' ? 'Bool' : kind === 'enum' ? 'Enum' : kind === 'string' ? 'String' : kind === 'connection' ? '连接' : kind;
 }
 function kindColor(kind: string): string {
   return kind === 'write' ? 'text-accent' : kind === 'bool' ? 'text-warn' : kind === 'enum' ? 'text-warn' : kind === 'string' ? 'text-[#7A5AF8]' : kind === 'connection' ? 'text-err' : 'text-ink2';

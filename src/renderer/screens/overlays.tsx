@@ -7,6 +7,7 @@ import { findBlockOverlaps } from '../../domain/overlap';
 import { registersForType, type RawType } from '../../domain/mapping';
 import { engineeringToRaw } from '../../domain/scale';
 import type { BlockDef, PointDef } from '../../domain/model';
+import { useTranslation } from '../i18n';
 
 const uid = (p: string) => `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -33,12 +34,13 @@ export function Overlays() {
 }
 
 function AddConnectionDialog(props: { connectionId?: string }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const existingConn = workspace?.connections.find((c) => c.id === props.connectionId);
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const toast = useApp((s) => s.toast);
-  const [name, setName] = useState(existingConn?.name ?? '生产线 RS485');
+  const [name, setName] = useState(existingConn?.name ?? t('overlays.defaultConnName'));
   const [protocol, setProtocol] = useState<'rtu' | 'tcp'>(existingConn?.transport ?? 'rtu');
   const [port, setPort] = useState(existingConn?.rtu?.port ?? '');
   const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
@@ -95,15 +97,15 @@ function AddConnectionDialog(props: { connectionId?: string }) {
       ? workspace.connections.map((c) => (c.id === existingConn.id ? conn : c))
       : [...workspace.connections, conn];
     await command({ type: 'workspace.apply', workspace: { ...workspace, connections } });
-    toast({ kind: 'success', title: existingConn ? '连接已更新' : '连接已创建', message: existingConn ? '参数已应用到运行时。' : '可继续添加从站。' });
+    toast({ kind: 'success', title: existingConn ? t('overlays.toastConnUpdated') : t('overlays.toastConnCreated'), message: existingConn ? t('overlays.toastConnUpdatedMsg') : t('overlays.toastConnCreatedMsg') });
     close();
   };
 
   return (
-    <Dialog title={existingConn ? '编辑连接' : '添加连接'} subtitle="配置 RTU / TCP 通信参数。" width={660} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" onClick={() => void create()}>{existingConn ? '保存修改' : '创建连接'}</Button></>}>
-      <Field label="连接名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+    <Dialog title={existingConn ? t('overlays.editConnTitle') : t('overlays.addConnTitle')} subtitle={t('overlays.connSubtitle')} width={660} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={() => void create()}>{existingConn ? t('overlays.saveChanges') : t('overlays.createConn')}</Button></>}>
+      <Field label={t('overlays.fieldName')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
       <div className="mt-4">
-        <div className="text-xs text-ink2 mb-1.5">协议</div>
+        <div className="text-xs text-ink2 mb-1.5">{t('overlays.protocol')}</div>
         <div className="grid grid-cols-2 rounded-ctl bg-accentsoft p-1 text-sm">
           {(['rtu', 'tcp'] as const).map((p) => (
             <button key={p} className={`focus-ring cursor-pointer rounded py-2 font-medium ${protocol === p ? 'bg-surface text-accent shadow-sm' : 'text-ink2'}`} onClick={() => setProtocol(p)}>
@@ -115,7 +117,7 @@ function AddConnectionDialog(props: { connectionId?: string }) {
       {protocol === 'rtu' ? (
         <>
           <div className="mt-4 grid grid-cols-2 gap-4">
-            <Field label="串口" hint="打开下拉时重新枚举当前可用串口，也可直接输入">
+            <Field label={t('overlays.fieldPort')} hint={t('overlays.portHint')}>
               <ComboInput
                 testId="port-combo"
                 value={port}
@@ -128,40 +130,41 @@ function AddConnectionDialog(props: { connectionId?: string }) {
                 placeholder="COM1"
               />
             </Field>
-            <Field label="波特率" hint="支持自定义波特率输入">
+            <Field label={t('overlays.fieldBaud')} hint={t('overlays.baudHint')}>
               <ComboInput testId="baud-combo" value={baud} onChange={(v) => setBaud(v)} options={BAUD_PRESETS} />
             </Field>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-4">
-            <Field label="数据位"><Select value={dataBits} onChange={setDataBits} options={[{ value: '8', label: '8' }, { value: '7', label: '7' }]} /></Field>
-            <Field label="校验"><Select value={parity} onChange={(v) => setParity(v as typeof parity)} options={[{ value: 'none', label: 'None' }, { value: 'even', label: 'Even' }, { value: 'odd', label: 'Odd' }]} /></Field>
-            <Field label="停止位"><Select value={stopBits} onChange={setStopBits} options={[{ value: '1', label: '1' }, { value: '2', label: '2' }]} /></Field>
+            <Field label={t('overlays.fieldDataBits')}><Select value={dataBits} onChange={setDataBits} options={[{ value: '8', label: '8' }, { value: '7', label: '7' }]} /></Field>
+            <Field label={t('overlays.fieldParity')}><Select value={parity} onChange={(v) => setParity(v as typeof parity)} options={[{ value: 'none', label: 'None' }, { value: 'even', label: 'Even' }, { value: 'odd', label: 'Odd' }]} /></Field>
+            <Field label={t('overlays.fieldStopBits')}><Select value={stopBits} onChange={setStopBits} options={[{ value: '1', label: '1' }, { value: '2', label: '2' }]} /></Field>
           </div>
         </>
       ) : (
         <div className="mt-4 grid grid-cols-2 gap-4">
-          <Field label="主机"><TextInput value={host} onChange={(e) => setHost(e.target.value)} /></Field>
-          <Field label="端口"><TextInput value={tcpPort} onChange={(e) => setTcpPort(e.target.value)} /></Field>
+          <Field label={t('overlays.fieldHost')}><TextInput value={host} onChange={(e) => setHost(e.target.value)} /></Field>
+          <Field label={t('overlays.fieldTcpPort')}><TextInput value={tcpPort} onChange={(e) => setTcpPort(e.target.value)} /></Field>
         </div>
       )}
       <div className="mt-4 grid grid-cols-3 gap-4">
-        <Field label="超时"><TextInput data-testid="timeout-input" value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
-        <Field label="重试"><TextInput value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
-        <Field label="重连策略"><Select value={reconnect} onChange={(v) => setReconnect(v as typeof reconnect)} options={[{ value: 'auto', label: '自动重连' }, { value: 'manual', label: '手动' }]} /></Field>
+        <Field label={t('overlays.fieldTimeout')}><TextInput data-testid="timeout-input" value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
+        <Field label={t('overlays.retries')}><TextInput value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
+        <Field label={t('overlays.fieldReconnect')}><Select value={reconnect} onChange={(v) => setReconnect(v as typeof reconnect)} options={[{ value: 'auto', label: t('overlays.reconnectAuto') }, { value: 'manual', label: t('overlays.reconnectManual') }]} /></Field>
       </div>
       <InfoBand tone="blue" className="mt-5">
-        <div className="text-sm font-bold text-accent mb-1">创建后</div>
-        <div className="text-sm">创建连接后可继续添加从站。</div>
+        <div className="text-sm font-bold text-accent mb-1">{t('overlays.afterCreate')}</div>
+        <div className="text-sm">{t('overlays.afterCreateBody')}</div>
       </InfoBand>
       <div className="mt-5 grid grid-cols-3 gap-4">
-        <Field label="帧间隔 (ms)"><TextInput type="number" value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
-        <Field label="RTS 控制"><Select value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
-        <Field label="日志级别"><Select value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
+        <Field label={t('overlays.fieldInterFrame')}><TextInput type="number" value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
+        <Field label={t('overlays.fieldRts')}><Select value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
+        <Field label={t('overlays.fieldLogLevel')}><Select value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
       </div>
     </Dialog>
   );
 }
 function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
@@ -175,7 +178,7 @@ function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
     while (used.has(n) && n < 247) n += 1;
     return n;
   })();
-  const [name, setName] = useState(existing?.name ?? ('从站 ' + String(nextUnit)));
+  const [name, setName] = useState(existing?.name ?? t('overlays.slaveDefaultName', { unit: String(nextUnit) }));
   const [unit, setUnit] = useState(String(existing?.unitId ?? nextUnit));
   const [templateId, setTemplateId] = useState(existing?.templateId ?? workspace?.templates[0]?.id ?? '');
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
@@ -195,59 +198,60 @@ function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
   };
 
   return (
-    <Dialog title={existing ? '编辑从站' : '添加从站'} subtitle={conn?.name ?? ''} width={660} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" disabled={conflict} onClick={() => void save()}>{existing ? '保存从站' : '添加从站'}</Button></>}>
-      <Field label="所属连接"><TextInput readOnly value={`${conn?.name ?? ''} · ${conn?.transport === 'rtu' ? `${conn.rtu?.baudRate} ${conn.rtu?.dataBits}${conn.rtu?.parity.charAt(0).toUpperCase()}${conn.rtu?.stopBits}` : conn?.tcp?.host}`} /></Field>
+    <Dialog title={existing ? t('overlays.editSlaveTitle') : t('overlays.addSlaveTitle')} subtitle={conn?.name ?? ''} width={660} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={conflict} onClick={() => void save()}>{existing ? t('overlays.saveSlave') : t('overlays.addSlaveTitle')}</Button></>}>
+      <Field label={t('overlays.fieldOwnerConn')}><TextInput readOnly value={`${conn?.name ?? ''} · ${conn?.transport === 'rtu' ? `${conn.rtu?.baudRate} ${conn.rtu?.dataBits}${conn.rtu?.parity.charAt(0).toUpperCase()}${conn.rtu?.stopBits}` : conn?.tcp?.host}`} /></Field>
       <div className="mt-4 grid grid-cols-2 gap-4">
-        <Field label="设备名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
-        <Field label="从站地址 (Unit ID)"><TextInput type="number" value={unit} onChange={(e) => setUnit(e.target.value)} /></Field>
+        <Field label={t('overlays.fieldDeviceName')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <Field label={t('overlays.fieldSlaveAddr')}><TextInput type="number" value={unit} onChange={(e) => setUnit(e.target.value)} /></Field>
       </div>
       <div className="mt-4">
-        <div className="text-xs text-ink2 mb-1.5">设备模板</div>
-        <Select value={templateId} onChange={setTemplateId} options={[{ value: '', label: '（暂不绑定模板）' }, ...(workspace?.templates.map((t) => ({ value: t.id, label: t.name })) ?? [])]} />
+        <div className="text-xs text-ink2 mb-1.5">{t('overlays.deviceTemplate')}</div>
+        <Select value={templateId} onChange={setTemplateId} options={[{ value: '', label: t('overlays.noTemplateOption') }, ...(workspace?.templates.map((t) => ({ value: t.id, label: t.name })) ?? [])]} />
       </div>
       {templateId === '' ? (
-        <InfoBand tone="blue" className="mt-3">未绑定模板：从站创建后不会轮询，可在之后编辑从站时绑定或新建模板。</InfoBand>
+        <InfoBand tone="blue" className="mt-3">{t('overlays.noTemplateHint')}</InfoBand>
       ) : template ? (
         <div className="mt-3 rounded-card bg-surface2 p-4">
           <div className="flex items-center justify-between">
             <span className="text-sm font-bold">{template.name}</span>
             <span className="flex gap-4 text-xs text-accent">
-              <button className="focus-ring cursor-pointer hover:underline" onClick={() => { select({ templateId: template.id }); setModule('templates'); close(); }}>查看模板</button>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => { select({ templateId: template.id }); setModule('templates'); close(); }}>{t('overlays.viewTemplate')}</button>
               <button className="focus-ring cursor-pointer hover:underline" onClick={async () => {
                 if (!workspace) return;
-                const copy = { ...template, id: uid('tpl'), name: `${template.name} 副本` };
+                const copy = { ...template, id: uid('tpl'), name: t('overlays.templateCopyName', { name: template.name }) };
                 await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, copy] } });
                 setTemplateId(copy.id);
-              }}>复制为新模板</button>
+              }}>{t('overlays.copyAsNewTemplate')}</button>
             </span>
           </div>
-          <div className="text-xs text-ink2 mt-1">{template.blocks.length} 个数据块 · {template.points.length} 个点位 · 已被 {workspace?.slaves.filter((s) => s.templateId === template.id).length} 个从站使用</div>
+          <div className="text-xs text-ink2 mt-1">{t('overlays.templateStats', { blocks: String(template.blocks.length), points: String(template.points.length), slaves: String(workspace?.slaves.filter((s) => s.templateId === template.id).length) })}</div>
           <div className="text-xs text-ink2 mt-1">{template.blocks.map((b) => b.name).join(' · ')}</div>
-          <div className="text-xs text-ink2 mt-2">模板修改会同步影响所有绑定从站。</div>
+          <div className="text-xs text-ink2 mt-2">{t('overlays.templateEditAffectsAll')}</div>
         </div>
       ) : null}
       <div className="mt-4 grid grid-cols-2 gap-6">
         <div>
-          <div className="text-xs text-ink2 mb-1.5">实例选项</div>
-          <Checkbox checked={enabled} onCheckedChange={setEnabled} label="启用从站" />
+          <div className="text-xs text-ink2 mb-1.5">{t('overlays.instanceOptions')}</div>
+          <Checkbox checked={enabled} onCheckedChange={setEnabled} label={t('overlays.enableSlave')} />
         </div>
         <div>
-          <div className="text-xs text-ink2 mb-1.5">地址冲突检查</div>
-          <div className={`rounded-ctl border px-3 py-2 text-xs ${conflict ? 'border-err text-err' : 'border-line text-ok'}`}>{conflict ? `Unit ID ${unit} 已被占用` : `✓ Unit ID ${unit} 可用`}</div>
+          <div className="text-xs text-ink2 mb-1.5">{t('overlays.addrConflictCheck')}</div>
+          <div className={`rounded-ctl border px-3 py-2 text-xs ${conflict ? 'border-err text-err' : 'border-line text-ok'}`}>{conflict ? t('overlays.unitTaken', { unit }) : t('overlays.unitFree', { unit })}</div>
         </div>
       </div>
-      <InfoBand tone="blue" className="mt-4">设备寄存器定义不同？复制模板后再绑定。</InfoBand>
+      <InfoBand tone="blue" className="mt-4">{t('overlays.copyTemplateHint')}</InfoBand>
     </Dialog>
   );
 }
 
 function EditBlockDialog(props: { templateId: string; blockId?: string }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const template = workspace?.templates.find((t) => t.id === props.templateId);
   const existing = template?.blocks.find((b) => b.id === props.blockId);
-  const [name, setName] = useState(existing?.name ?? '控制寄存器');
+  const [name, setName] = useState(existing?.name ?? t('overlays.defaultBlockName'));
   const [area, setArea] = useState(String(existing?.area ?? 3));
   const [start, setStart] = useState(String(existing?.start ?? 0));
   const [length, setLength] = useState(String(existing?.length ?? 32));
@@ -263,28 +267,28 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
     close();
   };
   return (
-    <Dialog title={existing ? '编辑数据块' : '新建数据块'} subtitle="地址按 Modbus 0-based 填写。" width={620} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" disabled={bad} onClick={() => void save()}>保存数据块</Button></>}>
-      <Field label="名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+    <Dialog title={existing ? t('overlays.editBlockTitle') : t('overlays.newBlockTitle')} subtitle={t('overlays.blockSubtitle')} width={620} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={bad} onClick={() => void save()}>{t('overlays.saveBlock')}</Button></>}>
+      <Field label={t('overlays.name')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
       <div className="mt-4">
-        <Field label="地址区">
+        <Field label={t('overlays.area')}>
           <Select value={area} onChange={setArea} options={[1, 2, 3, 4].map((a) => ({ value: String(a), label: AREAS[a as 1 | 2 | 3 | 4] ?? String(a) }))} />
         </Field>
       </div>
       <div className="mt-4 grid grid-cols-3 gap-4">
-        <Field label="起始地址"><TextInput type="number" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
-        <Field label="长度"><TextInput type="number" value={length} onChange={(e) => setLength(e.target.value)} /></Field>
-        <Field label="默认轮询周期"><Select value={period} onChange={setPeriod} options={['50', '100', '200', '500', '1000'].map((p) => ({ value: p, label: `${p} ms` }))} /></Field>
+        <Field label={t('overlays.startAddr')}><TextInput type="number" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
+        <Field label={t('overlays.length')}><TextInput type="number" value={length} onChange={(e) => setLength(e.target.value)} /></Field>
+        <Field label={t('overlays.defaultPeriod')}><Select value={period} onChange={setPeriod} options={['50', '100', '200', '500', '1000'].map((p) => ({ value: p, label: `${p} ms` }))} /></Field>
       </div>
       <div className="mt-4">
-        <div className="text-xs text-ink2 mb-1.5">计算范围</div>
-        <InfoBand className="flex items-center justify-between"><span className="text-sm font-bold mono">{candidate.start}–{candidate.start + candidate.length - 1}</span><span className="text-xs text-ink2">{candidate.length} 个寄存器</span></InfoBand>
+        <div className="text-xs text-ink2 mb-1.5">{t('overlays.computedRange')}</div>
+        <InfoBand className="flex items-center justify-between"><span className="text-sm font-bold mono">{candidate.start}–{candidate.start + candidate.length - 1}</span><span className="text-xs text-ink2">{t('overlays.registerCount', { n: String(candidate.length) })}</span></InfoBand>
       </div>
       <div className="mt-4">
-        <div className="text-xs text-ink2 mb-1.5">范围校验</div>
+        <div className="text-xs text-ink2 mb-1.5">{t('overlays.rangeValidation')}</div>
         <InfoBand className={bad ? 'bg-[#FDECEA]' : 'bg-accentsoft'}>
-          <div className={`text-sm ${bad ? 'text-err' : 'text-ok'}`}>{bad ? `✕ 与同地址区数据块重叠：${overlaps.map((o) => (o.blockA === name ? o.blockB : o.blockA)).join('、')}` : '✓ 与同地址区其他数据块不重叠'}</div>
+          <div className={`text-sm ${bad ? 'text-err' : 'text-ok'}`}>{bad ? t('overlays.overlapError', { names: overlaps.map((o) => (o.blockA === name ? o.blockB : o.blockA)).join(t('overlays.listSep')) }) : t('overlays.noOverlapOk')}</div>
           {others.filter((o) => o.area === candidate.area).map((o) => (
-            <div key={o.id} className="text-xs text-ink2 mt-1">{o.name}：{o.start}–{o.start + o.length - 1}</div>
+            <div key={o.id} className="text-xs text-ink2 mt-1">{t('overlays.overlapItem', { name: o.name, start: String(o.start), end: String(o.start + o.length - 1) })}</div>
           ))}
         </InfoBand>
       </div>
@@ -293,13 +297,14 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
 }
 
 function EditPointDrawer(props: { templateId: string; blockId: string; pointId?: string }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const template = workspace?.templates.find((t) => t.id === props.templateId);
   const block = template?.blocks.find((b) => b.id === props.blockId);
   const existing = template?.points.find((p) => p.id === props.pointId);
-  const [name, setName] = useState(existing?.name ?? '模式');
+  const [name, setName] = useState(existing?.name ?? t('overlays.defaultPointName'));
   const [rawType, setRawType] = useState<RawType>(existing?.mapping.rawType ?? 'UInt16');
   const [offset, setOffset] = useState(String(existing?.mapping.offset ?? 0));
   const [bitOffset, setBitOffset] = useState(String(existing?.mapping.bitOffset ?? 0));
@@ -361,69 +366,70 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
 
   return (
     <Drawer
-      title="编辑点位"
-      subtitle={existing ? '配置数值点位的映射、单位、缩放与写入转换。' : '配置点位在当前数据块中的偏移、数据类型与显示方式。'}
+      title={t('overlays.editPointTitle')}
+      subtitle={existing ? t('overlays.editPointSubtitleNumeric') : t('overlays.editPointSubtitleNew')}
       width={590}
       onClose={close}
-      footer={<><Button onClick={close}>取消</Button><Button variant="primary" onClick={() => void save()}>保存点位</Button></>}
+      footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={() => void save()}>{t('overlays.savePoint')}</Button></>}
     >
-      <div className="text-xs text-ink2 mb-1.5">基本设置</div>
-      <Field label="名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
-      <div className="mt-5 text-xs text-ink2 mb-1.5">内存映射</div>
+      <div className="text-xs text-ink2 mb-1.5">{t('overlays.basicSettings')}</div>
+      <Field label={t('overlays.name')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+      <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.memoryMapping')}</div>
       <div className="grid grid-cols-3 gap-4">
-        <Field label="寄存器偏移"><TextInput type="number" value={offset} onChange={(e) => setOffset(e.target.value)} /></Field>
-        <Field label="数据类型"><Select value={rawType} onChange={(v) => setRawType(v as RawType)} options={['Bool', 'BitField', 'Int8', 'UInt8', 'Int16', 'UInt16', 'Int32', 'UInt32', 'Float32', 'Float64', 'String'].map((t) => ({ value: t, label: t }))} /></Field>
-        <Field label="寄存器数量"><TextInput type="number" value={String(mapping.registerCount)} readOnly /></Field>
+        <Field label={t('overlays.registerOffset')}><TextInput type="number" value={offset} onChange={(e) => setOffset(e.target.value)} /></Field>
+        <Field label={t('overlays.dataType')}><Select value={rawType} onChange={(v) => setRawType(v as RawType)} options={['Bool', 'BitField', 'Int8', 'UInt8', 'Int16', 'UInt16', 'Int32', 'UInt32', 'Float32', 'Float64', 'String'].map((t) => ({ value: t, label: t }))} /></Field>
+        <Field label={t('overlays.registerQty')}><TextInput type="number" value={String(mapping.registerCount)} readOnly /></Field>
       </div>
       <div className="mt-4 grid grid-cols-3 gap-4">
-        <Field label="位偏移"><TextInput type="number" value={bitOffset} onChange={(e) => setBitOffset(e.target.value)} disabled={rawType !== 'BitField' && rawType !== 'Bool'} /></Field>
-        <Field label="位宽"><TextInput type="number" value={bitWidth} onChange={(e) => setBitWidth(e.target.value)} disabled={rawType !== 'BitField'} /></Field>
-        <Field label="访问权限"><Select value={access} onChange={(v) => setAccess(v as 'ro' | 'rw')} options={[{ value: 'ro', label: '只读' }, { value: 'rw', label: '读 / 写' }]} disabled={block.area === 2 || block.area === 4} /></Field>
+        <Field label={t('overlays.bitOffset')}><TextInput type="number" value={bitOffset} onChange={(e) => setBitOffset(e.target.value)} disabled={rawType !== 'BitField' && rawType !== 'Bool'} /></Field>
+        <Field label={t('overlays.bitWidth')}><TextInput type="number" value={bitWidth} onChange={(e) => setBitWidth(e.target.value)} disabled={rawType !== 'BitField'} /></Field>
+        <Field label={t('overlays.access')}><Select value={access} onChange={(v) => setAccess(v as 'ro' | 'rw')} options={[{ value: 'ro', label: t('overlays.accessRo') }, { value: 'rw', label: t('overlays.accessRw') }]} disabled={block.area === 2 || block.area === 4} /></Field>
       </div>
-      <div className="mt-5 text-xs text-ink2 mb-1.5">显示与转换</div>
+      <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.displayAndConvert')}</div>
       <div className="grid grid-cols-3 gap-4">
-        <Field label="格式"><Select value={format} onChange={(v) => setFormat(v as typeof format)} options={[{ value: 'auto', label: '十进制' }, { value: 'hex', label: '十六进制' }, { value: 'binary', label: '二进制' }]} /></Field>
-        <Field label="单位"><TextInput value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="—" /></Field>
-        <Field label="缩放 / 偏移"><TextInput readOnly value={showScale ? '可配置' : '不适用'} /></Field>
+        <Field label={t('overlays.format')}><Select value={format} onChange={(v) => setFormat(v as typeof format)} options={[{ value: 'auto', label: t('overlays.formatDec') }, { value: 'hex', label: t('overlays.formatHex') }, { value: 'binary', label: t('overlays.formatBin') }]} /></Field>
+        <Field label={t('overlays.unit')}><TextInput value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="—" /></Field>
+        <Field label={t('overlays.scaleOffset')}><TextInput readOnly value={showScale ? t('overlays.scaleConfigurable') : t('overlays.scaleNA')} /></Field>
       </div>
       {showScale ? (
         <div className="mt-4 grid grid-cols-2 gap-4">
-          <Field label="缩放因子"><TextInput value={scale} onChange={(e) => setScale(e.target.value)} /></Field>
-          <Field label="偏移量"><TextInput value={offsetEng} onChange={(e) => setOffsetEng(e.target.value)} /></Field>
+          <Field label={t('overlays.scaleFactor')}><TextInput value={scale} onChange={(e) => setScale(e.target.value)} /></Field>
+          <Field label={t('overlays.offsetAmount')}><TextInput value={offsetEng} onChange={(e) => setOffsetEng(e.target.value)} /></Field>
         </div>
       ) : null}
       {showScale ? (
         <InfoBand tone="blue" className="mt-4">
-          <div className="text-sm text-accent">显示：工程值 = Raw × {scaleNum} + {Number(offsetEng)}</div>
-          <div className="text-sm text-accent">写入：Raw = (工程值 − {Number(offsetEng)}) / {scaleNum}</div>
-          <div className="text-xs text-ink2 mt-1">{conv && conv.ok ? `1500 → Raw ${conv.value} · ${rawType} 范围校验后写入` : `校验失败：${conv && !conv.ok ? conv.reason : ''}`}</div>
+          <div className="text-sm text-accent">{t('overlays.scaleDisplayFormula', { scale: String(scaleNum), offset: String(Number(offsetEng)) })}</div>
+          <div className="text-sm text-accent">{t('overlays.scaleWriteFormula', { offset: String(Number(offsetEng)), scale: String(scaleNum) })}</div>
+          <div className="text-xs text-ink2 mt-1">{conv && conv.ok ? t('overlays.scaleConvOk', { value: String(conv.value), type: rawType }) : t('overlays.scaleConvFail', { reason: conv && !conv.ok ? conv.reason : '' })}</div>
         </InfoBand>
       ) : null}
-      <div className="mt-5 text-xs text-ink2 mb-1.5">高级映射</div>
+      <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.advancedMapping')}</div>
       <InfoBand className="flex flex-wrap items-center gap-3 text-xs">
-        <span>字节序</span>
+        <span>{t('overlays.wordOrder')}</span>
         <Select value={wordOrder} onChange={(v) => setWordOrder(v as typeof wordOrder)} options={['ABCD', 'CDAB', 'BADC', 'DCBA'].map((w) => ({ value: w, label: w }))} />
-        <span>编码</span>
+        <span>{t('overlays.encoding')}</span>
         <Select value={encoding} onChange={(v) => setEncoding(v as typeof encoding)} options={[{ value: 'ascii', label: 'ASCII' }, { value: 'utf8', label: 'UTF-8' }]} />
-        <span>字符串长度</span>
+        <span>{t('overlays.stringLength')}</span>
         <TextInput className="w-20" type="number" value={strLen} onChange={(e) => setStrLen(e.target.value)} disabled={rawType !== 'String'} />
       </InfoBand>
       <div className="mt-3">
-        <Field label="枚举表（0=位置, 1=速度）"><TextInput value={enumText} onChange={(e) => setEnumText(e.target.value)} /></Field>
+        <Field label={t('overlays.enumTable')}><TextInput value={enumText} onChange={(e) => setEnumText(e.target.value)} /></Field>
       </div>
-      <div className="mt-5 text-xs text-ink2 mb-1.5">映射预览</div>
+      <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.mappingPreview')}</div>
       <InfoBand>
-        <div className="text-sm font-bold">寄存器 +{mapping.offset}{rawType === 'BitField' || rawType === 'Bool' ? ` · bits ${mapping.bitOffset}..${mapping.bitOffset + mapping.bitWidth - 1}` : ''} → {name}</div>
-        <div className="text-xs text-ink2 mt-1">{shared.length ? `与“${shared.map((s) => s.name).join(' / ')}”共享寄存器。` : '独占寄存器。'}</div>
+        <div className="text-sm font-bold">{t('overlays.regOffsetPrefix', { offset: String(mapping.offset) })}{rawType === 'BitField' || rawType === 'Bool' ? ` · bits ${mapping.bitOffset}..${mapping.bitOffset + mapping.bitWidth - 1}` : ''} → {name}</div>
+        <div className="text-xs text-ink2 mt-1">{shared.length ? t('overlays.sharedRegisters', { names: shared.map((s) => s.name).join(' / ') }) : t('overlays.exclusiveRegister')}</div>
       </InfoBand>
       <div className="mt-4">
-        <Checkbox checked={highRisk} onCheckedChange={setHighRisk} label="写入时要求二次确认（适合复位、清故障等高风险点）" />
+        <Checkbox checked={highRisk} onCheckedChange={setHighRisk} label={t('overlays.highRiskConfirm')} />
       </div>
     </Drawer>
   );
 }
 
 function InspectorDrawer(props: { pointId: string }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const blockStates = useBlocks();
   const points = usePoints();
@@ -438,16 +444,16 @@ function InspectorDrawer(props: { pointId: string }) {
   const regs = Array.from({ length: Math.min(4, block.length) }, () => 0);
   void regs;
   return (
-    <Drawer title="原始数据检查器" subtitle={`${point.name} · ${point.mapping.rawType} · +${point.mapping.offset}`} width={500} onClose={close}
-      footer={<Button onClick={() => { close(); select({ commView: 'messages' }); setModule('comm'); }}>查看最近通信</Button>}>
+    <Drawer title={t('overlays.inspectorTitle')} subtitle={t('overlays.inspectorSubtitle', { point: point.name, type: point.mapping.rawType, offset: String(point.mapping.offset) })} width={500} onClose={close}
+      footer={<Button onClick={() => { close(); select({ commView: 'messages' }); setModule('comm'); }}>{t('overlays.viewRecentComm')}</Button>}>
       <InfoBand tone="blue" className="flex items-center justify-between">
         <div>
-          <div className="text-xs text-ink2 mb-1">工程值</div>
+          <div className="text-xs text-ink2 mb-1">{t('overlays.engValue')}</div>
           <div className="text-2xl font-bold text-accent">{view?.engText ?? '—'} {point.unit}</div>
         </div>
-        <div className="text-xs text-ink2">来源：{block.name} / 地址 {block.start + point.mapping.offset}</div>
+        <div className="text-xs text-ink2">{t('overlays.inspectorSource', { block: block.name, addr: String(block.start + point.mapping.offset) })}</div>
       </InfoBand>
-      <div className="mt-5 text-sm font-bold mb-2">原始寄存器</div>
+      <div className="mt-5 text-sm font-bold mb-2">{t('overlays.rawRegisters')}</div>
       <InfoBand>
         <div className="grid grid-cols-2 gap-4">
           {[0, 1].map((i) => (
@@ -457,9 +463,9 @@ function InspectorDrawer(props: { pointId: string }) {
             </div>
           ))}
         </div>
-        <div className="text-xs text-ink2 mt-2 mono">字节：00 00 00 00（来自 Block Cache，不额外请求设备）</div>
+        <div className="text-xs text-ink2 mt-2 mono">{t('overlays.bytesFromCache')}</div>
       </InfoBand>
-      <div className="mt-5 text-sm font-bold mb-2">数据解释</div>
+      <div className="mt-5 text-sm font-bold mb-2">{t('overlays.dataInterpretation')}</div>
       <div className="rounded-card border border-line bg-surface px-4">
         {(['Float32 · ABCD', 'Float32 · BADC', 'Float32 · CDAB', 'Float32 · DCBA', 'UInt32 · ABCD'] as const).map((label, i) => (
           <div key={label} className="flex justify-between border-b border-[#E7EAEE] py-2 text-xs last:border-0">
@@ -468,11 +474,11 @@ function InspectorDrawer(props: { pointId: string }) {
           </div>
         ))}
       </div>
-      <div className="mt-5 text-sm font-bold mb-2">转换规则</div>
+      <div className="mt-5 text-sm font-bold mb-2">{t('overlays.conversionRules')}</div>
       <InfoBand>
-        <div className="text-sm">显示：工程值 = Raw × {point.scale} + {point.offset}</div>
-        <div className="text-sm">写入：Raw = (工程值 − {point.offset}) / {point.scale}</div>
-        <div className="text-xs text-ink2 mt-1">当前示例：{view?.engText ?? '—'} {point.unit} ↔ Raw {view?.rawText ?? '—'}（{point.mapping.rawType}）</div>
+        <div className="text-sm">{t('overlays.scaleDisplayFormula', { scale: String(point.scale), offset: String(point.offset) })}</div>
+        <div className="text-sm">{t('overlays.scaleWriteFormula', { offset: String(point.offset), scale: String(point.scale) })}</div>
+        <div className="text-xs text-ink2 mt-1">{t('overlays.currentExample', { eng: view?.engText ?? '—', unit: point.unit, raw: view?.rawText ?? '—', type: point.mapping.rawType })}</div>
       </InfoBand>
     </Drawer>
   );
@@ -486,6 +492,7 @@ function pointOwner(ws: import('../../domain/model').Workspace, pointId: string)
 }
 
 function AddSignalDialog(props: { groupId: string }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
@@ -504,11 +511,11 @@ function AddSignalDialog(props: { groupId: string }) {
     close();
   };
   return (
-    <Dialog title="添加趋势信号" subtitle={`从设备实例中选择点位，加入趋势组「${group.name}」。已在组内的信号不可重复添加。`} width={820} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" disabled={!pickedIds.length} onClick={() => void add()}>添加信号</Button></>}>
-      <TextInput placeholder="搜索点位、设备或数据块" value={search} onChange={(e) => setSearch(e.target.value)} />
+    <Dialog title={t('overlays.addSignalTitle')} subtitle={t('overlays.addSignalSubtitle', { group: group.name })} width={820} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={!pickedIds.length} onClick={() => void add()}>{t('overlays.addSignal')}</Button></>}>
+      <TextInput placeholder={t('overlays.searchPoints')} value={search} onChange={(e) => setSearch(e.target.value)} />
       <div className="mt-4 grid grid-cols-3 gap-5">
         <div className="col-span-2 rounded-card border border-line bg-surface p-4 max-h-[420px] overflow-y-auto">
-          <div className="text-xs text-ink2 mb-2">设备与点位</div>
+          <div className="text-xs text-ink2 mb-2">{t('overlays.devicesAndPoints')}</div>
           {workspace.connections.map((c) => (
             <div key={c.id} className="mb-3">
               <div className="text-sm font-medium mb-1">▼ {c.name}</div>
@@ -516,7 +523,7 @@ function AddSignalDialog(props: { groupId: string }) {
                 const template = workspace.templates.find((t) => t.id === s.templateId);
                 return (
                   <div key={s.id} className="ml-4 mb-2">
-                    <div className="text-sm mb-1">▼ {s.name} · 从站 {s.unitId}</div>
+                    <div className="text-sm mb-1">▼ {s.name} · {t('overlays.slaveUnit', { unit: String(s.unitId) })}</div>
                     {template?.blocks.map((b) => (
                       <div key={b.id} className="ml-4 mb-1">
                         <div className="text-xs text-accent mb-1">▼ {b.name}</div>
@@ -524,7 +531,7 @@ function AddSignalDialog(props: { groupId: string }) {
                           <div key={p.id} className="ml-4 flex items-center gap-2 py-0.5">
                             <Checkbox checked={!!picked[p.id]} disabled={inGroup.has(p.id)} onCheckedChange={(v) => setPicked({ ...picked, [p.id]: v })} />
                             <span className="text-sm">{p.name}</span>
-                            {inGroup.has(p.id) ? <span className="text-xs text-ink2">已在组内</span> : null}
+                            {inGroup.has(p.id) ? <span className="text-xs text-ink2">{t('overlays.inGroup')}</span> : null}
                           </div>
                         ))}
                       </div>
@@ -536,18 +543,18 @@ function AddSignalDialog(props: { groupId: string }) {
           ))}
         </div>
         <div className="rounded-card bg-surface2 p-4">
-          <div className="text-xs text-ink2">本次新增</div>
-          <div className="text-2xl font-bold mt-1">{pickedIds.length} 个信号</div>
-          <div className="text-xs text-ink2 mt-1">选择后会显示在这里</div>
-          <div className="mt-5 text-xs text-ink2 mb-1.5">加入后</div>
+          <div className="text-xs text-ink2">{t('overlays.newThisTime')}</div>
+          <div className="text-2xl font-bold mt-1">{t('overlays.signalCount', { n: String(pickedIds.length) })}</div>
+          <div className="text-xs text-ink2 mt-1">{t('overlays.selectionHint')}</div>
+          <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.afterAdd')}</div>
           <ul className="text-xs text-ink2 list-disc pl-4 space-y-1">
-            <li>加入后立即显示后台刷新值</li>
-            <li>默认在图表中显示</li>
-            <li>可在信号页修改显示 / 隐藏</li>
-            <li>记录开始时同步写入历史</li>
+            <li>{t('overlays.afterAdd1')}</li>
+            <li>{t('overlays.afterAdd2')}</li>
+            <li>{t('overlays.afterAdd3')}</li>
+            <li>{t('overlays.afterAdd4')}</li>
           </ul>
-          <div className="mt-5 text-xs text-ink2 mb-1.5">提示</div>
-          <div className="text-xs text-ink2">String 可加入组并记录变化，但不绘制连续折线。</div>
+          <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.tips')}</div>
+          <div className="text-xs text-ink2">{t('overlays.stringTip')}</div>
         </div>
       </div>
     </Dialog>
@@ -555,12 +562,13 @@ function AddSignalDialog(props: { groupId: string }) {
 }
 
 function NewTrendGroupDialog() {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const select = useApp((s) => s.select);
   const openOverlay = useApp((s) => s.openOverlay);
-  const [name, setName] = useState('功耗分析');
+  const [name, setName] = useState<string>(t('overlays.defaultGroupName'));
   const [windowSec, setWindowSec] = useState('60');
   const [desc, setDesc] = useState('');
   const create = async () => {
@@ -572,30 +580,31 @@ function NewTrendGroupDialog() {
     openOverlay({ kind: 'dialog', id: 'add-signal', groupId: id });
   };
   return (
-    <Dialog title="新建趋势组" subtitle="设置趋势组名称与默认时间窗口。" width={640} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" onClick={() => void create()}>创建趋势组</Button></>}>
-      <Field label="名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+    <Dialog title={t('overlays.newGroupTitle')} subtitle={t('overlays.newGroupSubtitle')} width={640} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={() => void create()}>{t('overlays.createGroup')}</Button></>}>
+      <Field label={t('overlays.name')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
       <div className="mt-4 grid grid-cols-2 gap-4">
-        <Field label="默认时间窗口"><Select value={windowSec} onChange={setWindowSec} options={[{ value: '30', label: '最近 30 秒' }, { value: '60', label: '最近 60 秒' }, { value: '300', label: '最近 5 分钟' }]} /></Field>
-        <Field label="说明"><TextInput value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="可选" /></Field>
+        <Field label={t('overlays.defaultWindow')}><Select value={windowSec} onChange={setWindowSec} options={[{ value: '30', label: t('overlays.window30') }, { value: '60', label: t('overlays.window60') }, { value: '300', label: t('overlays.window300') }]} /></Field>
+        <Field label={t('overlays.description')}><TextInput value={desc} onChange={(e) => setDesc(e.target.value)} placeholder={t('overlays.optionalPlaceholder')} /></Field>
       </div>
       <InfoBand tone="blue" className="mt-5">
-        <div className="text-sm font-bold text-accent mb-1">创建后</div>
-        <div className="flex gap-8 text-sm"><span>✓ 打开趋势组</span><span>✓ 立即进入“添加信号”</span></div>
+        <div className="text-sm font-bold text-accent mb-1">{t('overlays.afterCreate')}</div>
+        <div className="flex gap-8 text-sm"><span>{t('overlays.afterCreateOpen')}</span><span>{t('overlays.afterCreateAdd')}</span></div>
       </InfoBand>
     </Dialog>
   );
 }
 
 function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 1 | 2 | 3 | 4; start: number; quantity: number; registers: number[] }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const [templateId, setTemplateId] = useState(workspace?.templates[0]?.id ?? '');
-  const [name, setName] = useState('临时寄存器块');
+  const [name, setName] = useState<string>(t('overlays.defaultTempBlockName'));
   const [period, setPeriod] = useState('500');
   const [newTemplateOpen, setNewTemplateOpen] = useState(false);
-  const [newTemplateName, setNewTemplateName] = useState('新设备模板');
-  const [newTemplateDesc, setNewTemplateDesc] = useState('用于保存本次临时读取的数据块');
+  const [newTemplateName, setNewTemplateName] = useState<string>(t('overlays.defaultNewTemplateName'));
+  const [newTemplateDesc, setNewTemplateDesc] = useState<string>(t('overlays.defaultNewTemplateDesc'));
   const template = workspace?.templates.find((t) => t.id === templateId);
   const candidate: BlockDef = { id: 'new', name, area: props.area, start: props.start, length: props.quantity, periodMs: Number(period) };
   const overlap = template ? findBlockOverlaps([...template.blocks, candidate]).length > 0 : false;
@@ -609,38 +618,38 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
 
   return (
     <>
-      <Dialog title="保存为数据块" subtitle="选择目标模板并确认数据块参数。" width={720} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" disabled={overlap} onClick={() => void save()}>保存数据块</Button></>}>
-        <Field label="目标模板">
-          <Select value={templateId} onChange={setTemplateId} options={[{ value: '', label: '（暂不绑定模板）' }, ...(workspace?.templates.map((t) => ({ value: t.id, label: t.name })) ?? [])]} />
+      <Dialog title={t('overlays.saveAsBlockTitle')} subtitle={t('overlays.saveAsBlockSubtitle')} width={720} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={overlap} onClick={() => void save()}>{t('overlays.saveBlock')}</Button></>}>
+        <Field label={t('overlays.targetTemplate')}>
+          <Select value={templateId} onChange={setTemplateId} options={[{ value: '', label: t('overlays.noTemplateOption') }, ...(workspace?.templates.map((t) => ({ value: t.id, label: t.name })) ?? [])]} />
         </Field>
         <div className="mt-2 -mt-1 mb-3 rounded-ctl border border-line bg-surface px-3 py-2 text-sm">
           {workspace?.templates.map((t) => (t.id === templateId ? <span key={t.id} className="text-accent">✓ {t.name}</span> : <span key={t.id} className="block text-ink2">{t.name}</span>))}
-          <button className="focus-ring mt-1 cursor-pointer text-xs text-accent hover:underline" onClick={() => setNewTemplateOpen(true)}>＋ 新建模板…</button>
+          <button className="focus-ring mt-1 cursor-pointer text-xs text-accent hover:underline" onClick={() => setNewTemplateOpen(true)}>{t('overlays.newTemplateEllipsis')}</button>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="数据块名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
-          <Field label="轮询周期"><Select value={period} onChange={setPeriod} options={['100', '200', '500', '1000'].map((p) => ({ value: p, label: `${p} ms` }))} /></Field>
+          <Field label={t('overlays.blockName')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label={t('overlays.pollPeriod')}><Select value={period} onChange={setPeriod} options={['100', '200', '500', '1000'].map((p) => ({ value: p, label: `${p} ms` }))} /></Field>
         </div>
         <div className="mt-4 grid grid-cols-3 gap-4">
-          <Field label="地址区"><TextInput readOnly value={AREAS[props.area]} /></Field>
-          <Field label="起始地址"><TextInput readOnly value={String(props.start)} /></Field>
-          <Field label="长度"><TextInput readOnly value={String(props.quantity)} /></Field>
+          <Field label={t('overlays.area')}><TextInput readOnly value={AREAS[props.area]} /></Field>
+          <Field label={t('overlays.startAddr')}><TextInput readOnly value={String(props.start)} /></Field>
+          <Field label={t('overlays.length')}><TextInput readOnly value={String(props.quantity)} /></Field>
         </div>
         <InfoBand tone="blue" className={`mt-5 ${overlap ? 'bg-[#FDECEA]' : ''}`}>
-          <div className={`text-sm ${overlap ? 'text-err' : 'text-ok'}`}>{overlap ? '✕ 与模板中已有数据块重叠' : `✓ 当前模板中 ${props.area === 3 ? 'Holding' : props.area === 4 ? 'Input' : props.area === 2 ? 'Discrete' : 'Coil'} ${props.start}–${props.start + props.quantity - 1} 无重叠`}</div>
+          <div className={`text-sm ${overlap ? 'text-err' : 'text-ok'}`}>{overlap ? t('overlays.overlapExisting') : t('overlays.noOverlapRange', { area: props.area === 3 ? 'Holding' : props.area === 4 ? 'Input' : props.area === 2 ? 'Discrete' : 'Coil', start: String(props.start), end: String(props.start + props.quantity - 1) })}</div>
         </InfoBand>
       </Dialog>
       {newTemplateOpen ? (
-        <Dialog title="新建设备模板" width={520} onClose={() => setNewTemplateOpen(false)} footer={<><Button onClick={() => setNewTemplateOpen(false)}>取消</Button><Button variant="primary" onClick={async () => {
+        <Dialog title={t('overlays.newTemplateTitle')} width={520} onClose={() => setNewTemplateOpen(false)} footer={<><Button onClick={() => setNewTemplateOpen(false)}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={async () => {
           if (!workspace) return;
           const id = uid('tpl');
           await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, { id, name: newTemplateName, version: '1.0', description: newTemplateDesc, blocks: [], points: [] }] } });
           setTemplateId(id);
           setNewTemplateOpen(false);
-        }}>创建并选择</Button></>}>
-          <Field label="名称"><TextInput value={newTemplateName} onChange={(e) => setNewTemplateName(e.target.value)} /></Field>
+        }}>{t('overlays.createAndSelect')}</Button></>}>
+          <Field label={t('overlays.name')}><TextInput value={newTemplateName} onChange={(e) => setNewTemplateName(e.target.value)} /></Field>
           <div className="mt-4">
-            <Field label="说明（可选）"><TextInput value={newTemplateDesc} onChange={(e) => setNewTemplateDesc(e.target.value)} /></Field>
+            <Field label={t('overlays.nameOptional')}><TextInput value={newTemplateDesc} onChange={(e) => setNewTemplateDesc(e.target.value)} /></Field>
           </div>
         </Dialog>
       ) : null}
@@ -649,9 +658,10 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
 }
 
 function ConfirmDialog(props: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) {
+  const { t } = useTranslation();
   const close = useApp((s) => s.closeOverlay);
   return (
-    <Dialog title={props.title} width={460} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant={props.danger ? 'danger' : 'primary'} onClick={() => { props.onConfirm(); close(); }}>{props.confirmLabel}</Button></>}>
+    <Dialog title={props.title} width={460} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant={props.danger ? 'danger' : 'primary'} onClick={() => { props.onConfirm(); close(); }}>{props.confirmLabel}</Button></>}>
       <div className="text-sm pb-4">{props.message}</div>
     </Dialog>
   );

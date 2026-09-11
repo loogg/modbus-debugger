@@ -4,6 +4,7 @@ import { Button, InfoBand, PageHeader, StatusDot, Tabs } from '../components/ui'
 import { NumericChart, type LineSeries } from '../components/chart';
 import { StateTrack } from '../components/state-track';
 import { DataTable, type Column } from '../components/table';
+import { useTranslation } from '../i18n';
 
 const SERIES_COLORS = ['#0078D4', '#D97706', '#178A4D', '#7A5AF8', '#C42B1C', '#0E7C86'];
 
@@ -17,6 +18,7 @@ interface SignalRow {
 }
 
 export function TrendScreen() {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const points = usePoints();
   const live = useApp((s) => s.live);
@@ -44,19 +46,19 @@ export function TrendScreen() {
         signalId: sig.id,
         pointId: sig.pointRef.pointId,
         name: point?.name ?? sig.pointRef.pointId,
-        source: `${conn?.name ?? ''} / ${slave ? `从站${slave.unitId}` : ''} / ${block?.name ?? ''}`,
+        source: `${conn?.name ?? ''} / ${slave ? t('trend.slaveUnit', { id: slave.unitId }) : ''} / ${block?.name ?? ''}`,
         type: point?.mapping.rawType ?? '—',
         visible: sig.visible,
       };
     });
-  }, [workspace, group]);
+  }, [workspace, group, t]);
 
   if (!workspace) return null;
   if (!group) {
     return (
       <>
-        <PageHeader title="趋势" subtitle="用趋势组组织人为挑选的信号" actions={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'new-trend-group' })}>＋ 新建趋势组</Button>} />
-        <InfoBand tone="blue">还没有趋势组。趋势组直接消费后台 Block Cache，不创建独立轮询。</InfoBand>
+        <PageHeader title={t('trend.title')} subtitle={t('trend.subtitle')} actions={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'new-trend-group' })}>{t('trend.newGroup')}</Button>} />
+        <InfoBand tone="blue">{t('trend.emptyHint')}</InfoBand>
       </>
     );
   }
@@ -82,22 +84,22 @@ export function TrendScreen() {
   const toggleRecord = async () => {
     if (recording) {
       await command({ type: 'trend.stopRecording' });
-      toast({ kind: 'success', title: '记录已停止', message: '可在历史模块回放会话。' });
+      toast({ kind: 'success', title: t('trend.recordStopped'), message: t('trend.recordStoppedMsg') });
     } else {
       const res = await command({ type: 'trend.startRecording', groupId: group.id });
-      if (res.ok) toast({ kind: 'success', title: '开始记录', message: `记录趋势组全部 ${group.signals.length} 个信号` });
+      if (res.ok) toast({ kind: 'success', title: t('trend.recordStarted'), message: t('trend.recordStartedMsg', { count: group.signals.length }) });
     }
   };
 
   const cols: Array<Column<SignalRow>> = [
     {
       id: 'visible',
-      header: '显示',
+      header: t('trend.colVisible'),
       width: 56,
       render: (r) => (
         <button
           className="focus-ring cursor-pointer"
-          title={r.visible ? '隐藏图表' : '显示图表'}
+          title={r.visible ? t('trend.hideChart') : t('trend.showChart')}
           onClick={() => {
             const ws = workspace;
             void command({
@@ -110,22 +112,22 @@ export function TrendScreen() {
         </button>
       ),
     },
-    { id: 'name', header: '信号', width: 180, render: (r) => <span className="font-medium">{r.name}</span> },
-    { id: 'source', header: '来源', width: 260, render: (r) => <span className="text-xs text-ink2">{r.source}</span> },
+    { id: 'name', header: t('trend.colSignal'), width: 180, render: (r) => <span className="font-medium">{r.name}</span> },
+    { id: 'source', header: t('trend.colSource'), width: 260, render: (r) => <span className="text-xs text-ink2">{r.source}</span> },
     {
       id: 'value',
-      header: '当前值',
+      header: t('trend.colValue'),
       width: 150,
       render: (r) => {
         const v = points[r.pointId];
         return <span className={v?.enumLabel || v?.boolValue !== null && v?.boolValue !== undefined ? 'text-accent font-medium' : ''}>{v?.hasValue ? v.engText : '—'}</span>;
       },
     },
-    { id: 'type', header: '类型', width: 110, render: (r) => <span className="text-xs text-ink2">{r.type}</span> },
-    { id: 'status', header: '状态', width: 90, render: () => <StatusDot tone="ok" label="正常" /> },
+    { id: 'type', header: t('trend.colType'), width: 110, render: (r) => <span className="text-xs text-ink2">{r.type}</span> },
+    { id: 'status', header: t('trend.colStatus'), width: 90, render: () => <StatusDot tone="ok" label={t('trend.statusOk')} /> },
     {
       id: 'op',
-      header: '操作',
+      header: t('trend.colOp'),
       width: 80,
       render: (r) => (
         <button
@@ -135,7 +137,7 @@ export function TrendScreen() {
             void command({ type: 'workspace.apply', workspace: { ...ws, trendGroups: ws.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: g.signals.filter((s) => s.id !== r.signalId) } : g)) } });
           }}
         >
-          移除
+          {t('trend.remove')}
         </button>
       ),
     },
@@ -151,41 +153,41 @@ export function TrendScreen() {
     <>
       <PageHeader
         title={group.name}
-        subtitle={`${group.signals.length} 个信号 · ${slaveCount} 个从站 · ${blockCount} 个数据块`}
+        subtitle={t('trend.headerSubtitle', { signals: group.signals.length, slaves: slaveCount, blocks: blockCount })}
         actions={
           <>
-            <Button onClick={() => openOverlay({ kind: 'dialog', id: 'add-signal', groupId: group.id })}>＋ 添加信号</Button>
+            <Button onClick={() => openOverlay({ kind: 'dialog', id: 'add-signal', groupId: group.id })}>{t('trend.addSignal')}</Button>
             <Button variant="primary" onClick={() => void toggleRecord()}>
-              {isRecordingThis ? '■ 停止记录' : '● 开始记录'}
+              {isRecordingThis ? t('trend.stopRecording') : t('trend.startRecording')}
             </Button>
           </>
         }
       />
-      <div className="-mt-3 mb-4 text-right text-xs text-ink2">记录范围：趋势组全部 {group.signals.length} 个信号</div>
+      <div className="-mt-3 mb-4 text-right text-xs text-ink2">{t('trend.recordScope', { count: group.signals.length })}</div>
       <div className="flex items-center justify-between">
-        <Tabs tabs={[{ id: 'signals', label: '信号' }, { id: 'chart', label: '图表' }]} active={selection.trendTab} onChange={(id) => select({ trendTab: id as 'signals' | 'chart' })} />
+        <Tabs tabs={[{ id: 'signals', label: t('trend.tabSignals') }, { id: 'chart', label: t('trend.tabChart') }]} active={selection.trendTab} onChange={(id) => select({ trendTab: id as 'signals' | 'chart' })} />
         <div className="flex items-center gap-4 pb-2">
           {selection.trendTab === 'chart' ? (
             <>
               <select className="focus-ring h-8 rounded-ctl border border-line bg-surface px-2 text-xs" value={windowSec} onChange={(e) => setWindowSec(Number(e.target.value))}>
-                <option value={30}>最近 30 秒</option>
-                <option value={60}>最近 60 秒</option>
-                <option value={300}>最近 5 分钟</option>
+                <option value={30}>{t('trend.window30')}</option>
+                <option value={60}>{t('trend.window60')}</option>
+                <option value={300}>{t('trend.window300')}</option>
               </select>
-              <button className="focus-ring cursor-pointer text-xs text-ink2 hover:text-ink" onClick={() => setFollow(!follow)}>自动跟随</button>
-              <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => setPaused(!paused)}>{paused ? '继续' : '暂停'}</button>
+              <button className="focus-ring cursor-pointer text-xs text-ink2 hover:text-ink" onClick={() => setFollow(!follow)}>{t('trend.autoFollow')}</button>
+              <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => setPaused(!paused)}>{paused ? t('trend.resume') : t('trend.pause')}</button>
             </>
           ) : (
             <>
-              <span className="text-xs text-ink2">数据源</span>
-              <StatusDot tone="ok" label="按数据块周期刷新" />
+              <span className="text-xs text-ink2">{t('trend.dataSource')}</span>
+              <StatusDot tone="ok" label={t('trend.refreshByBlockPeriod')} />
             </>
           )}
         </div>
       </div>
 
       {selection.trendTab === 'signals' ? (
-        <DataTable columns={cols} rows={rows} rowKey={(r) => r.signalId} empty="还没有趋势信号" />
+        <DataTable columns={cols} rows={rows} rowKey={(r) => r.signalId} empty={t('trend.emptySignals')} />
       ) : (
         <>
           <div className="rounded-card border border-line bg-surface p-4">
@@ -196,13 +198,13 @@ export function TrendScreen() {
                   {s.name}
                 </span>
               ))}
-              <span className="text-[10px] text-ink2 self-center">纵轴按单位独立</span>
+              <span className="text-[10px] text-ink2 self-center">{t('trend.axisPerUnit')}</span>
             </div>
             <NumericChart series={series} height={300} startMs={start} endMs={end} />
           </div>
           {discrete.length ? (
             <>
-              <div className="text-sm font-bold mt-6 mb-3">状态与文本</div>
+              <div className="text-sm font-bold mt-6 mb-3">{t('trend.stateAndText')}</div>
               <div className="rounded-card border border-line bg-surface2 px-4 py-3 flex flex-col gap-3">
                 {discrete.map((r) => {
                   const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
@@ -215,7 +217,7 @@ export function TrendScreen() {
                       key={r.signalId}
                       kind={kind}
                       label={r.name}
-                      sublabel={kind === 'bool' ? '使能 · Bool' : kind === 'string' ? `${r.name} · String` : undefined}
+                      sublabel={kind === 'bool' ? t('trend.boolSublabel') : kind === 'string' ? t('trend.stringSublabel', { name: r.name }) : undefined}
                       initialValue={initial}
                       events={buf.events.filter((e) => e.t >= start).map((e) => ({ tMs: e.t, value: e.value }))}
                       startMs={start}
@@ -230,13 +232,13 @@ export function TrendScreen() {
       )}
 
       <InfoBand tone="blue" className="mt-6">
-        <div className="text-sm font-bold text-accent mb-1">数据状态</div>
+        <div className="text-sm font-bold text-accent mb-1">{t('trend.dataStatus')}</div>
         <div className="text-sm">
-          {group.signals.length} 个信号 · {blockCount} 个数据块 · {recording ? `${recording.sampleCount} 次采样` : '0 次采样'}
+          {t('trend.dataStatusLine1', { signals: group.signals.length, blocks: blockCount, samples: recording ? recording.sampleCount : 0 })}
           <br />
-          图表显示 {series.length} / {group.signals.length} · {isRecordingThis ? `记录中 ${recording ? fmtElapsed(recording.elapsedMs) : ''}` : '记录未开始'}
+          {t('trend.chartShown', { shown: series.length, total: group.signals.length, record: isRecordingThis ? t('trend.recording', { elapsed: recording ? fmtElapsed(recording.elapsedMs) : '' }) : t('trend.recordNotStarted') })}
         </div>
-        <div className="text-xs text-ink2 mt-1">数据源：{blockCount} 个数据块 · 显示/隐藏只影响图表，不影响记录范围</div>
+        <div className="text-xs text-ink2 mt-1">{t('trend.dataSourceHint', { count: blockCount })}</div>
       </InfoBand>
     </>
   );

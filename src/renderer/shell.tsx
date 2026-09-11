@@ -31,18 +31,23 @@ import { CommScreen } from './screens/comm';
 import { TemplatesScreen } from './screens/templates';
 import { SettingsScreen } from './screens/settings';
 import { Overlays } from './screens/overlays';
+import { useTranslation } from './i18n';
+import { dayKey, fmtTime, todayKey } from './time';
 
-const MODULES: Array<{ id: ModuleId; label: string; icon: React.ReactNode }> = [
-  { id: 'devices', label: '设备', icon: <Desktop20Regular /> },
-  { id: 'realtime', label: '实时', icon: <Pulse20Regular /> },
-  { id: 'trend', label: '趋势', icon: <DataTrending20Regular /> },
-  { id: 'history', label: '历史', icon: <History20Regular /> },
-  { id: 'comm', label: '通信', icon: <ArrowSync20Regular /> },
-  { id: 'templates', label: '模板', icon: <Document20Regular /> },
+type RailLabelKey = `shell.rail.${'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates'}`;
+
+const MODULES: Array<{ id: ModuleId; labelKey: RailLabelKey; icon: React.ReactNode }> = [
+  { id: 'devices', labelKey: 'shell.rail.devices', icon: <Desktop20Regular /> },
+  { id: 'realtime', labelKey: 'shell.rail.realtime', icon: <Pulse20Regular /> },
+  { id: 'trend', labelKey: 'shell.rail.trend', icon: <DataTrending20Regular /> },
+  { id: 'history', labelKey: 'shell.rail.history', icon: <History20Regular /> },
+  { id: 'comm', labelKey: 'shell.rail.comm', icon: <ArrowSync20Regular /> },
+  { id: 'templates', labelKey: 'shell.rail.templates', icon: <Document20Regular /> },
 ];
 
 function TopBar() {
-  const workspaceName = useApp((s) => s.snapshot?.workspace.name ?? '未命名工作区');
+  const { t } = useTranslation();
+  const workspaceName = useApp((s) => s.snapshot?.workspace.name ?? null);
   const online = useApp((s) => (s.snapshot ? Object.values(s.snapshot.connections).filter((c) => c.state === 'online').length : 0));
   const rec = useApp((s) => s.snapshot?.recording ?? null);
   const [now, setNow] = useState(Date.now());
@@ -55,17 +60,17 @@ function TopBar() {
   return (
     <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-line bg-surface px-[18px]">
       <div className="flex items-baseline gap-4 min-w-0">
-        <span className="text-[15px] font-bold whitespace-nowrap">Modbus 调试工具</span>
+        <span className="text-[15px] font-bold whitespace-nowrap">{t('shell.topbar.appTitle')}</span>
         <span className="text-xs text-ink2 truncate">
-          {workspaceName}
+          {workspaceName ?? t('shell.topbar.unnamedWorkspace')}
         </span>
       </div>
       <div className="flex items-center gap-6">
-        {online > 0 ? <StatusDot tone="ok" label={`${online} 个连接在线`} /> : <span className="text-xs text-ink2">无连接</span>}
+        {online > 0 ? <StatusDot tone="ok" label={t('shell.topbar.connectionsOnline', { count: online })} /> : <span className="text-xs text-ink2">{t('shell.topbar.noConnection')}</span>}
         {rec ? (
-          <StatusDot tone="ok" label={`记录中 · ${rec.signalCount} 个信号 · ${p(Math.floor(elapsed / 3600))}:${p(Math.floor(elapsed / 60) % 60)}:${p(elapsed % 60)}`} />
+          <StatusDot tone="ok" label={t('shell.topbar.recording', { signals: rec.signalCount, elapsed: `${p(Math.floor(elapsed / 3600))}:${p(Math.floor(elapsed / 60) % 60)}:${p(elapsed % 60)}` })} />
         ) : (
-          <span className="text-xs text-ink2">未记录</span>
+          <span className="text-xs text-ink2">{t('shell.topbar.notRecording')}</span>
         )}
       </div>
     </header>
@@ -73,6 +78,7 @@ function TopBar() {
 }
 
 function AppRail() {
+  const { t } = useTranslation();
   const module = useApp((s) => s.module);
   const setModule = useApp((s) => s.setModule);
   return (
@@ -86,7 +92,7 @@ function AppRail() {
           }`}
         >
           {m.icon}
-          {m.label}
+          {t(m.labelKey)}
         </button>
       ))}
       <div className="flex-1" />
@@ -97,7 +103,7 @@ function AppRail() {
         }`}
       >
         <Settings20Regular />
-        设置
+        {t('shell.rail.settings')}
       </button>
     </nav>
   );
@@ -113,6 +119,7 @@ function SidebarShell(props: { title: string; children: React.ReactNode }) {
 }
 
 function TreeConnection(props: { connectionId: string; children?: React.ReactNode; actions?: React.ReactNode; onSelectConnection?: () => void }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
   const state = useConnectionState(props.connectionId);
@@ -125,7 +132,7 @@ function TreeConnection(props: { connectionId: string; children?: React.ReactNod
           {open ? <ChevronDown20Regular className="shrink-0" /> : <ChevronRight20Regular className="shrink-0" />}
           {conn.name}
         </span>
-        <StatusDot tone={state === 'online' ? 'ok' : state === 'error' ? 'err' : 'idle'} label={state === 'online' ? '已连接' : state === 'connecting' ? '连接中' : '离线'} />
+        <StatusDot tone={state === 'online' ? 'ok' : state === 'error' ? 'err' : 'idle'} label={state === 'online' ? t('shell.conn.online') : state === 'connecting' ? t('shell.conn.connecting') : t('shell.conn.offline')} />
       </button>
       {conn.transport === 'rtu' && conn.rtu ? <div className="ml-6 text-xs text-ink2">{conn.rtu.baudRate} · {conn.rtu.dataBits}{conn.rtu.parity.charAt(0).toUpperCase()}{conn.rtu.stopBits}</div> : null}
       {conn.transport === 'tcp' && conn.tcp ? <div className="ml-6 text-xs text-ink2">{conn.tcp.host}:{conn.tcp.port}</div> : null}
@@ -136,6 +143,7 @@ function TreeConnection(props: { connectionId: string; children?: React.ReactNod
 }
 
 function SlaveCard(props: { slaveId: string; showBlocks: boolean; selectedSlave?: boolean; selectedBlock?: string | null; onSelectSlave?: () => void; onSelectBlock?: (blockId: string) => void }) {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const slave = workspace?.slaves.find((s) => s.id === props.slaveId);
   const template = workspace?.templates.find((t) => t.id === slave?.templateId);
@@ -151,12 +159,12 @@ function SlaveCard(props: { slaveId: string; showBlocks: boolean; selectedSlave?
         </span>
         <StatusDot {...slaveStatus(slave.enabled, connState)} />
       </button>
-      <div className="ml-5 mt-0.5 text-xs text-ink2">从站 {slave.unitId} · {template?.name ?? '未绑定模板'}</div>
+      <div className="ml-5 mt-0.5 text-xs text-ink2">{t('shell.slave.meta', { unitId: slave.unitId, name: template?.name ?? t('shell.slave.unboundTemplate') })}</div>
       {open && props.showBlocks && template ? (
         <div className="ml-5 mt-1.5 flex flex-col gap-1">
           {props.selectedSlave ? (
             <button className={`focus-ring cursor-pointer rounded px-2 py-1 text-left text-xs ${!props.selectedBlock ? 'bg-accentsoft text-accent font-medium' : 'text-ink2 hover:text-ink'}`} onClick={() => props.onSelectBlock?.('')}>
-              全部数据 · {template.blocks.length} 个数据块
+              {t('shell.slave.allData', { count: template.blocks.length })}
             </button>
           ) : null}
           {template.blocks.map((b) => (
@@ -175,18 +183,19 @@ function SlaveCard(props: { slaveId: string; showBlocks: boolean; selectedSlave?
 }
 
 function DevicesSidebar() {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
   const openOverlay = useApp((s) => s.openOverlay);
 
   return (
-    <SidebarShell title="设备">
+    <SidebarShell title={t('shell.sidebar.title.devices')}>
       <Button variant="secondary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-connection' })}>
-        <Add20Regular /> 添加连接
+        <Add20Regular /> {t('shell.devices.addConnection')}
       </Button>
-      <div className="mt-5 mb-2 text-xs text-ink2">连接与从站</div>
-      {workspace?.connections.length === 0 ? <div className="text-xs text-ink2 py-2">还没有连接</div> : null}
+      <div className="mt-5 mb-2 text-xs text-ink2">{t('shell.devices.connectionsSlaves')}</div>
+      {workspace?.connections.length === 0 ? <div className="text-xs text-ink2 py-2">{t('shell.devices.noConnections')}</div> : null}
       {workspace?.connections.map((c) => (
         <TreeConnection
           key={c.id}
@@ -194,9 +203,9 @@ function DevicesSidebar() {
           onSelectConnection={() => select({ connectionId: c.id, slaveId: null, deviceView: 'topology' })}
           actions={
             <>
-              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'scan' })}>扫描</button>
-              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'temp' })}>临时读取</button>
-              <button className="focus-ring cursor-pointer hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: c.id })}>＋ 添加从站</button>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'scan' })}>{t('shell.devices.scan')}</button>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'temp' })}>{t('shell.devices.tempRead')}</button>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: c.id })}>{t('shell.devices.addSlave')}</button>
             </>
           }
         >
@@ -210,14 +219,16 @@ function DevicesSidebar() {
 }
 
 function RealtimeSidebar() {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
   const selSlave = workspace?.slaves.find((s) => s.id === selection.slaveId);
-  const selTemplate = workspace?.templates.find((t) => t.id === selSlave?.templateId);
+  const selTemplate = workspace?.templates.find((tpl) => tpl.id === selSlave?.templateId);
+  const blk = selection.blockId ? selTemplate?.blocks.find((b) => b.id === selection.blockId) : undefined;
   return (
-    <SidebarShell title="实时数据">
-      <div className="mb-2 text-xs text-ink2">连接与设备</div>
+    <SidebarShell title={t('shell.sidebar.title.realtime')}>
+      <div className="mb-2 text-xs text-ink2">{t('shell.realtime.connectionsDevices')}</div>
       {workspace?.connections.map((c) => (
         <TreeConnection key={c.id} connectionId={c.id}>
           {workspace?.slaves.filter((s) => s.connectionId === c.id).map((s) => (
@@ -235,17 +246,17 @@ function RealtimeSidebar() {
       ))}
       {selSlave && selTemplate ? (
         <>
-          <div className="mt-5 mb-2 text-xs text-ink2">当前数据块</div>
+          <div className="mt-5 mb-2 text-xs text-ink2">{t('shell.realtime.currentBlock')}</div>
           <div className="text-xs text-ink2 leading-5">
-            {selection.blockId ? selTemplate.blocks.find((b) => b.id === selection.blockId)?.name ?? '—' : '全部数据块'} · {selection.blockId ? `${selTemplate.blocks.find((b) => b.id === selection.blockId)?.periodMs} ms` : `${selTemplate.blocks.map((b) => b.periodMs).join(' / ')} ms`}
+            {selection.blockId ? blk?.name ?? '—' : t('shell.realtime.allBlocks')} · {selection.blockId ? `${blk?.periodMs} ms` : `${selTemplate.blocks.map((b) => b.periodMs).join(' / ')} ms`}
             <br />
-            {selection.blockId ? `FC0${selTemplate.blocks.find((b) => b.id === selection.blockId)?.area} · 地址 ${selTemplate.blocks.find((b) => b.id === selection.blockId)?.start}–${(selTemplate.blocks.find((b) => b.id === selection.blockId)?.start ?? 0) + (selTemplate.blocks.find((b) => b.id === selection.blockId)?.length ?? 0) - 1}` : ''}
+            {blk ? t('shell.realtime.blockAddress', { area: blk.area, start: blk.start, end: blk.start + blk.length - 1 }) : ''}
           </div>
         </>
       ) : (
         <>
-          <div className="mt-5 mb-2 text-xs text-ink2">后台轮询</div>
-          <div className="text-xs text-ink2 leading-5">选择从站后查看轮询状态</div>
+          <div className="mt-5 mb-2 text-xs text-ink2">{t('shell.realtime.backgroundPolling')}</div>
+          <div className="text-xs text-ink2 leading-5">{t('shell.realtime.selectSlaveHint')}</div>
         </>
       )}
     </SidebarShell>
@@ -253,6 +264,7 @@ function RealtimeSidebar() {
 }
 
 function TrendSidebar() {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const recording = useRecording();
   const select = useApp((s) => s.select);
@@ -262,9 +274,9 @@ function TrendSidebar() {
   const toast = useApp((s) => s.toast);
   const group = workspace?.trendGroups.find((g) => g.id === selection.groupId);
   return (
-    <SidebarShell title="趋势组">
+    <SidebarShell title={t('shell.sidebar.title.trend')}>
       <Button variant="secondary" onClick={() => openOverlay({ kind: 'dialog', id: 'new-trend-group' })}>
-        <Add20Regular /> 新建趋势组
+        <Add20Regular /> {t('shell.trend.newGroup')}
       </Button>
       <div className="mt-4 flex flex-col gap-2">
         {workspace?.trendGroups.map((g) => (
@@ -274,27 +286,27 @@ function TrendSidebar() {
             className={`focus-ring cursor-pointer rounded-ctl px-3 py-2.5 text-left ${selection.groupId === g.id ? 'bg-accentsoft' : 'bg-surface hover:bg-surface2'}`}
           >
             <div className="text-sm font-medium">{g.name}</div>
-            <div className="text-xs text-ink2 mt-0.5">{g.signals.length} 个信号{recording?.groupId === g.id ? ' · 记录中' : recording ? ' · 未选中' : ''}</div>
-            {recording?.groupId === g.id ? <StatusDot tone="ok" label="当前" className="mt-1" /> : null}
+            <div className="text-xs text-ink2 mt-0.5">{t('shell.trend.signalCount', { count: g.signals.length })}{recording?.groupId === g.id ? t('shell.trend.suffixRecording') : recording ? t('shell.trend.suffixUnselected') : ''}</div>
+            {recording?.groupId === g.id ? <StatusDot tone="ok" label={t('shell.trend.current')} className="mt-1" /> : null}
           </button>
         ))}
       </div>
       {group ? (
         <>
-          <div className="mt-5 mb-2 text-xs text-ink2">快捷操作</div>
+          <div className="mt-5 mb-2 text-xs text-ink2">{t('shell.trend.quickActions')}</div>
           <div className="flex flex-col gap-1.5 text-xs">
-            <button className="focus-ring cursor-pointer text-left text-accent hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-signal', groupId: group.id })}>添加信号</button>
+            <button className="focus-ring cursor-pointer text-left text-accent hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-signal', groupId: group.id })}>{t('shell.trend.addSignal')}</button>
             <button
               className="focus-ring cursor-pointer text-left text-accent hover:underline"
               onClick={async () => {
                 const ws = workspace;
                 if (!ws) return;
-                const copy = { ...group, id: `g-${Date.now().toString(36)}`, name: `${group.name} 副本`, signals: group.signals.map((s) => ({ ...s, id: `sig-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}` })) };
+                const copy = { ...group, id: `g-${Date.now().toString(36)}`, name: `${group.name} ${t('shell.common.copySuffix')}`, signals: group.signals.map((s) => ({ ...s, id: `sig-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}` })) };
                 await command({ type: 'workspace.apply', workspace: { ...ws, trendGroups: [...ws.trendGroups, copy] } });
-                toast({ kind: 'success', title: '已复制趋势组' });
+                toast({ kind: 'success', title: t('shell.trend.groupCopiedToast') });
               }}
             >
-              复制组
+              {t('shell.trend.duplicateGroup')}
             </button>
             <button
               className="focus-ring cursor-pointer text-left text-err hover:underline"
@@ -305,22 +317,23 @@ function TrendSidebar() {
                 select({ groupId: null });
               }}
             >
-              删除组
+              {t('shell.trend.deleteGroup')}
             </button>
           </div>
         </>
       ) : null}
-      <div className="mt-5 mb-2 text-xs text-ink2">数据源</div>
+      <div className="mt-5 mb-2 text-xs text-ink2">{t('shell.trend.dataSource')}</div>
       <div className="text-xs text-ink2 leading-5">
-        <StatusDot tone="idle" label="后台数据正常" />
+        <StatusDot tone="idle" label={t('shell.trend.backgroundOk')} />
         <br />
-        趋势组直接消费 Block Cache，不创建独立轮询。
+        {t('shell.trend.dataSourceHint')}
       </div>
     </SidebarShell>
   );
 }
 
 function HistorySidebar() {
+  const { t } = useTranslation();
   const allSessions = useSessions();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
@@ -329,16 +342,16 @@ function HistorySidebar() {
     const sessions = allSessions.filter((s) => !query || s.groupName.includes(query));
     const map = new Map<string, typeof sessions>();
     for (const s of sessions) {
-      const day = new Date(s.startUtc).toDateString();
-      const label = day === new Date().toDateString() ? '今天' : day === new Date(Date.now() - 86400000).toDateString() ? '昨天' : new Date(s.startUtc).toLocaleDateString('zh-CN');
+      const key = dayKey(s.startUtc);
+      const label = key === todayKey(0) ? t('shell.history.today') : key === todayKey(1) ? t('shell.history.yesterday') : key;
       map.set(label, [...(map.get(label) ?? []), s]);
     }
     return [...map.entries()];
-  }, [allSessions, query]);
+  }, [allSessions, query, t]);
   return (
-    <SidebarShell title="记录会话">
+    <SidebarShell title={t('shell.sidebar.title.history')}>
       <div className="relative mb-4">
-        <TextInput placeholder="搜索会话" value={query} onChange={(e) => setQuery(e.target.value)} className="h-9 pl-8" />
+        <TextInput placeholder={t('shell.history.searchPlaceholder')} value={query} onChange={(e) => setQuery(e.target.value)} className="h-9 pl-8" />
         <Search20Regular className="absolute left-2 top-2 text-ink2" />
       </div>
       {groups.map(([label, list]) => (
@@ -352,26 +365,27 @@ function HistorySidebar() {
                 className={`focus-ring cursor-pointer rounded-ctl px-3 py-2.5 text-left ${selection.sessionId === s.id ? 'bg-accentsoft' : 'bg-surface hover:bg-surface2'}`}
               >
                 <div className="text-sm font-medium">{s.groupName}</div>
-                <div className="text-xs text-ink2 mt-0.5 mono">{new Date(s.startUtc).toTimeString().slice(0, 8)} – {s.endUtc ? new Date(s.endUtc).toTimeString().slice(0, 8) : '…'}</div>
-                <div className="text-xs text-ink2 mt-0.5">{s.signalCount} 点位 · {s.sampleCount.toLocaleString()} 数值样本</div>
-                <StatusDot tone={s.status === 'recording' ? 'ok' : 'ok'} label={s.status === 'recording' ? '记录中' : '已完成'} className="mt-1" />
+                <div className="text-xs text-ink2 mt-0.5 mono">{fmtTime(s.startUtc)} – {s.endUtc ? fmtTime(s.endUtc) : '…'}</div>
+                <div className="text-xs text-ink2 mt-0.5">{t('shell.sidebar.sessionStats', { signals: s.signalCount, samples: s.sampleCount.toLocaleString() })}</div>
+                <StatusDot tone={s.status === 'recording' ? 'ok' : 'ok'} label={s.status === 'recording' ? t('shell.history.recording') : t('shell.history.completed')} className="mt-1" />
               </button>
             ))}
           </div>
         </div>
       ))}
-      <div className="mt-4 mb-2 text-xs text-ink2">筛选</div>
+      <div className="mt-4 mb-2 text-xs text-ink2">{t('shell.history.filter')}</div>
       <div className="flex flex-col gap-1.5 text-xs text-accent">
-        <span>日期范围</span>
-        <span>趋势组</span>
-        <span>设备 / 从站</span>
+        <span>{t('shell.history.dateRange')}</span>
+        <span>{t('shell.history.trendGroup')}</span>
+        <span>{t('shell.history.deviceSlave')}</span>
       </div>
-      <div className="mt-6 text-xs text-ink2">数据库：history.db · {allSessions.length} 个会话</div>
+      <div className="mt-6 text-xs text-ink2">{t('shell.history.dbInfo', { count: allSessions.length })}</div>
     </SidebarShell>
   );
 }
 
 function CommSidebar() {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const connStates = useConnectionStates();
   const select = useApp((s) => s.select);
@@ -379,43 +393,44 @@ function CommSidebar() {
   const [slaveFilter, setSlaveFilter] = useState<Record<string, boolean>>({});
   const [resultFilter, setResultFilter] = useState({ ok: true, timeout: true, exception: true });
   return (
-    <SidebarShell title="通信来源">
-      <div className="mb-2 text-xs text-ink2">视图</div>
+    <SidebarShell title={t('shell.sidebar.title.comm')}>
+      <div className="mb-2 text-xs text-ink2">{t('shell.comm.view')}</div>
       <div className="flex flex-col gap-1.5 mb-4">
-        <button className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${selection.commView === 'messages' ? 'bg-accentsoft text-accent font-medium' : 'bg-surface'}`} onClick={() => select({ commView: 'messages' })}>报文</button>
-        <button className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${selection.commView === 'health' ? 'bg-accentsoft text-accent font-medium' : 'bg-surface'}`} onClick={() => select({ commView: 'health' })}>连接健康</button>
-        <button className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${selection.commView === 'trace' ? 'bg-accentsoft text-accent font-medium' : 'bg-surface'}`} onClick={() => select({ commView: 'trace' })}>点位追踪</button>
+        <button className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${selection.commView === 'messages' ? 'bg-accentsoft text-accent font-medium' : 'bg-surface'}`} onClick={() => select({ commView: 'messages' })}>{t('shell.comm.messages')}</button>
+        <button className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${selection.commView === 'health' ? 'bg-accentsoft text-accent font-medium' : 'bg-surface'}`} onClick={() => select({ commView: 'health' })}>{t('shell.comm.health')}</button>
+        <button className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${selection.commView === 'trace' ? 'bg-accentsoft text-accent font-medium' : 'bg-surface'}`} onClick={() => select({ commView: 'trace' })}>{t('shell.comm.trace')}</button>
       </div>
-      <div className="mb-2 text-xs text-ink2">连接</div>
+      <div className="mb-2 text-xs text-ink2">{t('shell.comm.connections')}</div>
       {workspace?.connections.map((c) => (
         <button key={c.id} className="focus-ring mb-2 w-full cursor-pointer rounded-ctl bg-surface px-3 py-2 text-left hover:bg-surface2" onClick={() => select({ connectionId: c.id })}>
           <div className="text-sm font-medium">{c.name}</div>
-          <StatusDot tone={connStates[c.id]?.state === 'online' ? 'ok' : 'idle'} label={connStates[c.id]?.state === 'online' ? `已连接 · ${c.transport === 'rtu' ? `${c.rtu?.baudRate ?? ''} ${c.rtu?.dataBits ?? ''}${c.rtu?.parity.charAt(0).toUpperCase()}${c.rtu?.stopBits ?? ''}` : c.tcp?.host}` : '离线'} className="mt-1" />
+          <StatusDot tone={connStates[c.id]?.state === 'online' ? 'ok' : 'idle'} label={connStates[c.id]?.state === 'online' ? t('shell.comm.connectedDetail', { detail: c.transport === 'rtu' ? `${c.rtu?.baudRate ?? ''} ${c.rtu?.dataBits ?? ''}${c.rtu?.parity.charAt(0).toUpperCase()}${c.rtu?.stopBits ?? ''}` : String(c.tcp?.host) }) : t('shell.conn.offline')} className="mt-1" />
         </button>
       ))}
-      <div className="mt-4 mb-2 text-xs text-ink2">从站筛选</div>
+      <div className="mt-4 mb-2 text-xs text-ink2">{t('shell.comm.slaveFilter')}</div>
       <div className="flex flex-col gap-1.5">
         {workspace?.slaves.map((s) => (
-          <Checkbox key={s.id} checked={slaveFilter[s.id] !== false} onCheckedChange={(v) => setSlaveFilter({ ...slaveFilter, [s.id]: v })} label={`从站 ${s.unitId} · ${s.name}`} />
+          <Checkbox key={s.id} checked={slaveFilter[s.id] !== false} onCheckedChange={(v) => setSlaveFilter({ ...slaveFilter, [s.id]: v })} label={t('shell.slave.meta', { unitId: s.unitId, name: s.name })} />
         ))}
       </div>
-      <div className="mt-4 mb-2 text-xs text-ink2">结果筛选</div>
+      <div className="mt-4 mb-2 text-xs text-ink2">{t('shell.comm.resultFilter')}</div>
       <div className="flex flex-col gap-1.5">
-        <Checkbox checked={resultFilter.ok} onCheckedChange={(v) => setResultFilter({ ...resultFilter, ok: v })} label="成功" />
-        <Checkbox checked={resultFilter.timeout} onCheckedChange={(v) => setResultFilter({ ...resultFilter, timeout: v })} label="超时" />
-        <Checkbox checked={resultFilter.exception} onCheckedChange={(v) => setResultFilter({ ...resultFilter, exception: v })} label="Modbus 异常" />
+        <Checkbox checked={resultFilter.ok} onCheckedChange={(v) => setResultFilter({ ...resultFilter, ok: v })} label={t('shell.comm.resultOk')} />
+        <Checkbox checked={resultFilter.timeout} onCheckedChange={(v) => setResultFilter({ ...resultFilter, timeout: v })} label={t('shell.comm.resultTimeout')} />
+        <Checkbox checked={resultFilter.exception} onCheckedChange={(v) => setResultFilter({ ...resultFilter, exception: v })} label={t('shell.comm.resultException')} />
       </div>
-      <div className="mt-4 mb-2 text-xs text-ink2">捕获设置</div>
+      <div className="mt-4 mb-2 text-xs text-ink2">{t('shell.comm.capture')}</div>
       <div className="flex flex-col gap-1.5 text-xs text-ink2">
-        <span>自动滚动：开启</span>
-        <span>保留原始帧：开启</span>
-        <span>最大 50,000 条</span>
+        <span>{t('shell.comm.autoScroll')}</span>
+        <span>{t('shell.comm.keepRawFrames')}</span>
+        <span>{t('shell.comm.maxEntries')}</span>
       </div>
     </SidebarShell>
   );
 }
 
 function TemplatesSidebar() {
+  const { t } = useTranslation();
   const workspace = useWorkspace();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
@@ -423,76 +438,85 @@ function TemplatesSidebar() {
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
   return (
-    <SidebarShell title="设备模板">
+    <SidebarShell title={t('shell.sidebar.title.templates')}>
       <Button
         variant="secondary"
         onClick={async () => {
           const ws = workspace;
           if (!ws) return;
           const id = `tpl-${Date.now().toString(36)}`;
-          await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, { id, name: '新设备模板', version: '1.0', description: '', blocks: [], points: [] }] } });
+          await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, { id, name: t('shell.templates.newTemplateName'), version: '1.0', description: '', blocks: [], points: [] }] } });
           select({ templateId: id });
         }}
       >
-        <Add20Regular /> 新建设备模板
+        <Add20Regular /> {t('shell.templates.newTemplate')}
       </Button>
       <div className="mt-4 flex flex-col gap-2">
-        {workspace?.templates.map((t) => {
-          const bound = workspace?.slaves.filter((s) => s.templateId === t.id).length ?? 0;
+        {workspace?.templates.map((tpl) => {
+          const bound = workspace?.slaves.filter((s) => s.templateId === tpl.id).length ?? 0;
           return (
-            <button key={t.id} onClick={() => select({ templateId: t.id })} className={`focus-ring cursor-pointer rounded-ctl px-3 py-2.5 text-left ${selection.templateId === t.id ? 'bg-accentsoft' : 'bg-surface hover:bg-surface2'}`}>
-              <div className="text-sm font-medium">{t.name}</div>
-              <div className="text-xs text-ink2 mt-0.5">{t.blocks.length} 个数据块 · {t.points.length} 个点位</div>
-              {bound > 0 ? <div className="text-xs text-accent mt-0.5">已绑定 {bound} 个从站</div> : null}
+            <button key={tpl.id} onClick={() => select({ templateId: tpl.id })} className={`focus-ring cursor-pointer rounded-ctl px-3 py-2.5 text-left ${selection.templateId === tpl.id ? 'bg-accentsoft' : 'bg-surface hover:bg-surface2'}`}>
+              <div className="text-sm font-medium">{tpl.name}</div>
+              <div className="text-xs text-ink2 mt-0.5">{t('shell.templates.templateStats', { blocks: tpl.blocks.length, points: tpl.points.length })}</div>
+              {bound > 0 ? <div className="text-xs text-accent mt-0.5">{t('shell.templates.boundSlaves', { count: bound })}</div> : null}
             </button>
           );
         })}
       </div>
-      <div className="mt-5 mb-2 text-xs text-ink2">模板操作</div>
+      <div className="mt-5 mb-2 text-xs text-ink2">{t('shell.templates.operations')}</div>
       <div className="flex flex-col gap-1.5 text-xs text-accent">
-        <button className="focus-ring cursor-pointer text-left hover:underline" onClick={() => openOverlay({ kind: 'screen', id: 'import-registers', templateId: selection.templateId ?? workspace?.templates[0]?.id ?? '' })}>导入寄存器表</button>
+        <button className="focus-ring cursor-pointer text-left hover:underline" onClick={() => openOverlay({ kind: 'screen', id: 'import-registers', templateId: selection.templateId ?? workspace?.templates[0]?.id ?? '' })}>{t('shell.templates.importRegisters')}</button>
         <button
           className="focus-ring cursor-pointer text-left hover:underline"
           onClick={async () => {
-            const t = workspace?.templates.find((x) => x.id === selection.templateId);
-            if (!t) return;
-            const text = JSON.stringify(t, null, 2);
+            const tpl = workspace?.templates.find((x) => x.id === selection.templateId);
+            if (!tpl) return;
+            const text = JSON.stringify(tpl, null, 2);
             await navigator.clipboard.writeText(text);
-            toast({ kind: 'success', title: '模板已复制到剪贴板' });
+            toast({ kind: 'success', title: t('shell.templates.copiedToast') });
           }}
         >
-          导出模板
+          {t('shell.templates.exportTemplate')}
         </button>
         <button
           className="focus-ring cursor-pointer text-left hover:underline"
           onClick={async () => {
             const ws = workspace;
-            const t = ws?.templates.find((x) => x.id === selection.templateId);
-            if (!ws || !t) return;
-            const copy = { ...t, id: `tpl-${Date.now().toString(36)}`, name: `${t.name} 副本` };
+            const tpl = ws?.templates.find((x) => x.id === selection.templateId);
+            if (!ws || !tpl) return;
+            const copy = { ...tpl, id: `tpl-${Date.now().toString(36)}`, name: `${tpl.name} ${t('shell.common.copySuffix')}` };
             await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, copy] } });
           }}
         >
-          复制模板
+          {t('shell.templates.duplicateTemplate')}
         </button>
       </div>
     </SidebarShell>
   );
 }
 
+const SETTINGS_SECTIONS = [
+  { id: 'workspace', key: 'shell.settings.section.workspace' },
+  { id: 'display', key: 'shell.settings.section.display' },
+  { id: 'importCompat', key: 'shell.settings.section.importCompat' },
+  { id: 'recordingStorage', key: 'shell.settings.section.recordingStorage' },
+  { id: 'writeSafety', key: 'shell.settings.section.writeSafety' },
+  { id: 'log', key: 'shell.settings.section.log' },
+] as const;
+
 function SettingsSidebar() {
+  const { t } = useTranslation();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
-  const items = ['工作区', '显示', '导入兼容', '记录与存储', '写入安全', '日志'];
-  const [active, setActive] = useState('工作区');
+  const [active, setActive] = useState<string>('workspace');
   void select;
   void selection;
   return (
-    <SidebarShell title="设置">
+    <SidebarShell title={t('shell.sidebar.title.settings')}>
       <div className="flex flex-col gap-1">
-        {items.map((it) => (
-          <button key={it} className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${active === it ? 'bg-accentsoft text-accent font-medium' : 'hover:bg-surface2'}`} onClick={() => setActive(it)}>
-            {it}
+        {SETTINGS_SECTIONS.map((it) => (
+          <button key={it.id} className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${active === it.id ? 'bg-accentsoft text-accent font-medium' : 'hover:bg-surface2'}`} onClick={() => setActive(it.id)}>
+            {t(it.key)}
           </button>
         ))}
       </div>
@@ -501,6 +525,7 @@ function SettingsSidebar() {
 }
 
 function Sidebar() {
+  const { t } = useTranslation();
   const module = useApp((s) => s.module);
   const width = useApp((s) => s.sidebarWidth);
   const setWidth = useApp((s) => s.setSidebarWidth);
@@ -531,7 +556,7 @@ function Sidebar() {
           dragging.current = true;
         }}
         onDoubleClick={() => setWidth(244)}
-        title="拖拽调整宽度，双击恢复 244 px"
+        title={t('shell.sidebar.resizeHint')}
       />
     </div>
   );
@@ -549,10 +574,11 @@ function Main() {
 }
 
 export function App() {
+  const { t } = useTranslation();
   // Subscribing to the whole snapshot here would re-render the entire tree on every delta
   // (up to 10/s while polling) and defeat every narrow selector below.
   const ready = useSnapshotReady();
-  if (!ready) return <div className="flex h-full items-center justify-center text-ink2">正在加载工作区…</div>;
+  if (!ready) return <div className="flex h-full items-center justify-center text-ink2">{t('shell.loading')}</div>;
   return (
     <div className="flex h-full flex-col">
       <TopBar />

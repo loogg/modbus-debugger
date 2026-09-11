@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './shell';
 import { useApp } from './store/app';
+import './i18n';
 import type { ModbusApi } from '../shared/preload-api';
 import './styles.css';
 

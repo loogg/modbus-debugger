@@ -5,6 +5,8 @@ import * as RadixSelect from '@radix-ui/react-select';
 import * as RadixDropdown from '@radix-ui/react-dropdown-menu';
 import { Checkmark16Regular, CheckmarkSquare20Regular, ChevronDown20Regular, MoreHorizontal20Regular } from '@fluentui/react-icons';
 import { useApp } from '../store/app';
+import { fmtTime } from '../time';
+import { i18n, useTranslation } from '../i18n';
 
 /* ------------------------------- buttons ------------------------------- */
 
@@ -73,11 +75,12 @@ export function slaveStatus(
   enabled: boolean,
   connState: 'offline' | 'connecting' | 'online' | 'error' | undefined,
 ): { tone: 'ok' | 'idle' | 'warn'; label: string } {
-  if (!enabled) return { tone: 'idle', label: '停用' };
-  if (connState === 'online') return { tone: 'ok', label: '在线' };
-  if (connState === 'connecting') return { tone: 'warn', label: '连接中' };
-  if (connState === 'error') return { tone: 'warn', label: '连接异常' };
-  return { tone: 'idle', label: '离线' };
+  // Plain helper, not a component: read the i18n singleton instead of useTranslation().
+  if (!enabled) return { tone: 'idle', label: i18n.t('ui.slaveStatus.disabled') };
+  if (connState === 'online') return { tone: 'ok', label: i18n.t('ui.slaveStatus.online') };
+  if (connState === 'connecting') return { tone: 'warn', label: i18n.t('ui.slaveStatus.connecting') };
+  if (connState === 'error') return { tone: 'warn', label: i18n.t('ui.slaveStatus.error') };
+  return { tone: 'idle', label: i18n.t('ui.slaveStatus.offline') };
 }
 
 /** Shared dropdown visuals: same panel + row treatment for Radix Select and ComboInput. */
@@ -294,10 +297,11 @@ export function Drawer(props: { title: string; subtitle?: string; width?: number
 }
 
 export function OverflowMenu(props: { items: Array<{ label: string; onSelect: () => void; danger?: boolean }> }) {
+  const { t } = useTranslation();
   return (
     <RadixDropdown.Root>
       <RadixDropdown.Trigger asChild>
-        <button className="focus-ring cursor-pointer rounded p-1 hover:bg-surface2" aria-label="更多操作">
+        <button className="focus-ring cursor-pointer rounded p-1 hover:bg-surface2" aria-label={t('ui.moreActions')}>
           <MoreHorizontal20Regular />
         </button>
       </RadixDropdown.Trigger>
@@ -358,11 +362,9 @@ export function formatMs(ms: number | null | undefined): string {
   return `${ms.toFixed(1)} ms`;
 }
 
+/** Wall-clock HH:mm:ss rendered in the user-configured display timezone. */
 export function formatClock(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return fmtTime(iso);
 }
 /* ------------------------------- editable combo ------------------------------- */
 
@@ -380,6 +382,7 @@ export function ComboInput(props: {
   disabled?: boolean;
   testId?: string;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
   const blurTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -440,7 +443,7 @@ export function ComboInput(props: {
       <button
         type="button"
         tabIndex={-1}
-        aria-label="展开选项"
+        aria-label={t('ui.expandOptions')}
         className="focus-ring absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-ink2"
         onClick={() => {
           if (open) {

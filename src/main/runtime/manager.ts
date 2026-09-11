@@ -312,7 +312,7 @@ export class RuntimeManager {
     this.sentTxTotal = this.diagnostics.transactionTotal;
     this.sentEventTotal = this.diagnostics.parseEventTotal;
     for (const entry of this.cache.all()) this.sentCacheRev.set(entry.key, entry.revision);
-    return {
+    const snapshot: AppSnapshot = {
       revision: this.revision,
       workspace: ws,
       workspacePath: this.workspaceService.currentPath,
@@ -330,6 +330,10 @@ export class RuntimeManager {
       prefs: this.workspaceService.getPrefs(),
       historyDbPath: this.history.dbPath,
     };
+    // Align the prefs/dirty trackers with the snapshot so the first tick does not re-emit them.
+    this.sentPrefsRev = this.workspaceService.prefsRevision;
+    this.sentDirty = snapshot.dirty;
+    return snapshot;
   }
 
   /**
@@ -487,6 +491,26 @@ export class RuntimeManager {
       this.sentSessionsRev = this.sessionsRev;
       changed = true;
     }
+    // prefs, dirty and warnings live in Main and change independently of the workspace
+    // revision, so each needs its own change tracking. Without these the renderer kept the
+    // values from the initial snapshot forever: 时区 / 语言 changes were written to prefs.json
+    // but never reached the store, and the unsaved-workspace flag never updated.
+    if (this.workspaceService.prefsRevision !== this.sentPrefsRev) {
+      this.sentPrefsRev = this.workspaceService.prefsRevision;
+      delta.prefs = this.workspaceService.getPrefs();
+      changed = true;
+    }
+    const dirty = this.workspaceService.isDirty();
+    if (dirty !== this.sentDirty) {
+      this.sentDirty = dirty;
+      delta.dirty = dirty;
+      changed = true;
+    }
+    if (this.warningsDirty) {
+      this.warningsDirty = false;
+      delta.warnings = this.warnings;
+      changed = true;
+    }
     if (!changed) return null;
     this.revision++;
     delta.revision = this.revision;
@@ -498,6 +522,9 @@ export class RuntimeManager {
   private lastWarnCheck = 0;
   private recordingViewChanged = false;
   private sentSessionsRev = -1;
+  private sentPrefsRev = -1;
+  private sentDirty: boolean | null = null;
+  private warningsDirty = false;
 
   private healthEmittedAt = new Map<string, number>();
 
@@ -515,6 +542,7 @@ export class RuntimeManager {
     if (JSON.stringify(warnings) !== JSON.stringify(this.warnings)) {
       this.warnings = warnings;
       this.healthDirty = true;
+      this.warningsDirty = true;
     }
   }
 

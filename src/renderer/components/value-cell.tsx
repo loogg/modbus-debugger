@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { PointDef } from '../../domain/model';
 import type { PointViewState } from '../../shared/snapshot';
 import { useApp } from '../store/app';
+import { useTranslation } from '../i18n';
 import { Select } from './ui';
 
 function Spinner() {
@@ -18,6 +19,7 @@ function Spinner() {
  * pending value, rejection / unknown / confirmed markers are transient overlays.
  */
 export function ValueCell(props: { point: PointDef; view: PointViewState | undefined }) {
+  const { t } = useTranslation();
   const writeState = useApp((s) => s.writeStates[props.point.id]);
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
@@ -48,13 +50,13 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
       const entry = Object.entries(props.point.enumMap).find(([k, v]) => v === text || k === text);
       engineering = entry ? Number(entry[0]) : Number(text);
       if (Number.isNaN(engineering)) {
-        toast({ kind: 'error', title: '无效枚举值', message: text });
+        toast({ kind: 'error', title: t('ui.valueCell.invalidEnum'), message: text });
         return;
       }
     } else {
       engineering = Number(text);
       if (Number.isNaN(engineering)) {
-        toast({ kind: 'error', title: '无效数值', message: text });
+        toast({ kind: 'error', title: t('ui.valueCell.invalidNumber'), message: text });
         return;
       }
     }
@@ -84,9 +86,9 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
       </span>
     );
   } else if (writeState?.phase === 'rejected') {
-    marker = <span title={`设备拒绝（异常码 ${writeState.exceptionCode ?? '?'}），保留旧值`} className="text-warn">⚠</span>;
+    marker = <span title={t('ui.valueCell.rejectedTitle', { code: writeState.exceptionCode ?? '?' })} className="text-warn">⚠</span>;
   } else if (writeState?.phase === 'unknown') {
-    marker = <span title="写结果未知，正在回读确认" className="text-ink2">?</span>;
+    marker = <span title={t('ui.valueCell.unknownTitle')} className="text-ink2">?</span>;
   } else if (writeState?.phase === 'confirmed') {
     marker = <span className="text-ok">✓</span>;
   }
@@ -134,7 +136,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
         setDraft(isBool ? (view?.boolValue ? 'ON' : 'OFF') : confirmedText);
         setEditing(true);
       }}
-      title={writable ? '双击编辑' : undefined}
+      title={writable ? t('ui.valueCell.doubleClickEdit') : undefined}
     >
       {valueNode}
       {unit && view?.hasValue ? <span className="text-xs text-ink2">{unit}</span> : null}

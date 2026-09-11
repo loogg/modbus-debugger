@@ -9,6 +9,10 @@ export interface Prefs {
   historyDbPath: string | null;
   persistRawComm: boolean;
   lastWorkspacePath: string | null;
+  /** 'local' follows the OS; otherwise an IANA name applied to every displayed timestamp. */
+  timezone: string;
+  /** BCP-47 language tag for the UI; only zh-CN is wired today. */
+  language: string;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -17,6 +21,8 @@ export const DEFAULT_PREFS: Prefs = {
   historyDbPath: null,
   persistRawComm: false,
   lastWorkspacePath: null,
+  timezone: 'local',
+  language: 'zh-CN',
 };
 
 export class WorkspaceService {
@@ -28,6 +34,8 @@ export class WorkspaceService {
   private prefsPath: string;
   /** Bumped whenever the in-memory workspace object is replaced. */
   private rev = 0;
+  /** Bumped on every prefs write so the runtime can stream prefs changes to the renderer. */
+  private prefsRev = 0;
 
   constructor(private readonly userDataDir: string) {
     this.prefsPath = path.join(userDataDir, 'prefs.json');
@@ -59,6 +67,7 @@ export class WorkspaceService {
   updatePrefs(patch: Partial<Prefs>): Prefs {
     this.prefs = { ...this.prefs, ...patch, window: { ...this.prefs.window, ...(patch.window ?? {}) } };
     fs.writeFileSync(this.prefsPath, JSON.stringify(this.prefs, null, 2), 'utf-8');
+    this.prefsRev += 1;
     return this.prefs;
   }
 
@@ -83,6 +92,11 @@ export class WorkspaceService {
    */
   get revision(): number {
     return this.rev;
+  }
+
+  /** Monotonic counter for prefs; the runtime deltas prefs against it. */
+  get prefsRevision(): number {
+    return this.prefsRev;
   }
 
   newWorkspace(): void {

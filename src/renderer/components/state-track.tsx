@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { fmtDuration, fmtEpoch } from '../time';
 
 export interface TrackEvent {
   tMs: number;
@@ -21,12 +22,6 @@ function useWidth(): [React.RefObject<HTMLDivElement>, number] {
   return [ref, w];
 }
 
-function fmtTime(tMs: number): string {
-  const d = new Date(tMs);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
-
 /**
  * Discrete / text signal track. Bool renders a digital waveform with edge times,
  * Enum renders named state segments with switch times, String renders change markers
@@ -42,9 +37,12 @@ export function StateTrack(props: {
   startMs: number;
   endMs: number;
   height?: number;
+  /** 'epoch' (default): tMs are wall-clock epoch ms; 'duration': ms since session start. */
+  xMode?: 'epoch' | 'duration';
 }) {
   const [ref, width] = useWidth();
   const height = props.height ?? 72;
+  const fmtTime = props.xMode === 'duration' ? fmtDuration : fmtEpoch;
   const padL = 150;
   const padR = 16;
   const span = Math.max(1, props.endMs - props.startMs);

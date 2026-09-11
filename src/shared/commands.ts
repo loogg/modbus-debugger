@@ -33,7 +33,15 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('history.sessions') }),
   z.object({ type: z.literal('history.session'), sessionId: z.string() }),
   z.object({ type: z.literal('history.sessionData'), sessionId: z.string() }),
-  z.object({ type: z.literal('prefs.set'), patch: z.object({ sidebarWidth: z.number().optional(), persistRawComm: z.boolean().optional(), historyDbPath: z.string().nullable().optional() }).passthrough() }),
+  z.object({ type: z.literal('prefs.set'), patch: z.object({
+      sidebarWidth: z.number().optional(),
+      persistRawComm: z.boolean().optional(),
+      historyDbPath: z.string().nullable().optional(),
+      /** IANA zone name, or 'local' to follow the OS. */
+      timezone: z.string().optional(),
+      /** BCP-47 tag; only zh-CN is wired today. */
+      language: z.string().optional(),
+    }) }),
   z.object({ type: z.literal('diagnostics.clear') }),
   z.object({
     type: z.literal('diagnostics.healthSeries'),
