@@ -55,3 +55,10 @@ flowchart LR
 - 设计基准 1440×960；最小 1024×680；Standard ≥1280，Compact 1024–1279。
 - App Rail 72px；Sidebar 默认 244px，可调 220–320px 并持久化。
 - Table 工程列不因窄窗口隐藏；达到最小列宽后内部横向滚动；Header 保持 Sticky，Point 列 Pin 在左侧保持可见；Drawer Overlay Main；Dialog Body 内滚动。
+
+### Override：历史存储使用 sql.js 替代 better-sqlite3
+
+- 证据：better-sqlite3 为 V8-API 原生模块，ABI 敏感。Node 与 Electron 之间切换需重编译或切换 prebuild；缺少 ClangCL 工具链的机器源码编译直接失败（本机复现：MSB8020）；多机器开发与分发无法保证 npm install 零编译。
+- 决定：history.db 改由 sql.js（MIT，SQLite 的 WASM 构建）承载，零原生二进制；落盘文件仍为标准 SQLite 数据库（sql.js export 字节），外部工具可直接打开；写入采用事务 + 去抖原子落盘（临时文件 + rename）。
+- 保留：serialport（N-API prebuilds，ABI 稳定，Node/Electron 通用）。
+- 影响面：仅 src/main/services/history.ts 与其调用方（main 启动、持久化测试）；对外 API 不变。

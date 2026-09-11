@@ -88,6 +88,6 @@
 - lint：eslint 0 error；typecheck：tsc --noEmit 0 error。
 - unit + integration：Vitest 81 tests passed（协议 Golden、流式分帧/Resync、校验分类、映射/缩放、重叠、Workspace/History 持久化、Runtime 调度/RMW/Scanner/TemporaryRead、PyModbus 模拟器互操作）。
 - E2E：WebdriverIO + @wdio/electron-service 针对打包版 8 tests passed（拓扑、实时刷新、写+回读、通信日志、趋势图表、从站扫描、临时读取、1024 紧凑窗口），截图存 tests/e2e/screenshots/。
-- Production Build：npm run package 成功；native modules（better-sqlite3 / serialport）在打包版内正常加载。
+- Production Build：npm run package 成功；打包版无 ABI 敏感原生依赖（历史存储 sql.js/WASM，串口 serialport N-API prebuilds）。
 - Installer Smoke：Squirrel Setup 静默安装 → 启动已安装应用并确认窗口/页面目标 → Update.exe --uninstall 执行（残留目录由 Squirrel 在下次更新/重启时清理）。
 - 模拟器：tools/simulator/modbus_sim.py（PyModbus 3.15，独立实现）提供 units 1-3、动态数值/Bool 边沿/Enum/String/写支持。

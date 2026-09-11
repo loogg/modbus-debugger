@@ -55,9 +55,9 @@ describe('Workspace persistence', () => {
 });
 
 describe('History store', () => {
-  it('records sessions with schema snapshot, samples and events', () => {
+  it('records sessions with schema snapshot, samples and events', async () => {
     const dir = tmpDir();
-    const db = new HistoryStore(path.join(dir, 'history.db'));
+    const db = await HistoryStore.open(path.join(dir, 'history.db'));
     db.createSession('s1', 'g1', 'group', [
       { signalId: 'sig1', pointId: 'p1', pointName: 'speed', connectionName: 'c', slaveName: 's', blockName: 'b', rawType: 'Int16', unit: 'rpm', scale: 1, offset: 0, enumMap: {}, recordMode: 'samples' },
       { signalId: 'sig2', pointId: 'p2', pointName: 'mode', connectionName: 'c', slaveName: 's', blockName: 'b', rawType: 'BitField', unit: '', scale: 1, offset: 0, enumMap: { '0': 'pos' }, recordMode: 'events' },
@@ -73,13 +73,13 @@ describe('History store', () => {
     db.close();
   });
 
-  it('schema snapshot survives later template changes', () => {
+  it('schema snapshot survives later template changes', async () => {
     const dir = tmpDir();
     const dbPath = path.join(dir, 'history.db');
-    const db = new HistoryStore(dbPath);
+    const db = await HistoryStore.open(dbPath);
     db.createSession('s2', 'g', 'g', [{ signalId: 'a', pointId: 'p', pointName: 'old-name', connectionName: '', slaveName: '', blockName: '', rawType: 'UInt16', unit: '', scale: 1, offset: 0, enumMap: {}, recordMode: 'samples' }]);
     db.close();
-    const db2 = new HistoryStore(dbPath);
+    const db2 = await HistoryStore.open(dbPath);
     expect(db2.getSession('s2')?.schema[0]?.pointName).toBe('old-name');
     db2.close();
   });

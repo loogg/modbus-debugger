@@ -49,7 +49,7 @@ function clampToBounds(x: number, y: number, width: number, height: number): Ele
 
 async function createWindow(): Promise<void> {
   const wsSvc = new WorkspaceService(app.getPath('userData'));
-  const history = new HistoryStore(wsSvc.defaultHistoryDbPath());
+  const history = await HistoryStore.open(wsSvc.defaultHistoryDbPath());
   manager = new RuntimeManager(wsSvc, history);
   const loaded = wsSvc.loadFrom(process.env.MODBUS_E2E_WORKSPACE || null);
   log.info('workspace loaded:', loaded.ok, wsSvc.currentPath);

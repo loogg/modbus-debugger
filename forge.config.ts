@@ -19,23 +19,11 @@ const config: ForgeConfig = {
     packageAfterCopy: async (_config: unknown, buildPath: string) => {
       const src = path.resolve(__dirname, 'node_modules');
       const dest = path.join(buildPath, 'node_modules');
-      const dirs = ['better-sqlite3', 'bindings', 'file-uri-to-path', 'debug', 'ms', 'node-gyp-build', 'node-addon-api', 'serialport', '@serialport'];
+      const dirs = ['sql.js', 'bindings', 'file-uri-to-path', 'debug', 'ms', 'node-gyp-build', 'node-addon-api', 'serialport', '@serialport'];
       for (const d of dirs) {
         const from = path.join(src, d);
         if (fs.existsSync(from)) fs.cpSync(from, path.join(dest, d), { recursive: true });
       }
-      // better-sqlite3 is ABI-specific: always ship the Electron build regardless of the
-      // current node_modules state (which may hold Node-ABI binaries for the test run).
-      const stash = path.resolve(__dirname, 'tools', 'natives-electron', 'better_sqlite3.node');
-      if (fs.existsSync(stash)) {
-        const target = path.join(dest, 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.copyFileSync(stash, target);
-      }
-    },
-    // Native modules (better-sqlite3, serialport) must be rebuilt for the Electron ABI.
-    postPackage: async (_config, options) => {
-      void options;
     },
   },
   makers: [

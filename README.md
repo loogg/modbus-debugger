@@ -5,7 +5,6 @@ Modbus RTU / TCP 桌面调试工具（Electron + React + TypeScript）。
 ## 开发
 
     npm install
-    npm run natives:node      # better-sqlite3 切换为 Node ABI（Vitest 需要）
     npm run lint
     npm run typecheck
     npm test                  # unit + integration
@@ -29,9 +28,9 @@ E2E 使用 tools/e2e/demo.workspace.json 作为演示工作区（MODBUS_E2E_WORK
     npm run make              # out/make/squirrel.windows/x64/*Setup.exe
     node tools/smoke-installer.mjs   # 安装 → 启动 → 校验 → 卸载 冒烟
 
-原生模块说明：better-sqlite3 为 ABI 敏感模块；tools/natives-electron/better_sqlite3.node
-保存 Electron ABI 副本，打包钩子 packageAfterCopy 会将其注入安装包；
-npm run natives:node 用于把项目 node_modules 恢复为 Node ABI 以运行 Vitest。
+存储说明：历史库使用 sql.js（SQLite 的 WASM 构建，MIT），零原生二进制、跨机器免编译；
+history.db 落盘仍为标准 SQLite 文件。
+串口使用 serialport（N-API prebuilds，Node/Electron 通用）。
 serialport 使用 N-API prebuilds，Node / Electron 通用。
 
 ## 目录
