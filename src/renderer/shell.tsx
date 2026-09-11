@@ -22,7 +22,7 @@ import {
   useWorkspace,
   type ModuleId,
 } from './store/app';
-import { Button, StatusDot, TextInput, Toasts, Checkbox } from './components/ui';
+import { Button, StatusDot, TextInput, Toasts, Checkbox, slaveStatus } from './components/ui';
 import { DevicesScreen } from './screens/devices';
 import { RealtimeScreen } from './screens/realtime';
 import { TrendScreen } from './screens/trend';
@@ -139,6 +139,7 @@ function SlaveCard(props: { slaveId: string; showBlocks: boolean; selectedSlave?
   const workspace = useWorkspace();
   const slave = workspace?.slaves.find((s) => s.id === props.slaveId);
   const template = workspace?.templates.find((t) => t.id === slave?.templateId);
+  const connState = useConnectionState(slave?.connectionId);
   const [open, setOpen] = useState(true);
   if (!slave) return null;
   return (
@@ -148,7 +149,7 @@ function SlaveCard(props: { slaveId: string; showBlocks: boolean; selectedSlave?
           {open ? <ChevronDown20Regular className="shrink-0" /> : <ChevronRight20Regular className="shrink-0" />}
           {slave.name}
         </span>
-        <StatusDot tone={slave.enabled ? 'ok' : 'idle'} label={slave.enabled ? '在线' : '停用'} />
+        <StatusDot {...slaveStatus(slave.enabled, connState)} />
       </button>
       <div className="ml-5 mt-0.5 text-xs text-ink2">从站 {slave.unitId} · {template?.name ?? '未绑定模板'}</div>
       {open && props.showBlocks && template ? (

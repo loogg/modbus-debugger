@@ -48,6 +48,8 @@ export class RuntimeManager {
   private workspaceRev = 0;
   private connStateRev = 0;
   private connConfigHash = new Map<string, string>();
+  /** Connections the user explicitly disconnected; survives runtime re-creation. */
+  private userOffline = new Set<string>();
   private lastConnStates = new Map<string, ConnectionStateView>();
   private pointIndexCache: { rev: number; map: Map<string, PointRef> } | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -141,7 +143,9 @@ export class RuntimeManager {
           },
         });
         this.runtimes.set(conn.id, rt);
-        void rt.start();
+        // A runtime recreated after a config edit must honour an explicit disconnect:
+        // it stays offline until the user presses 连接 again.
+        if (!this.userOffline.has(conn.id)) void rt.start();
       }
       const targets = ws.slaves
         .filter((s) => s.connectionId === conn.id)
@@ -665,12 +669,16 @@ export class RuntimeManager {
       case 'connection.connect': {
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
-        await rt.start();
+        this.userOffline.delete(cmd.connectionId);
+        if (rt.state === 'offline' || rt.state === 'error') await rt.start();
         return { ok: true, value: null };
       }
       case 'connection.disconnect': {
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
+        // Remember the intent: a later config edit recreates the runtime, and the new
+        // instance must stay offline until the user connects again.
+        this.userOffline.add(cmd.connectionId);
         await rt.stop();
         return { ok: true, value: null };
       }

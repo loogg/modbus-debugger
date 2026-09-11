@@ -1,4 +1,12 @@
 import { browser, $, expect } from '@wdio/globals';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const SHOTS = path.resolve('tests', 'e2e', 'screenshots');
+async function shot(name: string): Promise<void> {
+  fs.mkdirSync(SHOTS, { recursive: true });
+  await browser.saveScreenshot(path.join(SHOTS, `${name}.png`));
+}
 
 /** Set a controlled input value through the native setter (React-safe). */
 async function setNative(selector: string, value: string): Promise<void> {
@@ -158,7 +166,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     expect(text).toContain('原始帧');
   });
 
-  it('连接设置：右侧主区编辑并保存生效', async () => {
+  it('连接设置：连接时锁定，断开后可编辑保存，再连接恢复锁定', async () => {
     await rail('设备');
     await browser.execute(() => {
       const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('生产线 TCP'));
@@ -170,18 +178,74 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     expect(text).toContain('从站');
     const timeoutSel = 'input[data-testid="timeout-input"]';
     expect(await (await $(timeoutSel)).getValue()).toBe('800');
+
+    // connected -> parameters locked, disconnect offered
+    expect(await (await $(timeoutSel)).isEnabled()).toBe(false);
+    expect(text).toContain('已连接：参数已锁定');
+    expect(text).toContain('断开连接');
+
+    // disconnect -> editable
+    await clickText('断开连接');
+    await browser.waitUntil(async () => (await bodyText()).includes('未连接：可编辑参数'), { timeout: 15000 });
+    expect(await (await $(timeoutSel)).isEnabled()).toBe(true);
+    await shot('01C-connection-settings-offline-1440');
+    // visual check of the restyled Radix Select panel
+    await (await $('//div[text()="日志级别"]/following-sibling::button[1]')).click();
+    await browser.pause(400);
+    await shot('26-select-open-1440');
+    await browser.keys('Escape');
+    await browser.pause(300);
     await setNative(timeoutSel, '700');
     await clickText('保存');
     await browser.pause(600);
-    await browser.execute(() => {
-      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('生产线 TCP'));
-      (b as HTMLElement | undefined)?.click();
-    });
-    await browser.pause(500);
     expect(await (await $(timeoutSel)).getValue()).toBe('700');
+
+    // connect again -> live with the new timeout, locked again
+    await clickText('连接');
+    await browser.waitUntil(async () => (await bodyText()).includes('已连接：参数已锁定'), { timeout: 20000 });
+    expect(await (await $(timeoutSel)).getValue()).toBe('700');
+    expect(await (await $(timeoutSel)).isEnabled()).toBe(false);
+
+    // restore the fixture value for later specs
+    await clickText('断开连接');
+    await browser.waitUntil(async () => (await bodyText()).includes('未连接：可编辑参数'), { timeout: 15000 });
     await setNative(timeoutSel, '800');
     await clickText('保存');
     await browser.pause(400);
+    await clickText('连接');
+    await browser.waitUntil(async () => (await bodyText()).includes('已连接：参数已锁定'), { timeout: 20000 });
+  });
+
+  it('添加连接：串口默认第一个可用口，选中选项后下拉自动关闭', async () => {
+    await rail('设备');
+    await clickText('添加连接');
+    await browser.pause(900); // mount-time enumeration
+    const portSel = 'input[data-testid="port-combo"]';
+    const prefilled = await (await $(portSel)).getValue();
+    expect(prefilled).toMatch(/^COM\d+$/);
+
+    await (await $(portSel)).click();
+    await browser.pause(400);
+    await shot('25-combo-open-1440');
+    const labels = await browser.execute(() =>
+      [...document.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim()).filter((x) => /^COM\d+/.test(x)),
+    );
+    expect(labels.length).toBeGreaterThanOrEqual(1);
+    const label = labels.find((x) => x !== prefilled) ?? labels[0]!;
+    await browser.execute((target) => {
+      const el = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === target);
+      (el as HTMLElement | undefined)?.click();
+    }, label);
+    await browser.pause(400);
+
+    // value applied and the list is gone
+    expect(await (await $(portSel)).getValue()).toBe(label.split(' · ')[0]);
+    const stillOpen = await browser.execute(() =>
+      [...document.querySelectorAll('button')].some((b) => /^COM\d+/.test((b.textContent ?? '').trim())),
+    );
+    expect(stillOpen).toBe(false);
+    await clickText('取消');
+    await waitGone('配置 RTU / TCP 通信参数');
   });
   it('设置页：工作区文件 / 地址规则 / 记录与历史 / 写入安全', async () => {
     await rail('设置');

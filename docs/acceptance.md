@@ -87,7 +87,7 @@
 
 - lint：eslint 0 error；typecheck：tsc --noEmit 0 error。
 - unit + integration + UI 组件：Vitest 120 tests passed（协议 Golden、流式分帧/Resync、校验分类、映射/缩放、重叠、Workspace/History 持久化、Runtime 调度/RMW/Scanner/TemporaryRead、诊断游标/健康序列、Manager snapshot-delta 管线、PyModbus 模拟器互操作、ComboInput 下拉生命周期、DataTable 行 memo）。
-- E2E：WebdriverIO + @wdio/electron-service 针对打包版 20 tests passed（app.e2e.ts 9：拓扑、实时刷新、写+回读、通信日志+帧详情+健康曲线、趋势图表、从站扫描、临时读取、连接设置主区、1024 紧凑窗口；full-features.e2e.ts 11：添加连接/下拉自动关闭、添加从站与 Unit ID 冲突、无模板添加从站、实时表编辑态、模板编辑、导入寄存器表、趋势→历史全链路、连接健康与点位追踪、连接设置编辑保存、设置页），截图存 tests/e2e/screenshots/。
+- E2E：WebdriverIO + @wdio/electron-service 针对打包版 21 tests passed（app.e2e.ts 9：拓扑、实时刷新、写+回读、通信日志+帧详情+健康曲线、趋势图表、从站扫描、临时读取、连接设置锁定态、1024 紧凑窗口；full-features.e2e.ts 12：添加连接/下拉自动关闭、串口默认首口与选中即关闭、添加从站与 Unit ID 冲突、无模板添加从站、实时表编辑态、模板编辑、导入寄存器表、趋势→历史全链路、连接健康与点位追踪、连接设置 断开→改→保存→连接→再锁定、下拉生命周期四路径、设置页），截图存 tests/e2e/screenshots/。
 - Production Build：npm run package 成功；打包版无 ABI 敏感原生依赖（历史存储 sql.js/WASM，串口 serialport N-API prebuilds）。
 - Installer Smoke（tools/smoke-installer.mjs，任一步失败即 exit 1）：Squirrel Setup 静默安装 → 校验 `%LocalAppData%\modbus-debugger\app-<version>` → 启动已安装 exe 并断言窗口标题 → 结束进程 → `Update.exe --uninstall -s` → 断言安装树已删除。
 - 模拟器：tools/simulator/modbus_sim.py（PyModbus 3.15，独立实现）提供 units 1-3、动态数值/Bool 边沿/Enum/String/写支持。
@@ -102,7 +102,11 @@
 - [x] 趋势记录 → 历史会话 → 会话信号页（Schema Snapshot / 记录方式）全链路。
 - [x] 通信：连接健康指标卡、真实 1 Hz 采样的 5 分钟曲线与数据块性能表；报文行点击驱动帧详情；点位追踪来源追踪与原始帧。
 - [x] 设置：工作区文件 / 地址规则 / 记录与历史 / 写入安全。
-- [x] 连接设置：点击侧栏连接后主区显示该连接的可编辑参数（名称/串口或主机端口/超时/重试/重连/RTS/日志级别/帧间隔）+ 从站列表 + 添加从站 + 扫描/临时读取；保存即应用到运行时并回显。
+- [x] 连接设置：点击侧栏连接后主区显示该连接的状态、连接/断开按钮、参数表单、从站列表 + 添加从站 + 扫描/临时读取。
+- [x] 连接在线时参数锁定（输入/下拉禁用，保存禁用并提示），断开后可编辑保存；保存不自动重连，需显式「连接」；扫描/临时读取要求连接状态（E2E 覆盖 断开→改→保存→连接→再锁定 全链路）。
+- [x] 串口在添加连接与连接设置中均为下拉（每次打开重新枚举）+ 可手工输入；新建连接默认填入本机第一个可用串口；选中选项后下拉自动关闭。
+- [x] 下拉视觉统一：Radix Select 与 ComboInput 共用面板/行样式（触发器等宽面板、圆角、投影、hover/选中态、选中标记），锁定态输入有禁用样式。
+- [x] 从站状态诚实显示：enabled 且连接 online 才显示「在线」，否则 离线/连接中/连接异常/停用。
 - [x] 下拉框自动关闭：选择选项 / 失焦 / Esc（分层：先关列表再关 Dialog）/ 点击外部 四条路径均有 E2E 与组件测试。
 - [x] 无模板添加从站：模板下拉含「（暂不绑定模板）」，Unit ID 冲突是唯一的禁用条件；未绑定从站不参与轮询。
 - [x] 扫描 / 临时读取 / 保存为数据块入口（app.e2e.ts）。
@@ -156,3 +160,12 @@
 - [x] 修复配置超时不生效：`attemptRequest` 使用 `opts.timeoutMs ?? connection.timeoutMs`（此前所有请求路径回落到硬编码 500 ms）；Scanner 保留显式短探测超时；集成测试断言 60/80 ms 配置真实生效。
 - [x] 修复报文行点击不生效：旧实现依赖不存在的 `data-idx` 属性；改为 `DataTable.onRowClick`。
 - [x] E2E fixture 防污染：`wdio.conf.ts` 的 `onPrepare` 把 `tools/e2e/demo.workspace.json` 复制到临时目录再注入 `MODBUS_E2E_WORKSPACE`（此前一次失败运行会把 fixture 的连接名改写，导致后续所有运行从不同世界开始）。
+
+## 本轮迭代证据（连接生命周期 + 下拉体验）
+
+- [x] 连接设置页加入连接生命周期：状态徽标 + 「连接 / 断开连接」按钮；online/connecting 时参数表单与保存整体锁定并给出提示，断开后可编辑保存；保存不自动重连（RuntimeManager.userOffline 记录用户意图，配置重建 Runtime 时保留），扫描/临时读取要求连接状态。
+- [x] 串口在连接设置页同样为下拉（打开时重新枚举）+ 可手工输入；新建连接打开时即枚举并把默认值设为本机第一个可用串口；选中选项后下拉自动关闭（E2E 对 port-combo 与 baud-combo 均断言）。
+- [x] 下拉视觉统一：Radix Select 面板宽度对齐触发器（`--radix-select-trigger-width`），与 ComboInput 共用面板/行样式（圆角、投影、hover/选中态、Checkmark 选中标记）；锁定输入有禁用样式。
+- [x] 从站状态改为诚实显示（enabled 且连接 online 才「在线」；否则 离线/连接中/连接异常/停用），设置页与侧栏一致。
+- [x] ConnectionRuntime.start() 幂等（重复 start 不叠加调度定时器）。
+- [x] 截图审核：01B-connection-settings-1440（锁定态）、01C-connection-settings-offline-1440（可编辑态）、25-combo-open-1440、26-select-open-1440。

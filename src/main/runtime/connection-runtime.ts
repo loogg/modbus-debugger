@@ -115,7 +115,10 @@ export class ConnectionRuntime {
 
   async start(): Promise<void> {
     this.stopped = false;
-    this.timer = setInterval(() => this.tick(), 5);
+    // idempotent: a second start() must not stack a second scheduler interval
+    if (!this.timer) this.timer = setInterval(() => this.tick(), 5);
+    this.reconnectAt = 0;
+    if (this.state === 'connecting') return;
     await this.connect();
   }
 

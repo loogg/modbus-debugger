@@ -148,6 +148,11 @@ describe('Modbus Debugger packaged app E2E', () => {
     expect(text).toContain('从站');
     expect(text).toContain('添加从站');
     expect(await (await $('input[data-testid="timeout-input"]')).getValue()).toBe('800');
+    // a live connection locks the parameter form and offers 断开连接
+    expect(await (await $('input[data-testid="timeout-input"]')).isEnabled()).toBe(false);
+    const t2 = await bodyText();
+    expect(t2).toContain('断开连接');
+    expect(t2).toContain('已连接：参数已锁定');
     await shot('01B-connection-settings-1440');
     // back to the slave device page
     await browser.execute(() => {

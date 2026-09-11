@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useApp, useConnectionStates, useHealth, useWorkspace } from '../store/app';
-import { Button, EmptyState, Field, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput, formatClock } from '../components/ui';
+import { Button, ComboInput, EmptyState, Field, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput, formatClock, slaveStatus } from '../components/ui';
 import { DataTable } from '../components/table';
 import { AREAS } from '../../domain/address';
+
+/** Shared baud-rate presets for the add-connection dialog and the connection settings page. */
+export const BAUD_PRESETS = ['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600', '1000000'].map((b) => ({ value: b, label: b }));
 
 export function DevicesScreen() {
   const workspace = useWorkspace();
@@ -309,13 +312,16 @@ export function TempReadView(props: { connectionId: string }) {
 
 function ConnectionSettingsView(props: { connectionId: string }) {
   const workspace = useWorkspace();
+  const connStates = useConnectionStates();
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
   const select = useApp((s) => s.select);
   const openOverlay = useApp((s) => s.openOverlay);
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
+  const state = connStates[props.connectionId]?.state ?? 'offline';
   const [name, setName] = useState(conn?.name ?? '');
   const [port, setPort] = useState(conn?.rtu?.port ?? 'COM3');
+  const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [baud, setBaud] = useState(String(conn?.rtu?.baudRate ?? 115200));
   const [host, setHost] = useState(conn?.tcp?.host ?? '');
   const [tcpPort, setTcpPort] = useState(String(conn?.tcp?.port ?? 502));
@@ -325,9 +331,23 @@ function ConnectionSettingsView(props: { connectionId: string }) {
   const [rts, setRts] = useState<'none' | 'toggle'>(conn?.rtsControl ?? 'none');
   const [logLevel, setLogLevel] = useState<'info' | 'debug'>(conn?.logLevel ?? 'info');
   const [interFrame, setInterFrame] = useState(String(conn?.interFrameMs ?? 0));
+  const [busy, setBusy] = useState(false);
+
+  const refreshPorts = useCallback(() => {
+    void command<{ path: string; manufacturer: string | null }[]>({ type: 'serial.list' }).then((res) => {
+      if (res.ok) setPortOptions(res.value.map((p) => ({ value: p.path, label: p.manufacturer ? `${p.path} · ${p.manufacturer}` : p.path })));
+    });
+  }, [command]);
+
   if (!workspace || !conn) return null;
+  // While the link is up the parameters are locked: editing a live serial/TCP session would
+  // tear the transport down mid-flight. Disconnect first, edit, save, then connect again.
+  const live = state === 'online' || state === 'connecting';
+  const stateLabel = state === 'online' ? '已连接' : state === 'connecting' ? '连接中' : state === 'error' ? '连接异常' : '未连接';
   const slaves = workspace.slaves.filter((sl) => sl.connectionId === conn.id);
+
   const save = async () => {
+    if (live) return;
     const updated = {
       ...conn,
       name,
@@ -341,8 +361,18 @@ function ConnectionSettingsView(props: { connectionId: string }) {
       interFrameMs: Number(interFrame) || 0,
     };
     await command({ type: 'workspace.apply', workspace: { ...workspace, connections: workspace.connections.map((c) => (c.id === conn.id ? updated : c)) } });
-    toast({ kind: 'success', title: '连接已更新', message: '参数已应用到运行时。' });
+    toast({ kind: 'success', title: '连接已更新', message: '参数已保存，点击「连接」建立链路。' });
   };
+
+  const toggleLink = async () => {
+    setBusy(true);
+    const res = live
+      ? await command({ type: 'connection.disconnect', connectionId: conn.id })
+      : await command({ type: 'connection.connect', connectionId: conn.id });
+    setBusy(false);
+    if (!res.ok) toast({ kind: 'error', title: live ? '断开失败' : '连接失败', message: res.error });
+  };
+
   return (
     <>
       <PageHeader
@@ -350,32 +380,45 @@ function ConnectionSettingsView(props: { connectionId: string }) {
         subtitle={conn.transport === 'rtu' ? `RS485 · ${conn.rtu?.port} · ${conn.rtu?.baudRate} ${conn.rtu?.dataBits}${(conn.rtu?.parity ?? 'none').charAt(0).toUpperCase()}${conn.rtu?.stopBits}` : `TCP · ${conn.tcp?.host}:${conn.tcp?.port}`}
         actions={
           <>
-            <Button onClick={() => select({ connectionId: conn.id, deviceView: 'scan' })}>扫描</Button>
-            <Button onClick={() => select({ connectionId: conn.id, deviceView: 'temp' })}>临时读取</Button>
-            <Button variant="primary" onClick={() => void save()}>保存</Button>
+            <span className="inline-flex h-10 items-center rounded-ctl bg-surface2 px-4 text-sm">
+              <StatusDot tone={state === 'online' ? 'ok' : state === 'error' ? 'err' : state === 'connecting' ? 'warn' : 'idle'} label={stateLabel} />
+            </span>
+            <Button disabled={!live} title={live ? undefined : '连接后才能扫描'} onClick={() => select({ connectionId: conn.id, deviceView: 'scan' })}>扫描</Button>
+            <Button disabled={!live} title={live ? undefined : '连接后才能临时读取'} onClick={() => select({ connectionId: conn.id, deviceView: 'temp' })}>临时读取</Button>
+            <Button disabled={busy} onClick={() => void toggleLink()}>{live ? '断开连接' : '连接'}</Button>
+            <Button variant="primary" disabled={live || busy} title={live ? '断开连接后才能修改并保存' : undefined} onClick={() => void save()}>保存</Button>
           </>
         }
       />
+      <InfoBand tone="blue">
+        {live
+          ? '已连接：参数已锁定，避免运行中修改导致链路异常。点击「断开连接」后可编辑并保存。'
+          : '未连接：可编辑参数；保存后点击「连接」建立链路。扫描与临时读取需要连接状态。'}
+      </InfoBand>
       <InfoBand>
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-          <Field label="连接名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="连接名称"><TextInput disabled={live} value={name} onChange={(e) => setName(e.target.value)} /></Field>
           {conn.transport === 'rtu' ? (
             <>
-              <Field label="串口"><TextInput data-testid="conn-port" value={port} onChange={(e) => setPort(e.target.value)} /></Field>
-              <Field label="波特率"><TextInput data-testid="conn-baud" value={baud} onChange={(e) => setBaud(e.target.value)} /></Field>
+              <Field label="串口" hint={live ? undefined : '打开下拉时重新枚举当前可用串口，也可直接输入'}>
+                <ComboInput testId="conn-port" value={port} onChange={setPort} options={portOptions} onOpen={refreshPorts} placeholder="COM1" disabled={live} />
+              </Field>
+              <Field label="波特率" hint={live ? undefined : '支持自定义波特率输入'}>
+                <ComboInput testId="conn-baud" value={baud} onChange={setBaud} options={BAUD_PRESETS} disabled={live} />
+              </Field>
             </>
           ) : (
             <>
-              <Field label="主机"><TextInput value={host} onChange={(e) => setHost(e.target.value)} /></Field>
-              <Field label="端口"><TextInput value={tcpPort} onChange={(e) => setTcpPort(e.target.value)} /></Field>
+              <Field label="主机"><TextInput disabled={live} value={host} onChange={(e) => setHost(e.target.value)} /></Field>
+              <Field label="端口"><TextInput disabled={live} value={tcpPort} onChange={(e) => setTcpPort(e.target.value)} /></Field>
             </>
           )}
-          <Field label="超时 (ms)"><TextInput data-testid="timeout-input" value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
-          <Field label="重试"><TextInput value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
-          <Field label="重连策略"><Select value={reconnect} onChange={(v) => setReconnect(v as 'auto' | 'manual')} options={[{ value: 'auto', label: '自动重连' }, { value: 'manual', label: '手动' }]} /></Field>
-          <Field label="RTS 控制"><Select value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
-          <Field label="日志级别"><Select value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
-          <Field label="帧间隔 (ms)"><TextInput value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
+          <Field label="超时 (ms)"><TextInput data-testid="timeout-input" disabled={live} value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
+          <Field label="重试"><TextInput disabled={live} value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
+          <Field label="重连策略"><Select disabled={live} value={reconnect} onChange={(v) => setReconnect(v as 'auto' | 'manual')} options={[{ value: 'auto', label: '自动重连' }, { value: 'manual', label: '手动' }]} /></Field>
+          <Field label="RTS 控制"><Select disabled={live} value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
+          <Field label="日志级别"><Select disabled={live} value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
+          <Field label="帧间隔 (ms)"><TextInput disabled={live} value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
         </div>
       </InfoBand>
       <SectionTitle right={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: conn.id })}>＋ 添加从站</Button>}>从站</SectionTitle>
@@ -389,7 +432,7 @@ function ConnectionSettingsView(props: { connectionId: string }) {
               <button key={sl.id} className="focus-ring cursor-pointer rounded-card border border-line bg-surface p-4 text-left hover:border-accent" onClick={() => select({ connectionId: conn.id, slaveId: sl.id, deviceView: 'topology' })}>
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-bold">{sl.name}</span>
-                  <StatusDot tone={sl.enabled ? 'ok' : 'idle'} label={sl.enabled ? '在线' : '停用'} />
+                  <StatusDot {...slaveStatus(sl.enabled, state)} />
                 </div>
                 <div className="text-xs text-ink2 mt-1">从站 {sl.unitId} · {tpl ? tpl.name : '未绑定模板'}</div>
               </button>

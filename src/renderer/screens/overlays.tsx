@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useApp, useBlocks, usePoints, useWorkspace } from '../store/app';
 import { Button, Checkbox, ComboInput, Dialog, Drawer, Field, InfoBand, Select, TextInput } from '../components/ui';
 import { AREAS } from '../../domain/address';
+import { BAUD_PRESETS } from './devices';
 import { findBlockOverlaps } from '../../domain/overlap';
 import { registersForType, type RawType } from '../../domain/mapping';
 import { engineeringToRaw } from '../../domain/scale';
@@ -39,17 +40,30 @@ function AddConnectionDialog(props: { connectionId?: string }) {
   const toast = useApp((s) => s.toast);
   const [name, setName] = useState(existingConn?.name ?? '生产线 RS485');
   const [protocol, setProtocol] = useState<'rtu' | 'tcp'>(existingConn?.transport ?? 'rtu');
-  const [port, setPort] = useState(existingConn?.rtu?.port ?? 'COM3');
+  const [port, setPort] = useState(existingConn?.rtu?.port ?? '');
   const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const portTouched = useRef(false);
   const [baud, setBaud] = useState(String(existingConn?.rtu?.baudRate ?? 115200));
   const [rts, setRts] = useState<'none' | 'toggle'>(existingConn?.rtsControl ?? 'none');
   const [logLevel, setLogLevel] = useState<'info' | 'debug'>(existingConn?.logLevel ?? 'info');
   const [interFrame, setInterFrame] = useState(String(existingConn?.interFrameMs ?? 0));
+  const applyPorts = (ports: Array<{ path: string; manufacturer: string | null }>) => {
+    setPortOptions(ports.map((p) => ({ value: p.path, label: p.manufacturer ? `${p.path} · ${p.manufacturer}` : p.path })));
+    // A brand-new connection defaults to the first port the machine actually has.
+    if (!portTouched.current && !existingConn && ports.length > 0) setPort(ports[0]!.path);
+  };
   const refreshPorts = () => {
     void command<{ path: string; manufacturer: string | null }[]>({ type: 'serial.list' }).then((res) => {
-      if (res.ok) setPortOptions(res.value.map((p) => ({ value: p.path, label: p.manufacturer ? `${p.path} · ${p.manufacturer}` : p.path })));
+      if (res.ok) applyPorts(res.value);
     });
   };
+  // enumerate once on open so the field shows a real port before the dropdown is touched
+  useEffect(() => {
+    void command<{ path: string; manufacturer: string | null }[]>({ type: 'serial.list' }).then((res) => {
+      if (res.ok) applyPorts(res.value);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Editing an existing connection must seed every field from it, otherwise saving
   // would silently reset the frame format back to the dialog defaults.
   const [dataBits, setDataBits] = useState(String(existingConn?.rtu?.dataBits ?? 8));
@@ -102,10 +116,20 @@ function AddConnectionDialog(props: { connectionId?: string }) {
         <>
           <div className="mt-4 grid grid-cols-2 gap-4">
             <Field label="串口" hint="打开下拉时重新枚举当前可用串口，也可直接输入">
-              <ComboInput testId="port-combo" value={port} onChange={setPort} options={portOptions} onOpen={refreshPorts} placeholder="COM3" />
+              <ComboInput
+                testId="port-combo"
+                value={port}
+                onChange={(v) => {
+                  portTouched.current = true;
+                  setPort(v);
+                }}
+                options={portOptions}
+                onOpen={refreshPorts}
+                placeholder="COM1"
+              />
             </Field>
             <Field label="波特率" hint="支持自定义波特率输入">
-              <ComboInput testId="baud-combo" value={baud} onChange={setBaud} options={['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600', '1000000'].map((b) => ({ value: b, label: b }))} />
+              <ComboInput testId="baud-combo" value={baud} onChange={(v) => setBaud(v)} options={BAUD_PRESETS} />
             </Field>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-4">

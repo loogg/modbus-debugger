@@ -3,7 +3,7 @@ import * as RadixDialog from '@radix-ui/react-dialog';
 import * as RadixCheckbox from '@radix-ui/react-checkbox';
 import * as RadixSelect from '@radix-ui/react-select';
 import * as RadixDropdown from '@radix-ui/react-dropdown-menu';
-import { CheckmarkSquare20Regular, ChevronDown20Regular, MoreHorizontal20Regular } from '@fluentui/react-icons';
+import { Checkmark16Regular, CheckmarkSquare20Regular, ChevronDown20Regular, MoreHorizontal20Regular } from '@fluentui/react-icons';
 import { useApp } from '../store/app';
 
 /* ------------------------------- buttons ------------------------------- */
@@ -56,7 +56,7 @@ export function Field(props: { label: string; children: React.ReactNode; hint?: 
 }
 
 export const inputClass =
-  'focus-ring h-10 w-full rounded-ctl border border-line bg-surface2 px-3 text-sm text-ink placeholder:text-ink2/70 outline-none focus:border-accent';
+  'focus-ring h-10 w-full rounded-ctl border border-line bg-surface2 px-3 text-sm text-ink placeholder:text-ink2/70 outline-none focus:border-accent disabled:cursor-not-allowed disabled:border-line/70 disabled:text-ink2/80';
 
 export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   const { className, ...rest } = props;
@@ -68,6 +68,23 @@ export interface SelectOption {
   label: string;
 }
 
+/** A slave is only "在线" when it is enabled AND its connection link is up. */
+export function slaveStatus(
+  enabled: boolean,
+  connState: 'offline' | 'connecting' | 'online' | 'error' | undefined,
+): { tone: 'ok' | 'idle' | 'warn'; label: string } {
+  if (!enabled) return { tone: 'idle', label: '停用' };
+  if (connState === 'online') return { tone: 'ok', label: '在线' };
+  if (connState === 'connecting') return { tone: 'warn', label: '连接中' };
+  if (connState === 'error') return { tone: 'warn', label: '连接异常' };
+  return { tone: 'idle', label: '离线' };
+}
+
+/** Shared dropdown visuals: same panel + row treatment for Radix Select and ComboInput. */
+export const dropdownPanelClass = 'z-50 rounded-ctl border border-line bg-surface py-1 shadow-[0_8px_24px_rgba(26,28,33,0.14)]';
+export const dropdownOptionClass =
+  'flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left text-sm text-ink hover:bg-surface2 data-[highlighted]:bg-surface2';
+
 export function Select(props: { value: string; onChange: (v: string) => void; options: SelectOption[]; placeholder?: string; disabled?: boolean }) {
   return (
     <RadixSelect.Root value={props.value} onValueChange={props.onChange} disabled={props.disabled}>
@@ -78,15 +95,24 @@ export function Select(props: { value: string; onChange: (v: string) => void; op
         </RadixSelect.Icon>
       </RadixSelect.Trigger>
       <RadixSelect.Portal>
-        <RadixSelect.Content className="z-50 overflow-hidden rounded-ctl border border-line bg-surface shadow-lg" position="popper" sideOffset={4}>
-          <RadixSelect.Viewport className="p-1">
+        <RadixSelect.Content
+          className={dropdownPanelClass}
+          position="popper"
+          sideOffset={4}
+          // match the trigger width: a content-sized floating box reads as broken
+          style={{ width: 'var(--radix-select-trigger-width)' }}
+        >
+          <RadixSelect.Viewport>
             {props.options.map((o) => (
               <RadixSelect.Item
                 key={o.value}
                 value={o.value}
-                className="focus-ring relative flex cursor-pointer items-center rounded px-3 py-2 text-sm outline-none data-[highlighted]:bg-accentsoft data-[state=checked]:text-accent"
+                className={`focus-ring outline-none data-[state=checked]:font-medium data-[state=checked]:text-accent ${dropdownOptionClass}`}
               >
                 <RadixSelect.ItemText>{o.label}</RadixSelect.ItemText>
+                <RadixSelect.ItemIndicator>
+                  <Checkmark16Regular className="shrink-0 text-accent" />
+                </RadixSelect.ItemIndicator>
               </RadixSelect.Item>
             ))}
           </RadixSelect.Viewport>
@@ -430,19 +456,20 @@ export function ComboInput(props: {
         </svg>
       </button>
       {open && props.options.length > 0 ? (
-        <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-ctl border border-line bg-surface py-1 shadow-lg">
+        <div className={`absolute mt-1 max-h-56 w-full overflow-y-auto ${dropdownPanelClass}`}>
           {props.options.map((o) => (
             <button
               key={o.value}
               type="button"
-              className={`focus-ring block w-full cursor-pointer px-3 py-1.5 text-left text-sm hover:bg-surface2 ${o.value === props.value ? 'text-accent font-medium' : ''}`}
+              className={`focus-ring outline-none ${dropdownOptionClass} ${o.value === props.value ? 'bg-accentsoft font-medium text-accent' : ''}`}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 props.onChange(o.value);
                 closeList();
               }}
             >
-              {o.label}
+              <span className="truncate">{o.label}</span>
+              {o.value === props.value ? <Checkmark16Regular className="shrink-0 text-accent" /> : null}
             </button>
           ))}
         </div>
