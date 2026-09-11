@@ -77,6 +77,25 @@ describe('Modbus Debugger packaged app E2E', () => {
     const text = await bodyText();
     expect(text).toContain('通信诊断');
     await shot('13-comm-1440');
+
+    // a row click must drive the frame-detail pane (the old data-idx lookup never matched)
+    await browser.execute(() => {
+      const row = document.querySelectorAll('tbody tr')[1] as HTMLElement | undefined;
+      row?.click();
+    });
+    await browser.pause(500);
+    expect(await bodyText()).toContain('帧详情');
+
+    // 连接健康 is fed by real 1 Hz samples recorded in Main, not a static series
+    await $('//button[text()="连接健康"]').click();
+    await browser.waitUntil(async () => /[1-9][0-9]* 个采样点/.test(await bodyText()), { timeout: 20000 });
+    await browser.pause(1500);
+    const healthText = await bodyText();
+    expect(healthText).toContain('总线负载');
+    expect(healthText).toContain('数据块性能');
+    await shot('20-comm-health-1440');
+    await $('//button[text()="报文"]').click();
+    await browser.pause(500);
   });
 
   it('trend chart renders live signals', async () => {
@@ -111,17 +130,31 @@ describe('Modbus Debugger packaged app E2E', () => {
     await browser.pause(400);
     await $('//button[text()="读取"]').click();
     await browser.pause(1500);
-    console.log('DEBUG temp body:', JSON.stringify((await bodyText()).slice(0, 400)));
-    try {
-      const logs = await browser.getLogs('browser');
-      console.log('DEBUG console logs:', JSON.stringify((logs as Array<{ message: string }>).slice(-6).map((l) => l.message.slice(0, 200))));
-    } catch (err) {
-      console.log('DEBUG no browser logs', String(err).slice(0, 120));
-    }
     await browser.waitUntil(async () => (await bodyText()).includes('读取成功'), { timeout: 20000 });
     const text = await bodyText();
     expect(text).toContain('保存为数据块');
     await shot('18-temp-read-1440');
+  });
+
+  it('connection settings open in the main area with edit and save', async () => {
+    await $('//button[contains(., "设备")]').click();
+    await browser.pause(400);
+    await browser.execute(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('生产线 TCP'));
+      (b as HTMLElement | undefined)?.click();
+    });
+    await browser.waitUntil(async () => (await bodyText()).includes('连接名称'), { timeout: 15000 });
+    const text = await bodyText();
+    expect(text).toContain('从站');
+    expect(text).toContain('添加从站');
+    expect(await (await $('input[data-testid="timeout-input"]')).getValue()).toBe('800');
+    await shot('01B-connection-settings-1440');
+    // back to the slave device page
+    await browser.execute(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('伺服驱动器 A'));
+      (b as HTMLElement | undefined)?.click();
+    });
+    await browser.pause(500);
   });
 
   it('compact window keeps engineering columns via internal scrolling', async () => {

@@ -1,26 +1,34 @@
 import React, { useState } from 'react';
-import { useApp } from '../store/app';
-import { Button, EmptyState, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput, formatClock } from '../components/ui';
+import { useApp, useConnectionStates, useHealth, useWorkspace } from '../store/app';
+import { Button, EmptyState, Field, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput, formatClock } from '../components/ui';
 import { DataTable } from '../components/table';
 import { AREAS } from '../../domain/address';
 
 export function DevicesScreen() {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
+  const health = useHealth();
+  const connStates = useConnectionStates();
   const selection = useApp((s) => s.selection);
   const select = useApp((s) => s.select);
   const openOverlay = useApp((s) => s.openOverlay);
   const setModule = useApp((s) => s.setModule);
-  const slave = snapshot?.workspace.slaves.find((s) => s.id === selection.slaveId) ?? snapshot?.workspace.slaves[0];
-  const connection = snapshot?.workspace.connections.find((c) => c.id === slave?.connectionId);
+  // A connection selected without a slave owns the main area (settings + slave list);
+  // only fall back to the first slave when nothing at all is selected yet.
+  const slave = selection.slaveId
+    ? workspace?.slaves.find((s) => s.id === selection.slaveId)
+    : selection.connectionId
+      ? undefined
+      : workspace?.slaves[0];
+  const connection = workspace?.connections.find((c) => c.id === slave?.connectionId);
   const activeConnection =
-    snapshot?.workspace.connections.find((c) => c.id === selection.connectionId) ?? connection ?? snapshot?.workspace.connections[0];
+    workspace?.connections.find((c) => c.id === selection.connectionId) ?? connection ?? workspace?.connections[0];
 
   if (selection.deviceView === 'scan' && activeConnection) return <ScanView connectionId={activeConnection.id} />;
   if (selection.deviceView === 'temp' && activeConnection) return <TempReadView connectionId={activeConnection.id} />;
-  const template = snapshot?.workspace.templates.find((t) => t.id === slave?.templateId);
-  const connState = slave ? snapshot?.connections[slave.connectionId] : undefined;
+  const template = workspace?.templates.find((t) => t.id === slave?.templateId);
+  const connState = slave ? connStates[slave.connectionId] : undefined;
 
-  if (!snapshot || snapshot.workspace.connections.length === 0) {
+  if (!workspace || workspace.connections.length === 0) {
     return (
       <EmptyState
         title="开始配置 Modbus 调试环境"
@@ -36,6 +44,7 @@ export function DevicesScreen() {
     );
   }
 
+  if (!slave && activeConnection) return <ConnectionSettingsView key={activeConnection.id} connectionId={activeConnection.id} />;
   if (!slave) {
     return (
       <EmptyState
@@ -67,7 +76,7 @@ export function DevicesScreen() {
       />
       <InfoColumns
         items={[
-          { label: '连接', value: connection?.name ?? '—', sub: connection?.transport === 'rtu' ? <span className="text-ok text-xs">总线负载 {Math.round(snapshot.health[connection.id]?.busLoadPercent ?? 0)}%</span> : undefined },
+          { label: '连接', value: connection?.name ?? '—', sub: connection?.transport === 'rtu' ? <span className="text-ok text-xs">总线负载 {Math.round(health[connection.id]?.busLoadPercent ?? 0)}%</span> : undefined },
           { label: '从站地址', value: String(slave.unitId) },
           { label: '设备模板', value: template ? <button className="focus-ring cursor-pointer text-accent hover:underline" onClick={() => { select({ templateId: template.id }); setModule('templates'); }}>{template.name} · v{template.version}</button> : '未绑定' },
           {
@@ -117,7 +126,7 @@ interface ScanRow {
 }
 
 export function ScanView(props: { connectionId: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const openOverlay = useApp((s) => s.openOverlay);
   const [from, setFrom] = useState('1');
@@ -125,7 +134,7 @@ export function ScanView(props: { connectionId: string }) {
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState<ScanRow[]>([]);
   const [summary, setSummary] = useState<string | null>(null);
-  const conn = snapshot?.workspace.connections.find((c) => c.id === props.connectionId);
+  const conn = workspace?.connections.find((c) => c.id === props.connectionId);
 
   const run = async () => {
     setRunning(true);
@@ -169,7 +178,7 @@ export function ScanView(props: { connectionId: string }) {
             header: '操作',
             width: 140,
             render: (r: ScanRow) =>
-              snapshot?.workspace.slaves.some((s) => s.connectionId === props.connectionId && s.unitId === r.unitId) ? (
+              workspace?.slaves.some((s) => s.connectionId === props.connectionId && s.unitId === r.unitId) ? (
                 <span className="text-xs text-ink2">已添加</span>
               ) : (
                 <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: props.connectionId })}>
@@ -196,7 +205,7 @@ export function ScanView(props: { connectionId: string }) {
 /* ------------------------------- 18 — 设备 / 临时读取 ------------------------------- */
 
 export function TempReadView(props: { connectionId: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const openOverlay = useApp((s) => s.openOverlay);
   const [unit, setUnit] = useState('1');
@@ -204,8 +213,8 @@ export function TempReadView(props: { connectionId: string }) {
   const [start, setStart] = useState('0');
   const [qty, setQty] = useState('16');
   const [result, setResult] = useState<{ registers: number[]; bits?: boolean[]; ms: number; at: string } | null>(null);
-  const conn = snapshot?.workspace.connections.find((c) => c.id === props.connectionId);
-  const slave = snapshot?.workspace.slaves.find((s) => s.connectionId === props.connectionId && s.unitId === Number(unit));
+  const conn = workspace?.connections.find((c) => c.id === props.connectionId);
+  const slave = workspace?.slaves.find((s) => s.connectionId === props.connectionId && s.unitId === Number(unit));
 
   const read = async () => {
     const res = await command<{ result: string; response: { kind: string; registers?: number[]; bits?: boolean[] } | null; durationMs: number }>({
@@ -261,8 +270,8 @@ export function TempReadView(props: { connectionId: string }) {
               <Button
                 size="sm"
                 onClick={() => {
-                  const firstSlave = snapshot?.workspace.slaves.find((s2) => s2.connectionId === props.connectionId);
-                  const tpl = snapshot?.workspace.templates.find((t2) => t2.id === firstSlave?.templateId);
+                  const firstSlave = workspace?.slaves.find((s2) => s2.connectionId === props.connectionId);
+                  const tpl = workspace?.templates.find((t2) => t2.id === firstSlave?.templateId);
                   const firstPoint = tpl?.points.find((p2) => p2.blockId === tpl.blocks[0]?.id);
                   if (firstPoint) openOverlay({ kind: 'drawer', id: 'inspector', pointId: firstPoint.id });
                 }}
@@ -294,6 +303,100 @@ export function TempReadView(props: { connectionId: string }) {
         <InfoBand className="mt-6">临时读取只发送单次请求，不会加入后台轮询；成功后可保存为数据块。</InfoBand>
       )}
       <div className="mt-4 text-xs text-ink2">连接：{conn?.name ?? '—'}</div>
+    </>
+  );
+}
+
+function ConnectionSettingsView(props: { connectionId: string }) {
+  const workspace = useWorkspace();
+  const command = useApp((s) => s.command);
+  const toast = useApp((s) => s.toast);
+  const select = useApp((s) => s.select);
+  const openOverlay = useApp((s) => s.openOverlay);
+  const conn = workspace?.connections.find((c) => c.id === props.connectionId);
+  const [name, setName] = useState(conn?.name ?? '');
+  const [port, setPort] = useState(conn?.rtu?.port ?? 'COM3');
+  const [baud, setBaud] = useState(String(conn?.rtu?.baudRate ?? 115200));
+  const [host, setHost] = useState(conn?.tcp?.host ?? '');
+  const [tcpPort, setTcpPort] = useState(String(conn?.tcp?.port ?? 502));
+  const [timeout, setTimeoutMs] = useState(String(conn?.timeoutMs ?? 500));
+  const [retries, setRetries] = useState(String(conn?.retries ?? 1));
+  const [reconnect, setReconnect] = useState<'auto' | 'manual'>(conn?.reconnect ?? 'auto');
+  const [rts, setRts] = useState<'none' | 'toggle'>(conn?.rtsControl ?? 'none');
+  const [logLevel, setLogLevel] = useState<'info' | 'debug'>(conn?.logLevel ?? 'info');
+  const [interFrame, setInterFrame] = useState(String(conn?.interFrameMs ?? 0));
+  if (!workspace || !conn) return null;
+  const slaves = workspace.slaves.filter((sl) => sl.connectionId === conn.id);
+  const save = async () => {
+    const updated = {
+      ...conn,
+      name,
+      rtu: conn.transport === 'rtu' ? { port, baudRate: Number(baud), dataBits: conn.rtu?.dataBits ?? (8 as 7 | 8), parity: conn.rtu?.parity ?? ('none' as 'none' | 'even' | 'odd'), stopBits: conn.rtu?.stopBits ?? (1 as 1 | 2) } : undefined,
+      tcp: conn.transport === 'tcp' ? { host, port: Number(tcpPort) } : undefined,
+      timeoutMs: Number(timeout),
+      retries: Number(retries),
+      reconnect,
+      rtsControl: rts,
+      logLevel,
+      interFrameMs: Number(interFrame) || 0,
+    };
+    await command({ type: 'workspace.apply', workspace: { ...workspace, connections: workspace.connections.map((c) => (c.id === conn.id ? updated : c)) } });
+    toast({ kind: 'success', title: '连接已更新', message: '参数已应用到运行时。' });
+  };
+  return (
+    <>
+      <PageHeader
+        title={conn.name}
+        subtitle={conn.transport === 'rtu' ? `RS485 · ${conn.rtu?.port} · ${conn.rtu?.baudRate} ${conn.rtu?.dataBits}${(conn.rtu?.parity ?? 'none').charAt(0).toUpperCase()}${conn.rtu?.stopBits}` : `TCP · ${conn.tcp?.host}:${conn.tcp?.port}`}
+        actions={
+          <>
+            <Button onClick={() => select({ connectionId: conn.id, deviceView: 'scan' })}>扫描</Button>
+            <Button onClick={() => select({ connectionId: conn.id, deviceView: 'temp' })}>临时读取</Button>
+            <Button variant="primary" onClick={() => void save()}>保存</Button>
+          </>
+        }
+      />
+      <InfoBand>
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+          <Field label="连接名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          {conn.transport === 'rtu' ? (
+            <>
+              <Field label="串口"><TextInput data-testid="conn-port" value={port} onChange={(e) => setPort(e.target.value)} /></Field>
+              <Field label="波特率"><TextInput data-testid="conn-baud" value={baud} onChange={(e) => setBaud(e.target.value)} /></Field>
+            </>
+          ) : (
+            <>
+              <Field label="主机"><TextInput value={host} onChange={(e) => setHost(e.target.value)} /></Field>
+              <Field label="端口"><TextInput value={tcpPort} onChange={(e) => setTcpPort(e.target.value)} /></Field>
+            </>
+          )}
+          <Field label="超时 (ms)"><TextInput data-testid="timeout-input" value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
+          <Field label="重试"><TextInput value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
+          <Field label="重连策略"><Select value={reconnect} onChange={(v) => setReconnect(v as 'auto' | 'manual')} options={[{ value: 'auto', label: '自动重连' }, { value: 'manual', label: '手动' }]} /></Field>
+          <Field label="RTS 控制"><Select value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
+          <Field label="日志级别"><Select value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
+          <Field label="帧间隔 (ms)"><TextInput value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
+        </div>
+      </InfoBand>
+      <SectionTitle right={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: conn.id })}>＋ 添加从站</Button>}>从站</SectionTitle>
+      {slaves.length === 0 ? (
+        <InfoBand tone="blue">该连接下还没有从站；添加从站后可绑定设备模板并开始轮询。</InfoBand>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {slaves.map((sl) => {
+            const tpl = workspace.templates.find((t) => t.id === sl.templateId);
+            return (
+              <button key={sl.id} className="focus-ring cursor-pointer rounded-card border border-line bg-surface p-4 text-left hover:border-accent" onClick={() => select({ connectionId: conn.id, slaveId: sl.id, deviceView: 'topology' })}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold">{sl.name}</span>
+                  <StatusDot tone={sl.enabled ? 'ok' : 'idle'} label={sl.enabled ? '在线' : '停用'} />
+                </div>
+                <div className="text-xs text-ink2 mt-1">从站 {sl.unitId} · {tpl ? tpl.name : '未绑定模板'}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </>
   );
 }

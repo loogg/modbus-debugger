@@ -5,7 +5,22 @@ import net from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
 
 let sim: ChildProcess | null = null;
+let workspaceCopyDir: string | null = null;
 const SIM_PORT = 50520;
+const FIXTURE = path.resolve('tools', 'e2e', 'demo.workspace.json');
+
+/**
+ * The app autosaves whatever workspace it loaded, so the committed fixture must never be
+ * handed to it directly: each run gets a throw-away copy in a temp directory. Without this
+ * a single failing run silently rewrites the fixture and every later run starts from a
+ * different world.
+ */
+function stageWorkspace(): string {
+  workspaceCopyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbe2e-'));
+  const dest = path.join(workspaceCopyDir, 'demo.workspace.json');
+  fs.copyFileSync(FIXTURE, dest);
+  return dest;
+}
 
 function waitForPort(port: number, ms = 30000): Promise<void> {
   const start = Date.now();
@@ -26,7 +41,7 @@ function waitForPort(port: number, ms = 30000): Promise<void> {
   });
 }
 
-function seedPrefs(): void {
+function seedPrefs(workspacePath: string): void {
   for (const dirName of ['modbus-debugger', 'Modbus Debugger']) {
     const prefsDir = path.join(os.homedir(), 'AppData', 'Roaming', dirName);
     fs.mkdirSync(prefsDir, { recursive: true });
@@ -35,7 +50,7 @@ function seedPrefs(): void {
       sidebarWidth: 244,
       historyDbPath: null,
       persistRawComm: false,
-      lastWorkspacePath: path.resolve('tools', 'e2e', 'demo.workspace.json'),
+      lastWorkspacePath: workspacePath,
     };
     fs.writeFileSync(path.join(prefsDir, 'prefs.json'), JSON.stringify(prefs, null, 2));
   }
@@ -63,12 +78,14 @@ export const config = {
   connectionRetryTimeout: 120000,
   connectionRetryCount: 3,
   onPrepare: async () => {
-    seedPrefs();
-    process.env.MODBUS_E2E_WORKSPACE = path.resolve('tools', 'e2e', 'demo.workspace.json');
+    const staged = stageWorkspace();
+    seedPrefs(staged);
+    process.env.MODBUS_E2E_WORKSPACE = staged;
     sim = spawn('python', [path.resolve('tools', 'simulator', 'modbus_sim.py'), '--port', String(SIM_PORT)], { stdio: 'ignore' });
     await waitForPort(SIM_PORT);
   },
   onComplete: () => {
     sim?.kill();
+    if (workspaceCopyDir) fs.rmSync(workspaceCopyDir, { recursive: true, force: true });
   },
 };

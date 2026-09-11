@@ -24,6 +24,6 @@
       "@renderer/*": ["src/renderer/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "forge.config.ts", "webpack.*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts", "tests/**/*.ts", "tests/**/*.tsx", "forge.config.ts", "vite.*.config.ts", "vitest.config.ts"],
   "exclude": ["node_modules", ".webpack", "out", "tests/e2e"]
 }

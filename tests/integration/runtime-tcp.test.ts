@@ -321,3 +321,54 @@ describe('resource release', () => {
     expect(transport.connected).toBe(false);
   });
 });
+
+describe('configured request timeout', () => {
+  function silentRuntime(config: ConnectionDef) {
+    const cache = new BlockCache();
+    const diag = new DiagnosticsStore();
+    const transport = new FakeTransport('tcp');
+    const runtime = new ConnectionRuntime({
+      config,
+      transport,
+      cache,
+      diagnostics: diag,
+      hooks: { onChange: () => undefined, onState: () => undefined },
+    });
+    runtime.configure([{ slave, block }]);
+    return { runtime, transport, cache, diag };
+  }
+
+  it('poll / write paths honour connection.timeoutMs instead of a hardcoded fallback', async () => {
+    const { runtime, diag } = silentRuntime({ ...conn, timeoutMs: 60, retries: 0 });
+    const t0 = Date.now();
+    await runtime.start();
+    await waitFor(() => diag.recentTransactions(5).length > 0);
+    const elapsed = Date.now() - t0;
+    expect(diag.recentTransactions(5)[0]?.result).toBe('timeout');
+    // the pre-fix fallback was 500 ms; the configured 60 ms must be what actually applies
+    expect(elapsed).toBeLessThan(300);
+    await runtime.stop();
+  });
+
+  it('records the configured timeout in the transaction duration', async () => {
+    const { runtime, diag } = silentRuntime({ ...conn, timeoutMs: 80, retries: 0 });
+    await runtime.start();
+    await waitFor(() => diag.recentTransactions(5).length > 0);
+    const tx = diag.recentTransactions(5)[0];
+    expect(tx?.durationMs).not.toBeNull();
+    expect(tx?.durationMs as number).toBeGreaterThanOrEqual(70);
+    expect(tx?.durationMs as number).toBeLessThan(300);
+    await runtime.stop();
+  });
+
+  it('still lets a caller override the timeout (unit scanner probe)', async () => {
+    const { runtime, diag } = silentRuntime({ ...conn, timeoutMs: 5000, retries: 0 });
+    await runtime.start();
+    const t0 = Date.now();
+    const found = await runtime.scanUnits({ from: 9, to: 9 }, 40);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(found).toEqual([]);
+    expect(diag.recentTransactions(5).some((x) => x.sourceKind === 'scanner')).toBe(true);
+    await runtime.stop();
+  });
+});

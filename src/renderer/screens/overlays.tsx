@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../store/app';
+import { useApp, useBlocks, usePoints, useWorkspace } from '../store/app';
 import { Button, Checkbox, ComboInput, Dialog, Drawer, Field, InfoBand, Select, TextInput } from '../components/ui';
 import { AREAS } from '../../domain/address';
 import { findBlockOverlaps } from '../../domain/overlap';
@@ -32,12 +32,12 @@ export function Overlays() {
 }
 
 function AddConnectionDialog(props: { connectionId?: string }) {
-  const existingConn = useApp((s) => s.snapshot)?.workspace.connections.find((c) => c.id === props.connectionId);
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
+  const existingConn = workspace?.connections.find((c) => c.id === props.connectionId);
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const toast = useApp((s) => s.toast);
-  const [name, setName] = useState('生产线 RS485');
+  const [name, setName] = useState(existingConn?.name ?? '生产线 RS485');
   const [protocol, setProtocol] = useState<'rtu' | 'tcp'>(existingConn?.transport ?? 'rtu');
   const [port, setPort] = useState(existingConn?.rtu?.port ?? 'COM3');
   const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
@@ -50,9 +50,11 @@ function AddConnectionDialog(props: { connectionId?: string }) {
       if (res.ok) setPortOptions(res.value.map((p) => ({ value: p.path, label: p.manufacturer ? `${p.path} · ${p.manufacturer}` : p.path })));
     });
   };
-  const [dataBits, setDataBits] = useState('8');
-  const [parity, setParity] = useState<'none' | 'even' | 'odd'>('none');
-  const [stopBits, setStopBits] = useState('1');
+  // Editing an existing connection must seed every field from it, otherwise saving
+  // would silently reset the frame format back to the dialog defaults.
+  const [dataBits, setDataBits] = useState(String(existingConn?.rtu?.dataBits ?? 8));
+  const [parity, setParity] = useState<'none' | 'even' | 'odd'>(existingConn?.rtu?.parity ?? 'none');
+  const [stopBits, setStopBits] = useState(String(existingConn?.rtu?.stopBits ?? 1));
   const [host, setHost] = useState(existingConn?.tcp?.host ?? '192.168.1.50');
   const [tcpPort, setTcpPort] = useState(String(existingConn?.tcp?.port ?? 502));
   const [timeout, setTimeoutMs] = useState(String(existingConn?.timeoutMs ?? 500));
@@ -60,7 +62,7 @@ function AddConnectionDialog(props: { connectionId?: string }) {
   const [reconnect, setReconnect] = useState<'auto' | 'manual'>(existingConn?.reconnect ?? 'auto');
 
   const create = async () => {
-    if (!snapshot) return;
+    if (!workspace) return;
     const id = existingConn?.id ?? uid('conn');
     const conn = {
       id,
@@ -76,9 +78,9 @@ function AddConnectionDialog(props: { connectionId?: string }) {
       logLevel,
     };
     const connections = existingConn
-      ? snapshot.workspace.connections.map((c) => (c.id === existingConn.id ? conn : c))
-      : [...snapshot.workspace.connections, conn];
-    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, connections } });
+      ? workspace.connections.map((c) => (c.id === existingConn.id ? conn : c))
+      : [...workspace.connections, conn];
+    await command({ type: 'workspace.apply', workspace: { ...workspace, connections } });
     toast({ kind: 'success', title: existingConn ? '连接已更新' : '连接已创建', message: existingConn ? '参数已应用到运行时。' : '可继续添加从站。' });
     close();
   };
@@ -136,23 +138,30 @@ function AddConnectionDialog(props: { connectionId?: string }) {
   );
 }
 function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const select = useApp((s) => s.select);
   const setModule = useApp((s) => s.setModule);
-  const existing = snapshot?.workspace.slaves.find((s) => s.id === props.slaveId);
-  const [name, setName] = useState(existing?.name ?? '伺服驱动器 C');
-  const [unit, setUnit] = useState(String(existing?.unitId ?? 3));
-  const [templateId, setTemplateId] = useState(existing?.templateId ?? snapshot?.workspace.templates[0]?.id ?? '');
+  const existing = workspace?.slaves.find((s) => s.id === props.slaveId);
+  // Default to the first free Unit ID on this connection so a new slave never starts in conflict.
+  const nextUnit = (() => {
+    const used = new Set((workspace?.slaves ?? []).filter((s) => s.connectionId === props.connectionId).map((s) => s.unitId));
+    let n = 1;
+    while (used.has(n) && n < 247) n += 1;
+    return n;
+  })();
+  const [name, setName] = useState(existing?.name ?? ('从站 ' + String(nextUnit)));
+  const [unit, setUnit] = useState(String(existing?.unitId ?? nextUnit));
+  const [templateId, setTemplateId] = useState(existing?.templateId ?? workspace?.templates[0]?.id ?? '');
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
-  const conn = snapshot?.workspace.connections.find((c) => c.id === props.connectionId);
-  const template = snapshot?.workspace.templates.find((t) => t.id === templateId);
-  const conflict = snapshot?.workspace.slaves.some((s) => s.connectionId === props.connectionId && s.unitId === Number(unit) && s.id !== props.slaveId);
+  const conn = workspace?.connections.find((c) => c.id === props.connectionId);
+  const template = workspace?.templates.find((t) => t.id === templateId);
+  const conflict = workspace?.slaves.some((s) => s.connectionId === props.connectionId && s.unitId === Number(unit) && s.id !== props.slaveId);
 
   const save = async () => {
-    if (!snapshot) return;
-    const ws = snapshot.workspace;
+    if (!workspace) return;
+    const ws = workspace;
     if (existing) {
       await command({ type: 'workspace.apply', workspace: { ...ws, slaves: ws.slaves.map((s) => (s.id === existing.id ? { ...s, name, unitId: Number(unit), templateId, enabled } : s)) } });
     } else {
@@ -162,7 +171,7 @@ function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
   };
 
   return (
-    <Dialog title={existing ? '编辑从站' : '添加从站'} subtitle={conn?.name ?? ''} width={660} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" disabled={conflict || !templateId} onClick={() => void save()}>{existing ? '保存从站' : '添加从站'}</Button></>}>
+    <Dialog title={existing ? '编辑从站' : '添加从站'} subtitle={conn?.name ?? ''} width={660} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" disabled={conflict} onClick={() => void save()}>{existing ? '保存从站' : '添加从站'}</Button></>}>
       <Field label="所属连接"><TextInput readOnly value={`${conn?.name ?? ''} · ${conn?.transport === 'rtu' ? `${conn.rtu?.baudRate} ${conn.rtu?.dataBits}${conn.rtu?.parity.charAt(0).toUpperCase()}${conn.rtu?.stopBits}` : conn?.tcp?.host}`} /></Field>
       <div className="mt-4 grid grid-cols-2 gap-4">
         <Field label="设备名称"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
@@ -170,23 +179,25 @@ function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
       </div>
       <div className="mt-4">
         <div className="text-xs text-ink2 mb-1.5">设备模板</div>
-        <Select value={templateId} onChange={setTemplateId} options={snapshot?.workspace.templates.map((t) => ({ value: t.id, label: t.name })) ?? []} />
+        <Select value={templateId} onChange={setTemplateId} options={[{ value: '', label: '（暂不绑定模板）' }, ...(workspace?.templates.map((t) => ({ value: t.id, label: t.name })) ?? [])]} />
       </div>
-      {template ? (
+      {templateId === '' ? (
+        <InfoBand tone="blue" className="mt-3">未绑定模板：从站创建后不会轮询，可在之后编辑从站时绑定或新建模板。</InfoBand>
+      ) : template ? (
         <div className="mt-3 rounded-card bg-surface2 p-4">
           <div className="flex items-center justify-between">
             <span className="text-sm font-bold">{template.name}</span>
             <span className="flex gap-4 text-xs text-accent">
               <button className="focus-ring cursor-pointer hover:underline" onClick={() => { select({ templateId: template.id }); setModule('templates'); close(); }}>查看模板</button>
               <button className="focus-ring cursor-pointer hover:underline" onClick={async () => {
-                if (!snapshot) return;
+                if (!workspace) return;
                 const copy = { ...template, id: uid('tpl'), name: `${template.name} 副本` };
-                await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: [...snapshot.workspace.templates, copy] } });
+                await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, copy] } });
                 setTemplateId(copy.id);
               }}>复制为新模板</button>
             </span>
           </div>
-          <div className="text-xs text-ink2 mt-1">{template.blocks.length} 个数据块 · {template.points.length} 个点位 · 已被 {snapshot?.workspace.slaves.filter((s) => s.templateId === template.id).length} 个从站使用</div>
+          <div className="text-xs text-ink2 mt-1">{template.blocks.length} 个数据块 · {template.points.length} 个点位 · 已被 {workspace?.slaves.filter((s) => s.templateId === template.id).length} 个从站使用</div>
           <div className="text-xs text-ink2 mt-1">{template.blocks.map((b) => b.name).join(' · ')}</div>
           <div className="text-xs text-ink2 mt-2">模板修改会同步影响所有绑定从站。</div>
         </div>
@@ -207,24 +218,24 @@ function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
 }
 
 function EditBlockDialog(props: { templateId: string; blockId?: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
-  const template = snapshot?.workspace.templates.find((t) => t.id === props.templateId);
+  const template = workspace?.templates.find((t) => t.id === props.templateId);
   const existing = template?.blocks.find((b) => b.id === props.blockId);
   const [name, setName] = useState(existing?.name ?? '控制寄存器');
   const [area, setArea] = useState(String(existing?.area ?? 3));
   const [start, setStart] = useState(String(existing?.start ?? 0));
   const [length, setLength] = useState(String(existing?.length ?? 32));
   const [period, setPeriod] = useState(String(existing?.periodMs ?? 100));
-  if (!snapshot || !template) return null;
+  if (!workspace || !template) return null;
   const candidate: BlockDef = { id: existing?.id ?? 'new', name, area: Number(area) as 1 | 2 | 3 | 4, start: Number(start), length: Number(length), periodMs: Number(period) };
   const others = template.blocks.filter((b) => b.id !== existing?.id);
   const overlaps = findBlockOverlaps([...others, candidate]);
   const bad = overlaps.length > 0;
   const save = async () => {
     const blocks = existing ? template.blocks.map((b) => (b.id === existing.id ? { ...candidate, id: existing.id } : b)) : [...template.blocks, { ...candidate, id: uid('blk') }];
-    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: snapshot.workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks } : t)) } });
+    await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks } : t)) } });
     close();
   };
   return (
@@ -258,10 +269,10 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
 }
 
 function EditPointDrawer(props: { templateId: string; blockId: string; pointId?: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
-  const template = snapshot?.workspace.templates.find((t) => t.id === props.templateId);
+  const template = workspace?.templates.find((t) => t.id === props.templateId);
   const block = template?.blocks.find((b) => b.id === props.blockId);
   const existing = template?.points.find((p) => p.id === props.pointId);
   const [name, setName] = useState(existing?.name ?? '模式');
@@ -279,7 +290,7 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
   const [strLen, setStrLen] = useState(String(existing?.mapping.stringLength ?? 8));
   const [enumText, setEnumText] = useState(Object.entries(existing?.enumMap ?? {}).map(([k, v]) => `${k}=${v}`).join(', '));
   const [highRisk, setHighRisk] = useState(existing?.highRisk ?? false);
-  if (!snapshot || !template || !block) return null;
+  if (!workspace || !template || !block) return null;
 
   const isNumeric = !['Bool', 'String'].includes(rawType);
   const showScale = isNumeric && !enumText.trim();
@@ -320,7 +331,7 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
       description: existing?.description ?? '',
     };
     const points = existing ? template.points.map((p) => (p.id === existing.id ? point : p)) : [...template.points, point];
-    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: snapshot.workspace.templates.map((t) => (t.id === template.id ? { ...t, points } : t)) } });
+    await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, points } : t)) } });
     close();
   };
 
@@ -389,15 +400,17 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
 }
 
 function InspectorDrawer(props: { pointId: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
+  const blockStates = useBlocks();
+  const points = usePoints();
   const close = useApp((s) => s.closeOverlay);
   const select = useApp((s) => s.select);
   const setModule = useApp((s) => s.setModule);
-  const point = snapshot?.workspace.templates.flatMap((t) => t.points).find((p) => p.id === props.pointId);
-  const block = snapshot?.workspace.templates.flatMap((t) => t.blocks).find((b) => b.id === point?.blockId);
-  const entry = block ? Object.values(snapshot?.blocks ?? {}).find((b) => b.blockId === block.id) : undefined;
-  const view = snapshot?.points[props.pointId];
-  if (!snapshot || !point || !block || !entry) return null;
+  const point = workspace?.templates.flatMap((t) => t.points).find((p) => p.id === props.pointId);
+  const block = workspace?.templates.flatMap((t) => t.blocks).find((b) => b.id === point?.blockId);
+  const entry = block ? Object.values(blockStates).find((b) => b.blockId === block.id) : undefined;
+  const view = points[props.pointId];
+  if (!workspace || !point || !block || !entry) return null;
   const regs = Array.from({ length: Math.min(4, block.length) }, () => 0);
   void regs;
   return (
@@ -449,21 +462,21 @@ function pointOwner(ws: import('../../domain/model').Workspace, pointId: string)
 }
 
 function AddSignalDialog(props: { groupId: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [search, setSearch] = useState('');
-  const group = snapshot?.workspace.trendGroups.find((g) => g.id === props.groupId);
+  const group = workspace?.trendGroups.find((g) => g.id === props.groupId);
   const inGroup = new Set(group?.signals.map((s) => s.pointRef.pointId) ?? []);
   const pickedIds = Object.keys(picked).filter((k) => picked[k]);
-  if (!snapshot || !group) return null;
+  if (!workspace || !group) return null;
   const add = async () => {
     const signals = pickedIds.map((pointId) => {
-      const owner = pointOwner(snapshot.workspace, pointId);
+      const owner = pointOwner(workspace, pointId);
       return { id: uid('sig'), pointRef: { connectionId: owner?.connectionId ?? '', slaveId: owner?.slaveId ?? '', pointId }, visible: true };
     });
-    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, trendGroups: snapshot.workspace.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: [...g.signals, ...signals] } : g)) } });
+    await command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: workspace.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: [...g.signals, ...signals] } : g)) } });
     close();
   };
   return (
@@ -472,11 +485,11 @@ function AddSignalDialog(props: { groupId: string }) {
       <div className="mt-4 grid grid-cols-3 gap-5">
         <div className="col-span-2 rounded-card border border-line bg-surface p-4 max-h-[420px] overflow-y-auto">
           <div className="text-xs text-ink2 mb-2">设备与点位</div>
-          {snapshot.workspace.connections.map((c) => (
+          {workspace.connections.map((c) => (
             <div key={c.id} className="mb-3">
               <div className="text-sm font-medium mb-1">▼ {c.name}</div>
-              {snapshot.workspace.slaves.filter((s) => s.connectionId === c.id).map((s) => {
-                const template = snapshot.workspace.templates.find((t) => t.id === s.templateId);
+              {workspace.slaves.filter((s) => s.connectionId === c.id).map((s) => {
+                const template = workspace.templates.find((t) => t.id === s.templateId);
                 return (
                   <div key={s.id} className="ml-4 mb-2">
                     <div className="text-sm mb-1">▼ {s.name} · 从站 {s.unitId}</div>
@@ -518,7 +531,7 @@ function AddSignalDialog(props: { groupId: string }) {
 }
 
 function NewTrendGroupDialog() {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
   const select = useApp((s) => s.select);
@@ -527,9 +540,9 @@ function NewTrendGroupDialog() {
   const [windowSec, setWindowSec] = useState('60');
   const [desc, setDesc] = useState('');
   const create = async () => {
-    if (!snapshot) return;
+    if (!workspace) return;
     const id = uid('g');
-    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, trendGroups: [...snapshot.workspace.trendGroups, { id, name, windowSec: Number(windowSec), description: desc, signals: [] }] } });
+    await command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: [...workspace.trendGroups, { id, name, windowSec: Number(windowSec), description: desc, signals: [] }] } });
     select({ groupId: id });
     close();
     openOverlay({ kind: 'dialog', id: 'add-signal', groupId: id });
@@ -550,23 +563,23 @@ function NewTrendGroupDialog() {
 }
 
 function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 1 | 2 | 3 | 4; start: number; quantity: number; registers: number[] }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
-  const [templateId, setTemplateId] = useState(snapshot?.workspace.templates[0]?.id ?? '');
+  const [templateId, setTemplateId] = useState(workspace?.templates[0]?.id ?? '');
   const [name, setName] = useState('临时寄存器块');
   const [period, setPeriod] = useState('500');
   const [newTemplateOpen, setNewTemplateOpen] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('新设备模板');
   const [newTemplateDesc, setNewTemplateDesc] = useState('用于保存本次临时读取的数据块');
-  const template = snapshot?.workspace.templates.find((t) => t.id === templateId);
+  const template = workspace?.templates.find((t) => t.id === templateId);
   const candidate: BlockDef = { id: 'new', name, area: props.area, start: props.start, length: props.quantity, periodMs: Number(period) };
   const overlap = template ? findBlockOverlaps([...template.blocks, candidate]).length > 0 : false;
 
   const save = async () => {
-    if (!snapshot || !template) return;
+    if (!workspace || !template) return;
     const block: BlockDef = { ...candidate, id: uid('blk') };
-    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: snapshot.workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: [...t.blocks, block] } : t)) } });
+    await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: [...t.blocks, block] } : t)) } });
     close();
   };
 
@@ -574,10 +587,10 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
     <>
       <Dialog title="保存为数据块" subtitle="选择目标模板并确认数据块参数。" width={720} onClose={close} footer={<><Button onClick={close}>取消</Button><Button variant="primary" disabled={overlap} onClick={() => void save()}>保存数据块</Button></>}>
         <Field label="目标模板">
-          <Select value={templateId} onChange={setTemplateId} options={snapshot?.workspace.templates.map((t) => ({ value: t.id, label: t.name })) ?? []} />
+          <Select value={templateId} onChange={setTemplateId} options={[{ value: '', label: '（暂不绑定模板）' }, ...(workspace?.templates.map((t) => ({ value: t.id, label: t.name })) ?? [])]} />
         </Field>
         <div className="mt-2 -mt-1 mb-3 rounded-ctl border border-line bg-surface px-3 py-2 text-sm">
-          {snapshot?.workspace.templates.map((t) => (t.id === templateId ? <span key={t.id} className="text-accent">✓ {t.name}</span> : <span key={t.id} className="block text-ink2">{t.name}</span>))}
+          {workspace?.templates.map((t) => (t.id === templateId ? <span key={t.id} className="text-accent">✓ {t.name}</span> : <span key={t.id} className="block text-ink2">{t.name}</span>))}
           <button className="focus-ring mt-1 cursor-pointer text-xs text-accent hover:underline" onClick={() => setNewTemplateOpen(true)}>＋ 新建模板…</button>
         </div>
         <div className="grid grid-cols-2 gap-4">
@@ -595,9 +608,9 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
       </Dialog>
       {newTemplateOpen ? (
         <Dialog title="新建设备模板" width={520} onClose={() => setNewTemplateOpen(false)} footer={<><Button onClick={() => setNewTemplateOpen(false)}>取消</Button><Button variant="primary" onClick={async () => {
-          if (!snapshot) return;
+          if (!workspace) return;
           const id = uid('tpl');
-          await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: [...snapshot.workspace.templates, { id, name: newTemplateName, version: '1.0', description: newTemplateDesc, blocks: [], points: [] }] } });
+          await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, { id, name: newTemplateName, version: '1.0', description: newTemplateDesc, blocks: [], points: [] }] } });
           setTemplateId(id);
           setNewTemplateOpen(false);
         }}>创建并选择</Button></>}>

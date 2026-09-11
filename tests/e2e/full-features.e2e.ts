@@ -150,30 +150,38 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     let text = await bodyText();
     expect(text).toContain('总线负载');
     expect(text).toContain('数据块性能');
+    // the 5-minute chart is fed by real 1 Hz samples recorded in Main, not a static series
+    expect(text).toMatch(/[1-9][0-9]* 个采样点/);
     await clickText('点位追踪');
     text = await bodyText();
     expect(text).toContain('请求来源');
     expect(text).toContain('原始帧');
   });
 
-  it('编辑连接：修改参数并保存后生效', async () => {
+  it('连接设置：右侧主区编辑并保存生效', async () => {
     await rail('设备');
-    await browser.execute(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').trim() === '取消'); (b as HTMLElement | undefined)?.click(); });
-    await browser.pause(400);
-    await clickText('编辑');
+    await browser.execute(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('生产线 TCP'));
+      (b as HTMLElement | undefined)?.click();
+    });
+    await browser.pause(500);
     const text = await bodyText();
-    expect(text).toContain('编辑连接');
+    expect(text).toContain('连接名称');
+    expect(text).toContain('从站');
     const timeoutSel = 'input[data-testid="timeout-input"]';
-    const tInput = await $(timeoutSel);
-    expect(await tInput.getValue()).toBe('800');
+    expect(await (await $(timeoutSel)).getValue()).toBe('800');
     await setNative(timeoutSel, '700');
-    await clickText('保存修改');
-    await waitGone('编辑连接');
-    await clickText('编辑');
+    await clickText('保存');
+    await browser.pause(600);
+    await browser.execute(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('生产线 TCP'));
+      (b as HTMLElement | undefined)?.click();
+    });
+    await browser.pause(500);
     expect(await (await $(timeoutSel)).getValue()).toBe('700');
     await setNative(timeoutSel, '800');
-    await clickText('保存修改');
-    await waitGone('编辑连接');
+    await clickText('保存');
+    await browser.pause(400);
   });
   it('设置页：工作区文件 / 地址规则 / 记录与历史 / 写入安全', async () => {
     await rail('设置');
@@ -184,3 +192,94 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     expect(text).toContain('写入安全');
   });
 });
+
+  it('下拉框：选择选项 / 失焦 / Esc 三种方式都会自动关闭', async () => {
+    await rail('设备');
+    await clickText('添加连接');
+    const listOpen = () =>
+      browser.execute(() => [...document.querySelectorAll('button')].some((b) => (b.textContent ?? '').trim() === '921600'));
+    const baud = 'input[data-testid="baud-combo"]';
+
+    // 1) pick an option -> value applied and the list closes
+    await (await $(baud)).click();
+    await browser.pause(300);
+    expect(await listOpen()).toBe(true);
+    await browser.execute(() => {
+      const opt = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === '19200');
+      (opt as HTMLElement | undefined)?.click();
+    });
+    await browser.pause(300);
+    expect(await (await $(baud)).getValue()).toBe('19200');
+    expect(await listOpen()).toBe(false);
+
+    // 2) reopen then move focus elsewhere -> closes on blur
+    await (await $(baud)).click();
+    await browser.pause(300);
+    expect(await listOpen()).toBe(true);
+    await browser.execute(() => (document.querySelector('input[data-testid="port-combo"]') as HTMLInputElement | null)?.focus());
+    await browser.pause(400);
+    expect(await listOpen()).toBe(false);
+
+    // 3) reopen then press Escape -> closes
+    await (await $(baud)).click();
+    await browser.pause(300);
+    expect(await listOpen()).toBe(true);
+    // cancelable matters: Radix honours preventDefault() from our layered-Escape handler,
+    // and preventDefault is a no-op on a non-cancelable synthetic event
+    await browser.execute(() => {
+      (document.querySelector('input[data-testid="baud-combo"]') as HTMLInputElement | null)?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+    });
+    await browser.pause(300);
+    expect(await listOpen()).toBe(false);
+
+    // 4) a click outside the combobox also closes it
+    await (await $(baud)).click();
+    await browser.pause(300);
+    expect(await listOpen()).toBe(true);
+    await browser.execute(() => {
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+    await browser.pause(300);
+    expect(await listOpen()).toBe(false);
+
+    await clickText('取消');
+    await waitGone('配置 RTU / TCP 通信参数');
+  });
+
+  it('未绑定模板也能添加从站：从站建立但不参与轮询', async () => {
+    await rail('设备');
+    // a previous failure could leave a dialog mounted; start from a clean overlay state
+    await browser.execute(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await browser.pause(300);
+    await clickText('＋ 添加从站');
+    await browser.pause(500);
+    expect(await bodyText()).toContain('从站地址 (Unit ID)');
+
+    // Radix Select opens on pointerdown, so it needs a real mouse click (not element.click())
+    const trigger = await $('//div[text()="设备模板"]/following-sibling::button[1]');
+    await trigger.click();
+    await browser.pause(500);
+    const option = await $('//*[@role="option"][contains(., "暂不绑定模板")]');
+    expect(await option.isExisting()).toBe(true);
+    await option.click();
+    await browser.pause(500);
+    expect(await bodyText()).toContain('未绑定模板：从站创建后不会轮询');
+
+    await setNative('input[value^="从站"]', '无模板从站');
+    await browser.pause(200);
+
+    // the confirm button must be enabled purely on Unit-ID availability
+    const addBtn = await browser.execute(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').trim() === '添加从站');
+      return b ? (b as HTMLButtonElement).disabled : null;
+    });
+    expect(addBtn).toBe(false);
+
+    await clickText('添加从站');
+    await browser.pause(800);
+    const text = await bodyText();
+    expect(text).toContain('无模板从站');
+    expect(text).toContain('未绑定模板');
+  });

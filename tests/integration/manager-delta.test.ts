@@ -1,0 +1,204 @@
+import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { RuntimeManager } from '../../src/main/runtime/manager';
+import { WorkspaceService } from '../../src/main/services/workspace';
+import { HistoryStore } from '../../src/main/services/history';
+import { emptyWorkspace, type BlockDef, type ConnectionDef, type PointDef, type SlaveDef, type Workspace } from '../../src/domain/model';
+import { FakeTransport } from '../support/fake';
+import type { AppDelta } from '../../src/shared/snapshot';
+import { commandSchema } from '../../src/shared/commands';
+import type { TransactionRecord } from '../../src/main/runtime/diagnostics';
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'mbmgr-'));
+
+const conn: ConnectionDef = {
+  id: 'c1',
+  name: 'TCP',
+  transport: 'tcp',
+  tcp: { host: '127.0.0.1', port: 5099 },
+  timeoutMs: 50,
+  retries: 0,
+  reconnect: 'manual',
+  interFrameMs: 0,
+  rtsControl: 'none',
+  logLevel: 'info',
+};
+const block: BlockDef = { id: 'b1', name: 'control', area: 3, start: 0, length: 4, periodMs: 25 };
+const slave: SlaveDef = { id: 's1', connectionId: 'c1', unitId: 1, name: 'slave', templateId: 't1', enabled: true };
+const point = (id: string, name: string): PointDef => ({
+  id,
+  blockId: 'b1',
+  name,
+  mapping: { rawType: 'UInt16', offset: 0, registerCount: 1, wordOrder: 'ABCD', byteSelector: 'low', bitOffset: 0, bitWidth: 16, stringLength: 0, stringEncoding: 'ascii' },
+  scale: 1,
+  offset: 0,
+  unit: '',
+  access: 'rw',
+  displayFormat: 'auto',
+  enumMap: {},
+  highRisk: false,
+  description: '',
+});
+
+function demoWorkspace(): Workspace {
+  return {
+    ...emptyWorkspace('delta'),
+    connections: [conn],
+    slaves: [slave],
+    templates: [{ id: 't1', name: 'tpl', version: '1.0', description: '', blocks: [block], points: [point('p1', 'speed'), point('p2', 'torque')] }],
+  };
+}
+
+async function harness() {
+  const dir = tmpDir();
+  const svc = new WorkspaceService(dir);
+  svc.adopt(demoWorkspace(), null);
+  const history = await HistoryStore.open(path.join(dir, 'history.db'));
+  const mgr = new RuntimeManager(svc, history, { transportFactory: () => new FakeTransport('tcp') });
+  const deltas: AppDelta[] = [];
+  mgr.onDelta = (d) => deltas.push(d);
+  return { dir, svc, history, mgr, deltas };
+}
+
+function txOf(i: number): TransactionRecord {
+  return {
+    traceId: `pre${i}`,
+    connectionId: 'c1',
+    unitId: 1,
+    functionCode: 3,
+    sourceKind: 'poll',
+    sourceId: null,
+    startUtc: new Date().toISOString(),
+    startMono: 0,
+    durationMs: 1,
+    requestAduHex: '00',
+    responseAduHex: null,
+    result: 'timeout',
+    exceptionCode: null,
+    mbapTransactionId: null,
+    summary: 'pre',
+  };
+}
+
+describe('RuntimeManager snapshot / delta pipeline', () => {
+  it('caches the point index against the workspace revision and invalidates it on edit', async () => {
+    const { svc, mgr, history } = await harness();
+    const first = mgr.pointIndex();
+    expect([...first.keys()].sort()).toEqual(['p1', 'p2']);
+    // Same workspace object => identical Map instance (this ran on every 100 ms tick before).
+    expect(mgr.pointIndex()).toBe(first);
+
+    svc.mutate((ws) => ({
+      ...ws,
+      templates: ws.templates.map((t) => (t.id === 't1' ? { ...t, points: [...t.points, point('p3', 'temp')] } : t)),
+    }));
+    const second = mgr.pointIndex();
+    expect(second).not.toBe(first);
+    expect([...second.keys()].sort()).toEqual(['p1', 'p2', 'p3']);
+    expect(mgr.pointIndex()).toBe(second);
+    await mgr.stop();
+    history.close();
+  });
+
+  it('does not re-deliver transactions that were already part of the snapshot', async () => {
+    const { mgr, deltas, history } = await harness();
+    mgr.diagnostics.recordTransaction(txOf(0));
+    mgr.diagnostics.recordTransaction(txOf(1));
+    const snap = mgr.buildSnapshot();
+    expect(snap.transactions.map((t) => t.traceId)).toEqual(['pre0', 'pre1']);
+
+    mgr.start();
+    await sleep(400);
+    await mgr.stop();
+    history.close();
+
+    const streamed = deltas.flatMap((d) => d.transactions ?? []).map((t) => t.traceId);
+    expect(streamed).not.toContain('pre0');
+    expect(streamed).not.toContain('pre1');
+    // the polling loop kept running against a silent transport, so timeouts were streamed
+    expect(streamed.length).toBeGreaterThan(0);
+  });
+
+  it('streams each transaction exactly once', async () => {
+    const { mgr, deltas, history } = await harness();
+    mgr.start();
+    await sleep(500);
+    await mgr.stop();
+    history.close();
+    const ids = deltas.flatMap((d) => d.transactions ?? []).map((t) => t.traceId);
+    expect(ids.length).toBeGreaterThan(3);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('emits diagRev once after diagnostics.clear so the renderer can drop its rings', async () => {
+    const { mgr, deltas, history } = await harness();
+    const snap = mgr.buildSnapshot();
+    mgr.start();
+    await sleep(250);
+    const res = await mgr.handleCommand({ type: 'diagnostics.clear' });
+    expect(res.ok).toBe(true);
+    await sleep(250);
+    await mgr.stop();
+    history.close();
+    const withRev = deltas.filter((d) => d.diagRev !== undefined);
+    expect(withRev.length).toBe(1);
+    expect(withRev[0]?.diagRev).toBe(snap.diagRev + 1);
+    // after the clear the stream restarts from empty and only carries new records
+    const cut = deltas.indexOf(withRev[0] as AppDelta);
+    const before = deltas.slice(0, cut).flatMap((d) => d.transactions ?? []).map((t) => t.traceId);
+    const after = deltas.slice(cut + 1).flatMap((d) => d.transactions ?? []).map((t) => t.traceId);
+    expect(before.length).toBeGreaterThan(0);
+    expect(after.length).toBeGreaterThan(0);
+    // the cursor was re-parked at the (monotonic) total, so nothing is replayed
+    expect(after.filter((id) => before.includes(id))).toEqual([]);
+  });
+
+  it('publishes connection health at most once per second per connection', async () => {
+    const { mgr, deltas, history } = await harness();
+    mgr.start();
+    await sleep(650);
+    await mgr.stop();
+    history.close();
+    const emissions = deltas.filter((d) => d.health && 'c1' in d.health).length;
+    // ~6-7 ticks happened; only the initial (dirty) publish plus the 1 Hz refresh may carry health
+    expect(emissions).toBeLessThanOrEqual(2);
+    expect(emissions).toBeGreaterThan(0);
+  });
+
+  it('records real health samples at 1 Hz and serves them through diagnostics.healthSeries', async () => {
+    const { mgr, history } = await harness();
+    mgr.start();
+    await sleep(2500);
+    await mgr.stop();
+    history.close();
+    const res = await mgr.handleCommand({ type: 'diagnostics.healthSeries', connectionId: 'c1', windowMs: 60000 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const samples = res.value as Array<{ t: number; busLoadPercent: number; p95Ms: number }>;
+    // ~2.5 s of 1 Hz sampling: at least two distinct samples, strictly increasing timestamps
+    expect(samples.length).toBeGreaterThanOrEqual(2);
+    expect(samples.length).toBeLessThanOrEqual(4);
+    for (let i = 1; i < samples.length; i++) expect(samples[i]!.t).toBeGreaterThan(samples[i - 1]!.t);
+    expect(samples.every((s) => Number.isFinite(s.busLoadPercent) && Number.isFinite(s.p95Ms))).toBe(true);
+  });
+
+  it('validates the health series window at the IPC command boundary', () => {
+    // registerIpc() runs every renderer command through commandSchema before handleCommand()
+    expect(commandSchema.safeParse({ type: 'diagnostics.healthSeries', connectionId: 'c1', windowMs: 300000 }).success).toBe(true);
+    expect(commandSchema.safeParse({ type: 'diagnostics.healthSeries', connectionId: 'c1', windowMs: 10 }).success).toBe(false);
+    expect(commandSchema.safeParse({ type: 'diagnostics.healthSeries', connectionId: 'c1', windowMs: 99999999 }).success).toBe(false);
+    expect(commandSchema.safeParse({ type: 'diagnostics.healthSeries', windowMs: 300000 }).success).toBe(false);
+  });
+
+  it('reports the last successful response without scanning the transaction ring', async () => {
+    const { mgr, history } = await harness();
+    expect(mgr.buildSnapshot().connections['c1']?.lastResponseUtc).toBeNull();
+    mgr.diagnostics.recordTransaction({ ...txOf(0), result: 'ok', startUtc: '2026-01-01T00:00:00.000Z' });
+    expect(mgr.buildSnapshot().connections['c1']?.lastResponseUtc).toBe('2026-01-01T00:00:00.000Z');
+    await mgr.stop();
+    history.close();
+  });
+});

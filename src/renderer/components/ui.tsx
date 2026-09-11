@@ -214,6 +214,16 @@ export function EmptyState(props: { title: string; message?: string; actions?: R
 
 /* ------------------------------- overlays ------------------------------- */
 
+/*
+ * Escape layering between ComboInput lists and the Radix Dialog that hosts them.
+ * Radix registers its Escape handler on document in the CAPTURE phase, so stopPropagation
+ * from the input can never reach it; the supported hook is onEscapeKeyDown + preventDefault.
+ */
+let openComboLists = 0;
+export function hasOpenComboList(): boolean {
+  return openComboLists > 0;
+}
+
 export function Dialog(props: { title: string; subtitle?: string; width?: number; onClose: () => void; footer?: React.ReactNode; children: React.ReactNode }) {
   return (
     <RadixDialog.Root open onOpenChange={(o) => !o && props.onClose()}>
@@ -222,6 +232,10 @@ export function Dialog(props: { title: string; subtitle?: string; width?: number
         <RadixDialog.Content
           className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-48px)] max-w-[calc(100vw-48px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-surface shadow-2xl outline-none"
           style={{ width: props.width ?? 640 }}
+          onEscapeKeyDown={(e) => {
+            // first Escape closes an open combobox list; the dialog only closes afterwards
+            if (hasOpenComboList()) e.preventDefault();
+          }}
         >
           <div className="px-7 pt-6 pb-4 shrink-0">
             <RadixDialog.Title className="text-xl font-bold">{props.title}</RadixDialog.Title>
@@ -342,13 +356,29 @@ export function ComboInput(props: {
 }) {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
+  const blurTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => {
+    if (open) openComboLists += 1;
+    return () => {
+      if (open) openComboLists -= 1;
+    };
+  }, [open]);
+  const closeList = React.useCallback(() => {
+    if (blurTimer.current) clearTimeout(blurTimer.current);
+    blurTimer.current = null;
+    setOpen(false);
+  }, []);
+  React.useEffect(() => {
+    // The list must disappear on its own: outside click, blur and Escape all close it.
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) closeList();
     };
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, []);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      if (blurTimer.current) clearTimeout(blurTimer.current);
+    };
+  }, [closeList]);
   return (
     <div ref={ref} className="relative">
       <input
@@ -359,8 +389,26 @@ export function ComboInput(props: {
         disabled={props.disabled}
         onChange={(e) => props.onChange(e.target.value)}
         onFocus={() => {
+          if (blurTimer.current) clearTimeout(blurTimer.current);
           props.onOpen?.();
           setOpen(true);
+        }}
+        onClick={() => {
+          // focus does not fire again when the field is already focused (e.g. right after
+          // picking an option), so the list has to reopen on click as well.
+          if (blurTimer.current) clearTimeout(blurTimer.current);
+          if (!open) {
+            props.onOpen?.();
+            setOpen(true);
+          }
+        }}
+        onBlur={() => {
+          // small grace period so an option click (mousedown prevented) still lands
+          if (blurTimer.current) clearTimeout(blurTimer.current);
+          blurTimer.current = setTimeout(() => setOpen(false), 120);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && open) closeList();
         }}
       />
       <button
@@ -369,8 +417,12 @@ export function ComboInput(props: {
         aria-label="展开选项"
         className="focus-ring absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-ink2"
         onClick={() => {
+          if (open) {
+            closeList();
+            return;
+          }
           props.onOpen?.();
-          setOpen(!open);
+          setOpen(true);
         }}
       >
         <svg width="12" height="8" viewBox="0 0 12 8" fill="none">
@@ -384,9 +436,10 @@ export function ComboInput(props: {
               key={o.value}
               type="button"
               className={`focus-ring block w-full cursor-pointer px-3 py-1.5 text-left text-sm hover:bg-surface2 ${o.value === props.value ? 'text-accent font-medium' : ''}`}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 props.onChange(o.value);
-                setOpen(false);
+                closeList();
               }}
             >
               {o.label}

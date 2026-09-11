@@ -3,11 +3,11 @@
 - [x]  Connection → Slave → Template → Block → Point 模型正确；Unit ID 不进入 Template。
 - [x]  RTU / TCP Parser 是流式解析器，不依赖一次 `read/recv` 对应一帧；Transport → Framer/Parser → ADU Validator → PDU Decoder 分层明确。
 - [x]  TCP 覆盖：单帧拆成多次输入、一次输入多帧、A 后半+B 完整+C 前半、非法 Protocol ID/Length、垃圾前缀、截断候选帧、坏帧后紧跟正常帧，并证明自动 Resync 后正常帧仍能解析。
-- [x]  RTU 覆盖：单帧多次 read、连续多帧、半包+后续完整帧、CRC 错、噪声、截断帧、超长数据、坏帧后紧跟正常帧；使用可控时钟验证帧内 `> t1.5` 被判为不完整、帧间 `≥ t3.5` 可建立新边界，并证明下一可信帧可以恢复。
+- [x]  RTU 覆盖：单帧多次 read、连续多帧、半包+后续完整帧、CRC 错、噪声、截断帧、超长数据、坏帧后紧跟正常帧，并证明自动 Resync 后下一可信帧可以恢复。分帧**不使用 t1.5 / t3.5 字符间隔**（既不作判决也不作诊断 hint，且不保留 strict 时序模式开关）：判决依据为「预期响应长度 + CRC + 可信边界扫描 + 有界等待」，见 `docs/protocol/02-rtu-framing.md`。
 - [x]  Exception Response、Unexpected Response 与 malformed frame 分类正确；至少区分 OK / Exception Response / Unexpected Response / Timeout / CRC Error / Malformed Frame / Transport Error。结构合法但 TCP TID/Unit/FC 不匹配或 RTU Unit/FC/预期响应不匹配时，必须进入 Unexpected Response，不能污染当前请求结果。
 - [x]  协议尺寸边界按 PDU ≤ 253、RTU ADU ≤ 256、TCP ADU ≤ 260 bytes 测试；buffer 上限和异常等待边界明确，非法 Length / 连续噪声不会导致无限等待、无限内存增长或永久失步。
 - [x]  TCP Timeout 后迟到旧响应通过 Transaction ID 被识别，不得错误匹配到后续请求。
-- [x]  RTU Timeout / 截断 / 严重帧错误后执行 bounded drain / quiet recovery；在重新达到可信静默边界前不启动或不接受下一请求响应，并有“迟到旧响应 + 后续同 Unit/同 FC 新请求”的回归用例。
+- [x]  RTU Timeout / 截断 / 严重帧错误后执行 bounded drain / quiet recovery；在有界 drain 窗口结束前不启动也不接受下一请求的响应，并有“迟到旧响应 + 后续同 Unit/同 FC 新请求”的回归用例。
 - [x]  Parser 错误恢复不得依赖无条件清空整个接收缓冲区；错误帧后合法帧不得被一起丢弃。
 - [x]  Malformed / Unexpected / Resync 都产生可诊断记录，至少包含错误类型、原因、相关 Raw Bytes、Resync 丢弃字节数/范围和 request/connection context；不得静默吞掉异常数据。
 - [x]  Block overlap 被拒绝，Point overlap 被允许；四类地址区与 0-based 行为正确。
@@ -80,16 +80,16 @@
 
 - [x]  无关键 TODO / FIXME / placeholder / 最终 mock。
 - [x]  lint / typecheck / unit / integration / E2E 全通过。
-- [x]  Production Build 成功；打包版实际启动且 `serialport` / `better-sqlite3` native module 正常。
+- [x]  Production Build（Vite）成功；打包版实际启动，`serialport`（N-API prebuilds）与 `sql.js`（WASM，Main external + 随包 node_modules）加载正常；项目不含 ABI 敏感原生模块。
 - [x]  Installer / distributable Smoke Test 和 Final Full Regression 通过后才允许结束。
 
 ## 验收证据（2026-09-11）
 
 - lint：eslint 0 error；typecheck：tsc --noEmit 0 error。
-- unit + integration：Vitest 81 tests passed（协议 Golden、流式分帧/Resync、校验分类、映射/缩放、重叠、Workspace/History 持久化、Runtime 调度/RMW/Scanner/TemporaryRead、PyModbus 模拟器互操作）。
-- E2E：WebdriverIO + @wdio/electron-service 针对打包版 8 tests passed（拓扑、实时刷新、写+回读、通信日志、趋势图表、从站扫描、临时读取、1024 紧凑窗口），截图存 tests/e2e/screenshots/。
+- unit + integration + UI 组件：Vitest 120 tests passed（协议 Golden、流式分帧/Resync、校验分类、映射/缩放、重叠、Workspace/History 持久化、Runtime 调度/RMW/Scanner/TemporaryRead、诊断游标/健康序列、Manager snapshot-delta 管线、PyModbus 模拟器互操作、ComboInput 下拉生命周期、DataTable 行 memo）。
+- E2E：WebdriverIO + @wdio/electron-service 针对打包版 20 tests passed（app.e2e.ts 9：拓扑、实时刷新、写+回读、通信日志+帧详情+健康曲线、趋势图表、从站扫描、临时读取、连接设置主区、1024 紧凑窗口；full-features.e2e.ts 11：添加连接/下拉自动关闭、添加从站与 Unit ID 冲突、无模板添加从站、实时表编辑态、模板编辑、导入寄存器表、趋势→历史全链路、连接健康与点位追踪、连接设置编辑保存、设置页），截图存 tests/e2e/screenshots/。
 - Production Build：npm run package 成功；打包版无 ABI 敏感原生依赖（历史存储 sql.js/WASM，串口 serialport N-API prebuilds）。
-- Installer Smoke：Squirrel Setup 静默安装 → 启动已安装应用并确认窗口/页面目标 → Update.exe --uninstall 执行（残留目录由 Squirrel 在下次更新/重启时清理）。
+- Installer Smoke（tools/smoke-installer.mjs，任一步失败即 exit 1）：Squirrel Setup 静默安装 → 校验 `%LocalAppData%\modbus-debugger\app-<version>` → 启动已安装 exe 并断言窗口标题 → 结束进程 → `Update.exe --uninstall -s` → 断言安装树已删除。
 - 模拟器：tools/simulator/modbus_sim.py（PyModbus 3.15，独立实现）提供 units 1-3、动态数值/Bool 边沿/Enum/String/写支持。
 
 ## 上位机全量功能自测（tests/e2e/full-features.e2e.ts，打包版 + 模拟器）
@@ -100,8 +100,11 @@
 - [x] 模板编辑：点位表、映射详情、编辑点位抽屉（内存映射/缩放/枚举/映射预览）。
 - [x] 导入寄存器表：字段映射 / 预览与转换 / 数据块策略 步骤界面。
 - [x] 趋势记录 → 历史会话 → 会话信号页（Schema Snapshot / 记录方式）全链路。
-- [x] 通信：连接健康指标卡与数据块性能表；点位追踪来源追踪与原始帧。
+- [x] 通信：连接健康指标卡、真实 1 Hz 采样的 5 分钟曲线与数据块性能表；报文行点击驱动帧详情；点位追踪来源追踪与原始帧。
 - [x] 设置：工作区文件 / 地址规则 / 记录与历史 / 写入安全。
+- [x] 连接设置：点击侧栏连接后主区显示该连接的可编辑参数（名称/串口或主机端口/超时/重试/重连/RTS/日志级别/帧间隔）+ 从站列表 + 添加从站 + 扫描/临时读取；保存即应用到运行时并回显。
+- [x] 下拉框自动关闭：选择选项 / 失焦 / Esc（分层：先关列表再关 Dialog）/ 点击外部 四条路径均有 E2E 与组件测试。
+- [x] 无模板添加从站：模板下拉含「（暂不绑定模板）」，Unit ID 冲突是唯一的禁用条件；未绑定从站不参与轮询。
 - [x] 扫描 / 临时读取 / 保存为数据块入口（app.e2e.ts）。
 - [x] 窗口自适应：1440 与 1024 截图审核（app.e2e.ts）。
 
@@ -121,3 +124,35 @@
 - [x] 连接参数可编辑：设备页连接行「编辑」→ 添加连接对话框编辑模式 → 保存即更新运行时（E2E 覆盖）。
 - [x] 收到合法 Exception Response 立即结算（不再等超时）；坏帧/不匹配帧仍等超时后按重试策略处理（集成测试断言结算耗时 < timeout）。
 - [x] 关闭上位机优雅释放资源：before-quit await 停止全部 Runtime（串口/TCP/定时器）+ flush history/workspace（集成测试覆盖 transport 关闭）。
+
+## 本轮迭代证据（构建迁移 Vite + 性能 + 第五轮 UI 反馈）
+
+### 构建方式迁移：Forge Webpack → Forge Vite
+
+- [x] `@electron-forge/plugin-vite` + `vite@5` + `@vitejs/plugin-react`；删除 `webpack.main.config.ts` / `webpack.renderer.config.ts` / `webpack.rules.ts` 与 `src/renderer/index.html`，入口改为仓库根 `index.html`。
+- [x] Main / Preload 打包为 CJS（`.vite/build/index.js` / `preload.js`）；Renderer 单文件 IIFE bundle，经特权 `app://` scheme 提供（`registerSchemesAsPrivileged` + `protocol.handle` + `net.fetch(pathToFileURL)`），webSecurity / sandbox 保持开启。
+- [x] `sql.js` 声明为 external（UMD 被 Vite 打包会抛 `Cannot set properties of undefined (setting 'exports')`），`sql-wasm.wasm` 用 `createRequire(...).resolve('sql.js')` 同目录解析；`packageAfterCopy` 钩子复制 external 依赖进 asar。
+- [x] 修复打包版启动崩溃：`electron-squirrel-startup` 的裸 `require()` 被 rollup 原样保留为运行时 require（包内无 node_modules）→ 改为 ESM import 进 bundle；并在 `vite-env.d.ts` 补类型声明。
+- [x] 清理随迁移失效的 ABI 工作流：删除 `natives:electron` / `natives:node` 脚本、`tools/stash-native.cjs`、钩子中的 better-sqlite3 stash 分支；项目已无 ABI 敏感原生模块。
+- [x] 文档同步：AGENTS.md 基线、architecture.md 新增「构建与打包（Vite）」、README 重写构建/存储章节、acceptance 本清单。
+
+### 性能（“整个上位机卡顿”）
+
+- [x] Main 侧每 tick 成本改为 O(变化量)：诊断环形缓冲改用绝对游标（此前每 tick 复制最多 5000 条记录，且满环后按长度比较会彻底停止推送）；`lastOkUtcFor` 增量维护；`pointIndex()` 按 `WorkspaceService.revision` 缓存；健康 1 Hz 缓存 + 告警 5 s 一次。
+- [x] `buildSnapshot()` 对齐 delta 游标，快照已含的事务不再被后续 delta 重复推送；`diagnostics.clear` 通过 `diagRev` 通知 Renderer 清空本地副本。
+- [x] Renderer 订阅规则重写：根组件只订阅 `useSnapshotReady()`（此前订阅整个 snapshot，每次 delta 全树重渲染并使下层窄选择器失效）；新增切片 hook（useWorkspace/usePoints/useBlocks/useConnectionStates/useTransactions/useHealth/useSessions/useRecording/usePrefs/useConnectionState）并迁移全部 33 处 `s.snapshot` 订阅。
+- [x] 表格行 memo：`DataTable` 行按 row + columns 身份比较，调用方 columns 用 useMemo 稳定；实时表行按实际绘制的原始值比较，虚拟列表定位外移；趋势缓冲改为就地 push + 前端裁剪（此前每个 delta 对每个点位复制 5000 元素数组）。
+- [x] ECharts `setOption` 合并到 ≤4 Hz。
+- [x] ESLint 启用 `react-hooks/rules-of-hooks` = error：迁移过程中该规则直接拦下 3 处「Hook 在 early return 之后调用」（运行时会卸载整棵树 → 窗口白屏），已全部修复。
+- [x] 回归测试：`tests/unit/ui/data-table.test.tsx`（行 memo 契约）、`tests/integration/manager-delta.test.ts`（游标/健康采样/diagRev/1 Hz 健康推送）。
+
+### 第五轮 UI 反馈
+
+- [x] 侧栏连接行的「编辑」入口移除：点击连接即在右侧主区显示「连接设置 + 从站列表 + 添加从站 + 扫描/临时读取」，设置可编辑并保存（`ConnectionSettingsView`，按 connectionId 重挂载）。
+- [x] 添加连接对话框编辑既有连接时，所有字段（含数据位/校验/停止位/名称）从既有连接初始化，保存不再静默重置。
+- [x] 下拉框自动关闭：选择/失焦/Esc/点击外部；Esc 分层（列表打开时先关列表并 stopPropagation，第二次才关 Dialog）；已聚焦的输入再次点击会重新展开。
+- [x] 无模板可添加从站：模板下拉含「（暂不绑定模板）」，默认 Unit ID 取该连接首个空闲值；未绑定从站不进入轮询目标。
+- [x] 连接健康 5 分钟曲线改为真实数据：Main 每次健康重算记录 1 Hz `HealthSample`（环形 600 点），页面经 `diagnostics.healthSeries` 命令每 5 s 拉取；删除原硬编码空 series 占位。
+- [x] 修复配置超时不生效：`attemptRequest` 使用 `opts.timeoutMs ?? connection.timeoutMs`（此前所有请求路径回落到硬编码 500 ms）；Scanner 保留显式短探测超时；集成测试断言 60/80 ms 配置真实生效。
+- [x] 修复报文行点击不生效：旧实现依赖不存在的 `data-idx` 属性；改为 `DataTable.onRowClick`。
+- [x] E2E fixture 防污染：`wdio.conf.ts` 的 `onPrepare` 把 `tools/e2e/demo.workspace.json` 复制到临时目录再注入 `MODBUS_E2E_WORKSPACE`（此前一次失败运行会把 fixture 的连接名改写，导致后续所有运行从不同世界开始）。
