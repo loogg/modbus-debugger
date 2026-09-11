@@ -98,6 +98,12 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 - 历史回放的时间轴是**会话内偏移**（`tMs`），不是墙钟：`NumericChart` / `StateTrack` 通过 `xMode="duration"` 用 `fmtDuration` / `fmtDurationMs` 渲染（`00:00:01` 形式），与事件表、回放游标保持一致；实时趋势仍为 `xMode="epoch"`（墙钟，走显示时区）。此前历史图把 `tMs` 当 epoch 渲染，轴上出现 `08:00:00`（epoch 0 + UTC+8）这类无意义刻度。
 - 多语言技术栈：**i18next（核心：插值/复数/回退/词典懒加载）+ react-i18next（绑定）**。词典是类型化 TS 模块（`src/renderer/i18n/locales/<lang>/<area>.ts`，按界面区域分片），通过 i18next 的 `CustomTypeOptions` 声明资源类型，**缺失 key 在编译期报错**；当前仅接入 zh-CN，新增语言 = 新增同形状词典并在 `src/renderer/i18n/index.ts` 注册 + 在 `LANGUAGE_OPTIONS` 暴露。语言偏好存于 `prefs.language`，快照 prefs 变化时 `changeLanguage`。
 
+### 下拉框（ComboInput）真实鼠标语义
+
+- ComboInput 的选项节点在选中时同步卸载；真实鼠标点击下 Chrome 会在此之后向 input 补发一个**重定向的第二个 click**（合成 `el.click()` 不会产生该事件）。输入框的「点击重开」逻辑会因此立刻重开刚关闭的列表，表现为「选中后下拉不消失，必须点别处」。修复：选中时记录 200 ms 重开抑制窗口，窗口内 input 的 onFocus/onClick 不重开；窗口过后点击输入框仍可重开。
+- blur 宽限期（120 ms）只在焦点移到组合框**外部**时排程关闭：`relatedTarget` 落在自身 chevron 上视为未离开，否则「输入框有焦点时点 chevron 展开」会在展开后 120 ms 被宽限期关掉；chevron 的展开分支同时清除未到期的关闭定时器。
+- Radix Select 在 pointerdown 打开，因此 E2E 对一切下拉交互（Radix 与 ComboInput）一律使用真实 WDIO 鼠标点击，禁止页内合成 click——合成点击无法覆盖上述重定向行为。回归：添加连接串口/波特率真实点击断言 + 组件测试 retarget 用例。
+
 ### Responsive
 
 - 设计基准 1440×960；最小 1024×680；Standard ≥1280，Compact 1024–1279。

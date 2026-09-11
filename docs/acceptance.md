@@ -86,7 +86,7 @@
 ## 验收证据（2026-09-11）
 
 - lint：eslint 0 error；typecheck：tsc --noEmit 0 error。
-- unit + integration + UI 组件：Vitest 136 tests passed（协议 Golden、流式分帧/Resync、校验分类、映射/缩放、重叠、Workspace/History 持久化、Runtime 调度/RMW/Scanner/TemporaryRead、诊断游标/健康序列、Manager snapshot-delta 管线、PyModbus 模拟器互操作、ComboInput 下拉生命周期、DataTable 行 memo）。
+- unit + integration + UI 组件：Vitest 138 tests passed（协议 Golden、流式分帧/Resync、校验分类、映射/缩放、重叠、Workspace/History 持久化、Runtime 调度/RMW/Scanner/TemporaryRead、诊断游标/健康序列、Manager snapshot-delta 管线、PyModbus 模拟器互操作、ComboInput 下拉生命周期、DataTable 行 memo）。
 - E2E：WebdriverIO + @wdio/electron-service 针对打包版 21 tests passed（app.e2e.ts 9：拓扑、实时刷新、写+回读、通信日志+帧详情+健康曲线、趋势图表、从站扫描、临时读取、连接设置锁定态、1024 紧凑窗口；full-features.e2e.ts 13：添加连接/下拉自动关闭、串口默认首口与选中即关闭、添加从站与 Unit ID 冲突、无模板添加从站、实时表编辑态、模板编辑、导入寄存器表、趋势→历史全链路、连接健康与点位追踪、连接设置 断开→改→保存→连接→再锁定、下拉生命周期四路径、设置页），截图存 tests/e2e/screenshots/。
 - Production Build：npm run package 成功；打包版无 ABI 敏感原生依赖（历史存储 sql.js/WASM，串口 serialport N-API prebuilds）。
 - Installer Smoke（tools/smoke-installer.mjs，任一步失败即 exit 1）：Squirrel Setup 静默安装 → 校验 `%LocalAppData%\modbus-debugger\app-<version>` → 启动已安装 exe 并断言窗口标题 → 结束进程 → `Update.exe --uninstall -s` → 断言安装树已删除。
@@ -111,7 +111,7 @@
 - [x] 多语言接口：i18next + react-i18next，类型化分片词典（缺失 key 编译期报错），设置页语言选择并持久化；当前仅接入简体中文，渲染层文案全部经 t() 输出。
 - [x]  prefs / dirty / warnings 由 Main 经 delta 下发（独立变更追踪，快照对齐游标）；Renderer 在事务分支 early return 之前应用 prefs，轮询期间的 prefs.set 不再被静默丢弃（store 单元 5 项 + Manager 集成 3 项回归）。
 - [x]  历史回放时间轴为会话内偏移（xMode="duration"），与事件表/回放游标一致；实时趋势轴为显示时区墙钟；不再出现 epoch 0 刻度。
-- [x] 下拉框自动关闭：选择选项 / 失焦 / Esc（分层：先关列表再关 Dialog）/ 点击外部 四条路径均有 E2E 与组件测试。
+- [x] 下拉框自动关闭：选择选项 / 失焦 / Esc（分层：先关列表再关 Dialog）/ 点击外部 四条路径均有 E2E 与组件测试；**选择选项一律真实鼠标点击**（Chrome 在选项节点卸载后会向输入框补发重定向 click，合成点击无法复现），并断言选中后列表保持关闭、聚焦时真实 chevron 点击展开后保持展开。
 - [x] 无模板添加从站：模板下拉含「（暂不绑定模板）」，Unit ID 冲突是唯一的禁用条件；未绑定从站不参与轮询。
 - [x] 扫描 / 临时读取 / 保存为数据块入口（app.e2e.ts）。
 - [x] 窗口自适应：1440 与 1024 截图审核（app.e2e.ts）。
@@ -183,3 +183,10 @@
 - [x]  修复历史回放把会话内偏移当 epoch 渲染的缺陷（图表轴 / tooltip / StateTrack 边沿时间），新增 `xMode="duration"`；会话开始时间改用显示时区格式化。
 - [x]  新增截图：12-templates-1440、14-history-1440、21-settings-1440（含时区/语言控件断言）、22-history-utc-1440（UTC 偏移证据）。
 - [x]  回归：lint 0、tsc 0、Vitest 136、E2E 22（打包版 + PyModbus）、npm run package、npm run make、tools/smoke-installer.mjs 全通过。
+
+## 本轮迭代（下拉框真实鼠标关闭修复，v0.4.1）
+
+- [x]  修复 ComboInput 「选中后不自动消失」：真实鼠标点击下 Chrome 在选项节点卸载后向输入框补发重定向 click，输入框的点击重开逻辑会立刻重开刚关闭的列表；选中后记 200 ms 重开抑制窗口（onFocus/onClick 遵守），窗口后点击输入框仍可重开。
+- [x]  修复「输入框有焦点时点 chevron 展开」被 blur 宽限期在 120 ms 后关掉：blur 仅在 relatedTarget 位于组合框外部时排程关闭，chevron 展开分支清除未到期关闭定时器。
+- [x]  E2E 两个下拉用例（添加连接串口 / 波特率）改用真实 WDIO 鼠标点击，新增「聚焦时真实 chevron 点击展开并保持展开」断言；组件测试新增 retarget click 不重开、chevron/blur 两例（Vitest 138）。
+- [x]  回归：lint 0、tsc 0、Vitest 138、E2E 22（打包版 + PyModbus）、npm run package、npm run make、tools/smoke-installer.mjs（app-0.4.1）全通过。
