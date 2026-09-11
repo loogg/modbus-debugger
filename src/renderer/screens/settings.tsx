@@ -1,14 +1,18 @@
 import React from 'react';
-import { useApp } from '../store/app';
+import { useApp, useHistoryDbPath, usePrefs, useSnapshotReady, useWorkspace, useWorkspacePath } from '../store/app';
 import { Button, Checkbox, InfoBand, PageHeader, SectionTitle, StatusDot, TextInput } from '../components/ui';
 
 export function SettingsScreen() {
-  const snapshot = useApp((s) => s.snapshot);
+  const ready = useSnapshotReady();
+  const workspace = useWorkspace();
+  const prefsSlice = usePrefs();
+  const workspacePath = useWorkspacePath();
+  const historyDbPath = useHistoryDbPath();
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
   const openOverlay = useApp((s) => s.openOverlay);
-  if (!snapshot) return null;
-  const prefs = snapshot.prefs;
+  if (!ready || !workspace || !prefsSlice) return null;
+  const prefs = prefsSlice;
 
   return (
     <>
@@ -17,7 +21,7 @@ export function SettingsScreen() {
       <InfoBand className="flex items-center justify-between">
         <div>
           <div className="text-xs text-ink2 mb-1">当前工作区</div>
-          <div className="text-sm">{snapshot.workspacePath ? snapshot.workspacePath.split(/[\\/]/).slice(-1)[0] : `${snapshot.workspace.name}（未保存）`}</div>
+          <div className="text-sm">{workspacePath ? workspacePath.split(/[\\/]/).slice(-1)[0] : `${workspace.name}（未保存）`}</div>
         </div>
         <StatusDot tone="ok" label="自动保存已开启" />
         <Button size="sm" onClick={async () => {
@@ -56,7 +60,7 @@ export function SettingsScreen() {
         <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           <div>
             <div className="text-xs text-ink2 mb-1">历史数据库</div>
-            <div className="text-sm mono break-all">{snapshot.historyDbPath}</div>
+            <div className="text-sm mono break-all">{historyDbPath}</div>
           </div>
           <div>
             <div className="text-xs text-ink2 mb-1">记录方式</div>
@@ -94,7 +98,7 @@ export function SettingsScreen() {
         <Button size="sm" className="mt-3" onClick={() => openOverlay({ kind: 'dialog', id: 'confirm', title: '清空通信诊断', message: '将清空当前内存中的事务与帧错误记录。', confirmLabel: '清空', danger: true, onConfirm: () => void command({ type: 'diagnostics.clear' }) })}>清空通信诊断</Button>
       </InfoBand>
       <div className="mt-6">
-        <TextInput readOnly value={`workspace schemaVersion=${snapshot.workspace.schemaVersion}`} className="mono text-xs" />
+        <TextInput readOnly value={`workspace schemaVersion=${workspace.schemaVersion}`} className="mono text-xs" />
       </div>
     </>
   );

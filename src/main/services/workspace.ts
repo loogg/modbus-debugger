@@ -26,6 +26,8 @@ export class WorkspaceService {
   private saveTimer: NodeJS.Timeout | null = null;
   private prefs: Prefs = { ...DEFAULT_PREFS };
   private prefsPath: string;
+  /** Bumped whenever the in-memory workspace object is replaced. */
+  private rev = 0;
 
   constructor(private readonly userDataDir: string) {
     this.prefsPath = path.join(userDataDir, 'prefs.json');
@@ -75,10 +77,19 @@ export class WorkspaceService {
     return this.dirty;
   }
 
+  /**
+   * Monotonic counter for the current workspace object. Derived indexes (point index,
+   * runtime targets) cache against it instead of being rebuilt on every scheduler tick.
+   */
+  get revision(): number {
+    return this.rev;
+  }
+
   newWorkspace(): void {
     this.workspace = emptyWorkspace();
     this.filePath = null;
     this.dirty = true;
+    this.rev += 1;
   }
 
   loadFrom(pathOrNull: string | null): { ok: boolean; error?: string } {
@@ -90,6 +101,7 @@ export class WorkspaceService {
       this.filePath = target;
       this.prefs = this.updatePrefs({ lastWorkspacePath: target });
       this.dirty = false;
+      this.rev += 1;
       return { ok: true };
     } catch (err) {
       return { ok: false, error: String(err) };
@@ -109,11 +121,13 @@ export class WorkspaceService {
     this.workspace = workspaceSchema.parse(workspace);
     this.filePath = filePath;
     this.dirty = true;
+    this.rev += 1;
   }
 
   set(workspace: Workspace): Workspace {
     this.workspace = workspaceSchema.parse(workspace);
     this.dirty = true;
+    this.rev += 1;
     this.scheduleAutosave();
     return this.workspace;
   }

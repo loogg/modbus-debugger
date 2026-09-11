@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useApp } from '../store/app';
+import { useApp, useBlocks, useConnectionStates, useWorkspace } from '../store/app';
 import { Button, EmptyState, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput } from '../components/ui';
 import { DataTable, type Column } from '../components/table';
 import { AREAS, parsePlcReference, toPlcReference } from '../../domain/address';
@@ -8,21 +8,22 @@ import type { BlockDef, PointDef } from '../../domain/model';
 import { registersForType } from '../../domain/mapping';
 
 export function TemplatesScreen() {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
+  const connStates = useConnectionStates();
   const selection = useApp((s) => s.selection);
   const select = useApp((s) => s.select);
   const command = useApp((s) => s.command);
   const overlay = useApp((s) => s.overlay);
 
-  const template = snapshot?.workspace.templates.find((t) => t.id === selection.templateId) ?? snapshot?.workspace.templates[0];
-  if (!snapshot) return null;
+  const template = workspace?.templates.find((t) => t.id === selection.templateId) ?? workspace?.templates[0];
+  if (!workspace) return null;
   if (overlay?.kind === 'screen' && overlay.id === 'import-registers') return <ImportRegisters templateId={overlay.templateId} />;
   if (!template) {
     return <EmptyState title="还没有设备模板" message="模板定义数据块与点位，可被多个从站复用。" />;
   }
   if (selection.templateEditing) return <TemplateEdit templateId={template.id} />;
 
-  const bound = snapshot.workspace.slaves.filter((s) => s.templateId === template.id);
+  const bound = workspace.slaves.filter((s) => s.templateId === template.id);
   return (
     <>
       <PageHeader
@@ -32,7 +33,7 @@ export function TemplatesScreen() {
           <>
             <Button
               onClick={async () => {
-                const ws = snapshot.workspace;
+                const ws = workspace;
                 const copy = { ...template, id: `tpl-${Date.now().toString(36)}`, name: `${template.name} 副本` };
                 await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, copy] } });
               }}
@@ -70,8 +71,8 @@ export function TemplatesScreen() {
       <div className="rounded-card border border-line bg-surface px-5">
         {bound.length === 0 ? <div className="py-6 text-center text-sm text-ink2">还没有从站绑定此模板</div> : null}
         {bound.map((s) => {
-          const conn = snapshot.workspace.connections.find((c) => c.id === s.connectionId);
-          const online = snapshot.connections[s.connectionId]?.state === 'online';
+          const conn = workspace.connections.find((c) => c.id === s.connectionId);
+          const online = connStates[s.connectionId]?.state === 'online';
           return (
             <div key={s.id} className="flex items-center justify-between border-b border-[#E7EAEE] py-3 last:border-0 text-sm">
               <span>{conn?.name} / {s.name}</span>
@@ -91,7 +92,8 @@ export function TemplatesScreen() {
 }
 
 function TemplateEdit(props: { templateId: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
+  const blockStates = useBlocks();
   const selection = useApp((s) => s.selection);
   const openOverlay = useApp((s) => s.openOverlay);
   const command = useApp((s) => s.command);
@@ -100,13 +102,13 @@ function TemplateEdit(props: { templateId: string }) {
   const [search, setSearch] = useState('');
   const [selectedPoint, setSelectedPoint] = useState<string | null>(null);
 
-  const template = snapshot?.workspace.templates.find((t) => t.id === props.templateId);
+  const template = workspace?.templates.find((t) => t.id === props.templateId);
   const block = template?.blocks.find((b) => b.id === selection.editBlockId) ?? template?.blocks[0];
-  if (!snapshot || !template || !block) return <EmptyState title="模板没有数据块" actions={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'edit-block', templateId: props.templateId })}>＋ 添加数据块</Button>} />;
+  if (!workspace || !template || !block) return <EmptyState title="模板没有数据块" actions={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'edit-block', templateId: props.templateId })}>＋ 添加数据块</Button>} />;
 
   const points = template.points.filter((p) => p.blockId === block.id && (!search || p.name.includes(search)));
   const detail = template.points.find((p) => p.id === selectedPoint) ?? points[0];
-  const cacheEntry = Object.values(snapshot.blocks).find((b) => b.blockId === block.id);
+  const cacheEntry = Object.values(blockStates).find((b) => b.blockId === block.id);
 
   const cols: Array<Column<PointDef>> = [
     { id: 'offset', header: '偏移', width: 80, render: (p) => <span className="mono text-xs">+{p.mapping.offset}{p.mapping.bitOffset ? `.${p.mapping.bitOffset}:${p.mapping.bitOffset + p.mapping.bitWidth - 1}` : ''}</span> },
@@ -193,11 +195,11 @@ function TemplateEdit(props: { templateId: string }) {
       )}
       {tab === 'block' && (
         <div className="max-w-xl flex flex-col gap-4">
-          <label className="block"><div className="text-xs text-ink2 mb-1.5">名称</div><TextInput value={block.name} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: snapshot.workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, name: e.target.value } : b)) } : t)) } })} /></label>
+          <label className="block"><div className="text-xs text-ink2 mb-1.5">名称</div><TextInput value={block.name} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, name: e.target.value } : b)) } : t)) } })} /></label>
           <div className="grid grid-cols-3 gap-4">
-            <label className="block"><div className="text-xs text-ink2 mb-1.5">起始地址</div><TextInput type="number" value={String(block.start)} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: snapshot.workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, start: Number(e.target.value) } : b)) } : t)) } })} /></label>
-            <label className="block"><div className="text-xs text-ink2 mb-1.5">长度</div><TextInput type="number" value={String(block.length)} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: snapshot.workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, length: Number(e.target.value) } : b)) } : t)) } })} /></label>
-            <label className="block"><div className="text-xs text-ink2 mb-1.5">默认轮询周期</div><Select value={String(block.periodMs)} onChange={(v) => void command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: snapshot.workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, periodMs: Number(v) } : b)) } : t)) } })} options={[{ value: '50', label: '50 ms' }, { value: '100', label: '100 ms' }, { value: '200', label: '200 ms' }, { value: '500', label: '500 ms' }, { value: '1000', label: '1000 ms' }]} /></label>
+            <label className="block"><div className="text-xs text-ink2 mb-1.5">起始地址</div><TextInput type="number" value={String(block.start)} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, start: Number(e.target.value) } : b)) } : t)) } })} /></label>
+            <label className="block"><div className="text-xs text-ink2 mb-1.5">长度</div><TextInput type="number" value={String(block.length)} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, length: Number(e.target.value) } : b)) } : t)) } })} /></label>
+            <label className="block"><div className="text-xs text-ink2 mb-1.5">默认轮询周期</div><Select value={String(block.periodMs)} onChange={(v) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, periodMs: Number(v) } : b)) } : t)) } })} options={[{ value: '50', label: '50 ms' }, { value: '100', label: '100 ms' }, { value: '200', label: '200 ms' }, { value: '500', label: '500 ms' }, { value: '1000', label: '1000 ms' }]} /></label>
           </div>
           <InfoBand tone="blue">计算范围：{block.start}–{block.start + block.length - 1} · {block.length} 个寄存器</InfoBand>
         </div>
@@ -217,7 +219,7 @@ interface ImportRow {
 }
 
 function ImportRegisters(props: { templateId: string }) {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
   const closeOverlay = useApp((s) => s.closeOverlay);
@@ -264,8 +266,8 @@ function ImportRegisters(props: { templateId: string }) {
   const errors = parsed.filter((p) => !p.name).length;
 
   const doImport = async () => {
-    if (!snapshot) return;
-    const template = snapshot.workspace.templates.find((t) => t.id === props.templateId);
+    if (!workspace) return;
+    const template = workspace.templates.find((t) => t.id === props.templateId);
     if (!template) return;
     const areas = new Set(parsed.map((p) => (p as { area?: number }).area ?? 3));
     const blocks: BlockDef[] = [];
@@ -304,7 +306,7 @@ function ImportRegisters(props: { templateId: string }) {
       toast({ kind: 'error', title: '无法导入', message: '同地址区数据块重叠，导入被阻止。' });
       return;
     }
-    await command({ type: 'workspace.apply', workspace: { ...snapshot.workspace, templates: snapshot.workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: nextBlocks, points: [...t.points, ...points] } : t)) } });
+    await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: nextBlocks, points: [...t.points, ...points] } : t)) } });
     toast({ kind: 'success', title: `已导入 ${points.length} 个点位` });
     closeOverlay();
   };
@@ -396,7 +398,7 @@ function ImportRegisters(props: { templateId: string }) {
         <div className="text-xs mt-3">
           建议：{blockStrategy === 'auto' ? 'Holding 0–31 「控制寄存器」 · Holding 40–55 「状态寄存器」 · Input 0–23 「遥测数据」' : 'Holding 0–N 单块'}
           <br />
-          导入目标：{snapshot?.workspace.templates.find((t) => t.id === props.templateId)?.name} · 同地址区数据块重叠时阻止导入 · 点位重叠允许
+          导入目标：{workspace?.templates.find((t) => t.id === props.templateId)?.name} · 同地址区数据块重叠时阻止导入 · 点位重叠允许
         </div>
       </InfoBand>
       <div className="mt-6 flex items-center justify-between">

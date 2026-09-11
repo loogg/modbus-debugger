@@ -63,6 +63,8 @@ export interface AppSnapshot {
   points: Record<string, PointViewState>;
   transactions: TransactionRecord[];
   parseEvents: ParseEventRecord[];
+  /** Bumped by diagnostics.clear so the renderer drops its local ring copies. */
+  diagRev: number;
   health: Record<string, ConnectionHealth>;
   recording: RecordingView | null;
   sessions: SessionSummary[];
@@ -81,6 +83,7 @@ export interface AppDelta {
   points?: Record<string, PointViewState>;
   transactions?: TransactionRecord[];
   parseEvents?: ParseEventRecord[];
+  diagRev?: number;
   health?: Record<string, ConnectionHealth>;
   recording?: RecordingView | null;
   sessions?: SessionSummary[];

@@ -301,7 +301,9 @@ export class ConnectionRuntime {
       expectedAduLength: expectedResponseAduLength(req, this.transport.kind),
       tid: tid ?? undefined,
     };
-    const timeoutMs = opts.timeoutMs ?? 500;
+    // The connection's configured timeout governs every request path (poll, temporary read,
+    // RMW, write, read-back). Only the unit scanner passes an explicit shorter probe timeout.
+    const timeoutMs = opts.timeoutMs ?? this.config.timeoutMs;
 
     const outcome = await new Promise<RequestOutcome>((resolve) => {
       let settled = false;

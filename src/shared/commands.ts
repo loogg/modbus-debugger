@@ -36,6 +36,11 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('prefs.set'), patch: z.object({ sidebarWidth: z.number().optional(), persistRawComm: z.boolean().optional(), historyDbPath: z.string().nullable().optional() }).passthrough() }),
   z.object({ type: z.literal('diagnostics.clear') }),
   z.object({
+    type: z.literal('diagnostics.healthSeries'),
+    connectionId: z.string(),
+    windowMs: z.number().int().min(1000).max(600000),
+  }),
+  z.object({
     type: z.literal('import.parse'),
     source: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('text'), text: z.string(), format: z.enum(['csv', 'json', 'clipboard']) }),

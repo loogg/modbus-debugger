@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useApp } from '../store/app';
+import { useApp, usePoints, useRecording, useWorkspace } from '../store/app';
 import { Button, InfoBand, PageHeader, StatusDot, Tabs } from '../components/ui';
 import { NumericChart, type LineSeries } from '../components/chart';
 import { StateTrack } from '../components/state-track';
@@ -17,7 +17,8 @@ interface SignalRow {
 }
 
 export function TrendScreen() {
-  const snapshot = useApp((s) => s.snapshot);
+  const workspace = useWorkspace();
+  const points = usePoints();
   const live = useApp((s) => s.live);
   const selection = useApp((s) => s.selection);
   const select = useApp((s) => s.select);
@@ -28,17 +29,17 @@ export function TrendScreen() {
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
 
-  const group = snapshot?.workspace.trendGroups.find((g) => g.id === selection.groupId) ?? snapshot?.workspace.trendGroups[0];
-  const recording = snapshot?.recording ?? null;
+  const group = workspace?.trendGroups.find((g) => g.id === selection.groupId) ?? workspace?.trendGroups[0];
+  const recording = useRecording();
   const isRecordingThis = recording?.groupId === group?.id;
 
   const rows = useMemo<SignalRow[]>(() => {
-    if (!snapshot || !group) return [];
+    if (!workspace || !group) return [];
     return group.signals.map((sig) => {
-      const point = snapshot.workspace.templates.flatMap((t) => t.points).find((p) => p.id === sig.pointRef.pointId);
-      const slave = snapshot.workspace.slaves.find((s) => s.id === sig.pointRef.slaveId);
-      const conn = snapshot.workspace.connections.find((c) => c.id === sig.pointRef.connectionId);
-      const block = snapshot.workspace.templates.flatMap((t) => t.blocks).find((b) => b.id === point?.blockId);
+      const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === sig.pointRef.pointId);
+      const slave = workspace.slaves.find((s) => s.id === sig.pointRef.slaveId);
+      const conn = workspace.connections.find((c) => c.id === sig.pointRef.connectionId);
+      const block = workspace.templates.flatMap((t) => t.blocks).find((b) => b.id === point?.blockId);
       return {
         signalId: sig.id,
         pointId: sig.pointRef.pointId,
@@ -48,9 +49,9 @@ export function TrendScreen() {
         visible: sig.visible,
       };
     });
-  }, [snapshot, group]);
+  }, [workspace, group]);
 
-  if (!snapshot) return null;
+  if (!workspace) return null;
   if (!group) {
     return (
       <>
@@ -74,7 +75,7 @@ export function TrendScreen() {
 
   const discrete = rows.filter((r) => {
     const buf = live[r.pointId];
-    const point = snapshot.workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
+    const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
     return buf && point && (point.mapping.rawType === 'Bool' || point.mapping.rawType === 'String' || Object.keys(point.enumMap).length > 0);
   });
 
@@ -98,7 +99,7 @@ export function TrendScreen() {
           className="focus-ring cursor-pointer"
           title={r.visible ? '隐藏图表' : '显示图表'}
           onClick={() => {
-            const ws = snapshot.workspace;
+            const ws = workspace;
             void command({
               type: 'workspace.apply',
               workspace: { ...ws, trendGroups: ws.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: g.signals.map((s) => (s.id === r.signalId ? { ...s, visible: !s.visible } : s)) } : g)) },
@@ -116,7 +117,7 @@ export function TrendScreen() {
       header: '当前值',
       width: 150,
       render: (r) => {
-        const v = snapshot.points[r.pointId];
+        const v = points[r.pointId];
         return <span className={v?.enumLabel || v?.boolValue !== null && v?.boolValue !== undefined ? 'text-accent font-medium' : ''}>{v?.hasValue ? v.engText : '—'}</span>;
       },
     },
@@ -130,7 +131,7 @@ export function TrendScreen() {
         <button
           className="focus-ring cursor-pointer text-xs text-accent hover:underline"
           onClick={() => {
-            const ws = snapshot.workspace;
+            const ws = workspace;
             void command({ type: 'workspace.apply', workspace: { ...ws, trendGroups: ws.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: g.signals.filter((s) => s.id !== r.signalId) } : g)) } });
           }}
         >
@@ -142,7 +143,7 @@ export function TrendScreen() {
 
   const slaveCount = new Set(group.signals.map((s) => s.pointRef.slaveId)).size;
   const blockCount = new Set(group.signals.map((s) => {
-    const p = snapshot.workspace.templates.flatMap((t) => t.points).find((x) => x.id === s.pointRef.pointId);
+    const p = workspace.templates.flatMap((t) => t.points).find((x) => x.id === s.pointRef.pointId);
     return p?.blockId;
   })).size;
 
@@ -204,11 +205,11 @@ export function TrendScreen() {
               <div className="text-sm font-bold mt-6 mb-3">状态与文本</div>
               <div className="rounded-card border border-line bg-surface2 px-4 py-3 flex flex-col gap-3">
                 {discrete.map((r) => {
-                  const point = snapshot.workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
+                  const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
                   const buf = live[r.pointId];
                   if (!point || !buf) return null;
                   const kind = point.mapping.rawType === 'Bool' ? 'bool' : point.mapping.rawType === 'String' ? 'string' : 'enum';
-                  const initial = buf.events[0]?.value ?? snapshot.points[r.pointId]?.engText ?? null;
+                  const initial = buf.events[0]?.value ?? points[r.pointId]?.engText ?? null;
                   return (
                     <StateTrack
                       key={r.signalId}

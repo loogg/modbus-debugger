@@ -39,14 +39,17 @@ export class RuntimeManager {
   private runtimes = new Map<string, ConnectionRuntime>();
   private clock: Clock;
   private revision = 0;
-  private sentTxCount = 0;
-  private sentEventCount = 0;
+  private sentTxTotal = 0;
+  private sentEventTotal = 0;
+  private diagRev = 0;
+  private sentDiagRev = 0;
   private sentCacheRev = new Map<string, number>();
   private sentWorkspaceRev = -1;
   private workspaceRev = 0;
   private connStateRev = 0;
   private connConfigHash = new Map<string, string>();
   private lastConnStates = new Map<string, ConnectionStateView>();
+  private pointIndexCache: { rev: number; map: Map<string, PointRef> } | null = null;
   private timer: NodeJS.Timeout | null = null;
   private transportFactory: TransportFactory;
 
@@ -157,19 +160,36 @@ export class RuntimeManager {
 
   /* ---------------- point index & views ---------------- */
 
+  /**
+   * Every addressable point, keyed by point id. The workspace object is replaced (never
+   * mutated in place) on each edit, so the map is cached against WorkspaceService.revision
+   * rather than rebuilt ten times a second by the scheduler tick.
+   */
   pointIndex(): Map<string, PointRef> {
+    const rev = this.workspaceService.revision;
+    const hit = this.pointIndexCache;
+    if (hit && hit.rev === rev) return hit.map;
     const ws = this.workspaceService.current;
+    const connById = new Map(ws.connections.map((c) => [c.id, c]));
+    const tplById = new Map(ws.templates.map((t) => [t.id, t]));
     const map = new Map<string, PointRef>();
     for (const slave of ws.slaves) {
-      const connection = ws.connections.find((c) => c.id === slave.connectionId);
-      const template = ws.templates.find((t) => t.id === slave.templateId);
+      const connection = connById.get(slave.connectionId);
+      const template = tplById.get(slave.templateId);
       if (!connection || !template) continue;
+      const byBlock = new Map<string, PointDef[]>();
+      for (const point of template.points) {
+        const list = byBlock.get(point.blockId);
+        if (list) list.push(point);
+        else byBlock.set(point.blockId, [point]);
+      }
       for (const block of template.blocks) {
-        for (const point of template.points.filter((p) => p.blockId === block.id)) {
+        for (const point of byBlock.get(block.id) ?? []) {
           map.set(point.id, { slave, block, point, template, connection });
         }
       }
     }
+    this.pointIndexCache = { rev, map };
     return map;
   }
 
@@ -260,14 +280,10 @@ export class RuntimeManager {
     const out: Record<string, ConnectionStateView> = {};
     for (const conn of ws.connections) {
       const rt = this.runtimes.get(conn.id);
-      const lastResp = this.diagnostics
-        .transactionsForConnection(conn.id, 50)
-        .filter((t) => t.result === 'ok')
-        .slice(-1)[0];
       out[conn.id] = {
         state: rt?.state ?? 'offline',
         detail: rt?.state === 'error' ? '连接异常' : null,
-        lastResponseUtc: lastResp?.startUtc ?? null,
+        lastResponseUtc: this.diagnostics.lastOkUtcFor(conn.id),
       };
     }
     return out;
@@ -287,6 +303,11 @@ export class RuntimeManager {
     }
     const health: Record<string, ConnectionHealth> = {};
     for (const conn of ws.connections) health[conn.id] = this.healthFor(conn.id);
+    // The snapshot already carries the tail of both rings, so align the delta cursors:
+    // the next tick must only stream records the renderer does not have yet.
+    this.sentTxTotal = this.diagnostics.transactionTotal;
+    this.sentEventTotal = this.diagnostics.parseEventTotal;
+    for (const entry of this.cache.all()) this.sentCacheRev.set(entry.key, entry.revision);
     return {
       revision: this.revision,
       workspace: ws,
@@ -297,6 +318,7 @@ export class RuntimeManager {
       points,
       transactions: this.diagnostics.recentTransactions(500),
       parseEvents: this.diagnostics.recentParseEvents(200),
+      diagRev: this.diagRev,
       health,
       recording: this.recordingView(),
       sessions: this.history.listSessions(),
@@ -304,6 +326,26 @@ export class RuntimeManager {
       prefs: this.workspaceService.getPrefs(),
       historyDbPath: this.history.dbPath,
     };
+  }
+
+  /**
+   * Health is recomputed at most once per second per connection and each recomputation is
+   * recorded as a trend sample, so the 连接健康 chart shows real measurements rather than
+   * a placeholder series.
+   */
+  healthForCached(connectionId: string): ConnectionHealth {
+    const now = Date.now();
+    const hit = this.healthCache.get(connectionId);
+    if (hit && now - hit.at < 1000) return hit.health;
+    const health = this.healthFor(connectionId);
+    this.healthCache.set(connectionId, { at: now, health });
+    this.diagnostics.recordHealthSample(connectionId, {
+      t: now,
+      busLoadPercent: health.busLoadPercent,
+      p95Ms: health.p95Ms,
+      requestRatePerSec: health.requestRatePerSec,
+    });
+    return health;
   }
 
   healthFor(connectionId: string): ConnectionHealth {
@@ -380,23 +422,55 @@ export class RuntimeManager {
     if (Object.keys(blocks).length) delta.blocks = blocks;
     if (Object.keys(points).length) delta.points = points;
 
-    const txs = this.diagnostics.recentTransactions(5000);
-    if (txs.length !== this.sentTxCount) {
-      delta.transactions = txs.slice(this.sentTxCount);
-      this.sentTxCount = txs.length;
-      changed = true;
+    // Absolute cursors: the ring buffer trims at 5000 entries, so comparing lengths
+    // would silently stop streaming once the ring is full.
+    const txTotal = this.diagnostics.transactionTotal;
+    if (txTotal !== this.sentTxTotal) {
+      const txs = this.diagnostics.transactionsSince(this.sentTxTotal);
+      this.sentTxTotal = txTotal;
+      if (txs.length) {
+        delta.transactions = txs;
+        changed = true;
+      }
     }
-    const evs = this.diagnostics.recentParseEvents(2000);
-    if (evs.length !== this.sentEventCount) {
-      delta.parseEvents = evs.slice(this.sentEventCount);
-      this.sentEventCount = evs.length;
-      changed = true;
+    const evTotal = this.diagnostics.parseEventTotal;
+    if (evTotal !== this.sentEventTotal) {
+      const evs = this.diagnostics.parseEventsSince(this.sentEventTotal);
+      this.sentEventTotal = evTotal;
+      if (evs.length) {
+        delta.parseEvents = evs;
+        changed = true;
+      }
     }
-    if (changed || this.healthDirty) {
+    if (this.healthDirty) {
       const health: Record<string, ConnectionHealth> = {};
-      for (const conn of ws.connections) health[conn.id] = this.healthFor(conn.id);
+      for (const conn of ws.connections) {
+        health[conn.id] = this.healthForCached(conn.id);
+        // Record the cache generation as delivered, otherwise the next tick re-emits it.
+        this.healthEmittedAt.set(conn.id, this.healthCache.get(conn.id)?.at ?? 0);
+      }
       delta.health = health;
       this.healthDirty = false;
+      changed = true;
+    } else {
+      const fresh: Record<string, ConnectionHealth> = {};
+      let any = false;
+      for (const conn of ws.connections) {
+        const h = this.healthForCached(conn.id);
+        const cachedAt = this.healthCache.get(conn.id)?.at ?? 0;
+        if ((this.healthEmittedAt.get(conn.id) ?? -1) === cachedAt) continue;
+        this.healthEmittedAt.set(conn.id, cachedAt);
+        fresh[conn.id] = h;
+        any = true;
+      }
+      if (any) {
+        delta.health = fresh;
+        changed = true;
+      }
+    }
+    if (this.diagRev !== this.sentDiagRev) {
+      delta.diagRev = this.diagRev;
+      this.sentDiagRev = this.diagRev;
       changed = true;
     }
     if (this.recordingViewChanged) {
@@ -416,15 +490,22 @@ export class RuntimeManager {
   }
 
   private healthDirty = true;
+  private healthCache = new Map<string, { at: number; health: ConnectionHealth }>();
+  private lastWarnCheck = 0;
   private recordingViewChanged = false;
   private sentSessionsRev = -1;
 
+  private healthEmittedAt = new Map<string, number>();
+
   private checkWarnings(): void {
+    const now = Date.now();
+    if (now - this.lastWarnCheck < 5000) return;
+    this.lastWarnCheck = now;
     const warnings: string[] = [];
     if (this.history.overTenGb()) warnings.push(`history.db 已超过 10 GB（当前 ${(this.history.sizeBytes() / 1e9).toFixed(1)} GB），请考虑归档。`);
     const ws = this.workspaceService.current;
     for (const conn of ws.connections) {
-      const h = this.healthFor(conn.id);
+      const h = this.healthForCached(conn.id);
       if (h.busLoadPercent > 80) warnings.push(`连接 ${conn.name} 总线负载 ${h.busLoadPercent.toFixed(0)}%，请调整数据块周期。`);
     }
     if (JSON.stringify(warnings) !== JSON.stringify(this.warnings)) {
@@ -632,10 +713,14 @@ export class RuntimeManager {
         const prefs = wsSvc.updatePrefs(cmd.patch as Partial<import('../services/workspace').Prefs>);
         return { ok: true, value: prefs };
       }
+      case 'diagnostics.healthSeries':
+        return { ok: true, value: this.diagnostics.healthSeriesFor(cmd.connectionId, cmd.windowMs) };
       case 'diagnostics.clear':
         this.diagnostics.clear();
-        this.sentTxCount = 0;
-        this.sentEventCount = 0;
+        // Totals stay monotonic across clear(); park the cursors so only new records stream.
+        this.sentTxTotal = this.diagnostics.transactionTotal;
+        this.sentEventTotal = this.diagnostics.parseEventTotal;
+        this.diagRev += 1;
         return { ok: true, value: null };
       default:
         return { ok: false, error: `unhandled command ${(cmd as { type: string }).type}` };

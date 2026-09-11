@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useApp } from '../store/app';
+import { useApp, useSessions, useSnapshotReady } from '../store/app';
 import { Button, InfoBand, PageHeader, StatusDot, Tabs } from '../components/ui';
 import { NumericChart, type LineSeries } from '../components/chart';
 import { StateTrack } from '../components/state-track';
@@ -36,7 +36,8 @@ interface SessionData {
 const COLORS = ['#0078D4', '#D97706', '#178A4D', '#7A5AF8', '#C42B1C', '#0E7C86'];
 
 export function HistoryScreen() {
-  const snapshot = useApp((s) => s.snapshot);
+  const sessions = useSessions();
+  const ready = useSnapshotReady();
   const selection = useApp((s) => s.selection);
   const select = useApp((s) => s.select);
   const command = useApp((s) => s.command);
@@ -47,21 +48,22 @@ export function HistoryScreen() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
 
-  const session = snapshot?.sessions.find((s) => s.id === selection.sessionId) ?? snapshot?.sessions[0];
+  const session = sessions.find((s) => s.id === selection.sessionId) ?? sessions[0];
 
+  const sessionId = session?.id ?? null;
   useEffect(() => {
     let cancelled = false;
-    if (!session) {
+    if (!sessionId) {
       setData(null);
       return;
     }
-    void command<{ detail: SessionData['detail']; samples: SessionData['samples']; events: SessionData['events']; rawComm: SessionData['rawComm'] }>({ type: 'history.sessionData', sessionId: session.id }).then((res) => {
+    void command<{ detail: SessionData['detail']; samples: SessionData['samples']; events: SessionData['events']; rawComm: SessionData['rawComm'] }>({ type: 'history.sessionData', sessionId }).then((res) => {
       if (!cancelled && res.ok) setData(res.value as SessionData);
     });
     return () => {
       cancelled = true;
     };
-  }, [session?.id]);
+  }, [sessionId, command]);
 
   useEffect(() => {
     if (!playing || !data) return;
@@ -92,7 +94,7 @@ export function HistoryScreen() {
       }));
   }, [data]);
 
-  if (!snapshot) return null;
+  if (!ready) return null;
   if (!session || !data) {
     return (
       <>

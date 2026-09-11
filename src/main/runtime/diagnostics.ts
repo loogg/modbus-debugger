@@ -50,6 +50,15 @@ export interface BlockHealth {
   timeoutRate: number;
 }
 
+/** One 1 Hz sample of the computed health, kept for the 连接健康 trend chart. */
+export interface HealthSample {
+  /** epoch ms */
+  t: number;
+  busLoadPercent: number;
+  p95Ms: number;
+  requestRatePerSec: number;
+}
+
 export interface ConnectionHealth {
   connectionId: string;
   busLoadPercent: number;
@@ -65,6 +74,8 @@ export interface ConnectionHealth {
 }
 
 const RING = 5000;
+/** 1 Hz sampling => 10 minutes of health history per connection. */
+const SERIES_RING = 600;
 
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
@@ -76,6 +87,12 @@ export class DiagnosticsStore {
   private transactions: TransactionRecord[] = [];
   private parseEvents: ParseEventRecord[] = [];
   private seq = 0;
+  // Absolute (never-trimmed) counters. The 100 ms delta loop compares these instead of
+  // copying the whole ring buffer on every tick.
+  private txTotal = 0;
+  private evTotal = 0;
+  private lastOkByConnection = new Map<string, string>();
+  private series = new Map<string, HealthSample[]>();
 
   nextTraceId(): string {
     this.seq += 1;
@@ -84,11 +101,14 @@ export class DiagnosticsStore {
 
   recordTransaction(rec: TransactionRecord): void {
     this.transactions.push(rec);
+    this.txTotal += 1;
+    if (rec.result === 'ok') this.lastOkByConnection.set(rec.connectionId, rec.startUtc);
     if (this.transactions.length > RING) this.transactions.splice(0, this.transactions.length - RING);
   }
 
   recordParseEvent(rec: Omit<ParseEventRecord, 'id'>): void {
     this.seq += 1;
+    this.evTotal += 1;
     this.parseEvents.push({ ...rec, id: `p${this.seq.toString(36)}` });
     if (this.parseEvents.length > RING) this.parseEvents.splice(0, this.parseEvents.length - RING);
   }
@@ -113,9 +133,62 @@ export class DiagnosticsStore {
     return this.parseEvents.slice(-limit);
   }
 
+  /** Absolute index the next recorded transaction will occupy. */
+  get transactionTotal(): number {
+    return this.txTotal;
+  }
+
+  /** Absolute index the next recorded parse event will occupy. */
+  get parseEventTotal(): number {
+    return this.evTotal;
+  }
+
+  /** Transactions recorded after absolute index `from`; records already trimmed away are skipped. */
+  transactionsSince(from: number): TransactionRecord[] {
+    if (from >= this.txTotal) return [];
+    const oldest = this.txTotal - this.transactions.length;
+    return this.transactions.slice(Math.max(0, from - oldest));
+  }
+
+  /** Parse events recorded after absolute index `from`; events already trimmed away are skipped. */
+  parseEventsSince(from: number): ParseEventRecord[] {
+    if (from >= this.evTotal) return [];
+    const oldest = this.evTotal - this.parseEvents.length;
+    return this.parseEvents.slice(Math.max(0, from - oldest));
+  }
+
+  /** UTC of the latest successful response for a connection, tracked incrementally (O(1) read). */
+  lastOkUtcFor(connectionId: string): string | null {
+    return this.lastOkByConnection.get(connectionId) ?? null;
+  }
+
+  /** Appends one health sample; samples sharing a timestamp are ignored. */
+  recordHealthSample(connectionId: string, sample: HealthSample): void {
+    let arr = this.series.get(connectionId);
+    if (!arr) {
+      arr = [];
+      this.series.set(connectionId, arr);
+    }
+    const last = arr[arr.length - 1];
+    if (last && last.t >= sample.t) return;
+    arr.push(sample);
+    if (arr.length > SERIES_RING) arr.splice(0, arr.length - SERIES_RING);
+  }
+
+  /** Health samples for the trailing window, oldest first. */
+  healthSeriesFor(connectionId: string, windowMs: number, now = Date.now()): HealthSample[] {
+    const arr = this.series.get(connectionId);
+    if (!arr) return [];
+    const cutoff = now - windowMs;
+    return arr.filter((s) => s.t >= cutoff);
+  }
+
   clear(): void {
     this.transactions = [];
     this.parseEvents = [];
+    this.lastOkByConnection.clear();
+    this.series.clear();
+    // txTotal / evTotal stay monotonic so cursors held by the delta loop remain valid.
   }
 
   health(
