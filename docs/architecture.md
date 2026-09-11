@@ -100,9 +100,9 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 
 ### 下拉框（ComboInput）真实鼠标语义
 
-- ComboInput 的选项节点在选中时同步卸载；真实鼠标点击下 Chrome 会在此之后向 input 补发一个**重定向的第二个 click**（合成 `el.click()` 不会产生该事件）。输入框的「点击重开」逻辑会因此立刻重开刚关闭的列表，表现为「选中后下拉不消失，必须点别处」。修复：选中时记录 200 ms 重开抑制窗口，窗口内 input 的 onFocus/onClick 不重开；窗口过后点击输入框仍可重开。
+- 「选中后下拉不自动关闭」的根因是 `Field` 曾用 `<label>` 包裹标题与控件：HTML 语义下 label 会把对**非交互式后代**（下拉选项的文本 span）的点击转发给关联表单控件（ComboInput 的 input），产生第二个 trusted click 触发输入框的「点击重开」逻辑。是否触发取决于点击点落点：长选项文本（如 "COM1 · ELTIMA Software"）命中 span → 转发 → 重开；短选项文本（如 "19200"）命中 button 内边距 → 不转发 → 正常关闭——这正是「只有串口会复现、波特率/数据位不会」的原因。修复：`Field` 改为 `role="group" + aria-labelledby`（保留屏障关联、无任何点击转发）；0.4.1 曾用的 200 ms 抑制窗口属症状处理，已**移除**，刻意点击必须永远能重开。
 - blur 宽限期（120 ms）只在焦点移到组合框**外部**时排程关闭：`relatedTarget` 落在自身 chevron 上视为未离开，否则「输入框有焦点时点 chevron 展开」会在展开后 120 ms 被宽限期关掉；chevron 的展开分支同时清除未到期的关闭定时器。
-- Radix Select 在 pointerdown 打开，因此 E2E 对一切下拉交互（Radix 与 ComboInput）一律使用真实 WDIO 鼠标点击，禁止页内合成 click——合成点击无法覆盖上述重定向行为。回归：添加连接串口/波特率真实点击断言 + 组件测试 retarget 用例。
+- Radix Select 在 pointerdown 打开，因此 E2E 对一切下拉交互（Radix 与 ComboInput）一律使用真实 WDIO 鼠标点击，禁止页内合成 click——合成点击无法覆盖上述重定向行为。回归：添加连接串口/波特率真实点击断言（含聚焦时真实 chevron 点击展开并保持）+ 组件测试（点选项文本 span 关闭且不复开、Field 不得含 label）。
 
 ### Responsive
 
