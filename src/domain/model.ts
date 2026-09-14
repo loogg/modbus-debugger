@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { PointMapping } from './mapping';
+import { registersForType, type PointMapping } from './mapping';
+import { findBlockOverlaps } from './overlap';
 
 export const areaSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
 export type AreaCodeModel = z.infer<typeof areaSchema>;
@@ -21,7 +22,7 @@ export const pointSchema = z.object({
   blockId: z.string(),
   name: z.string().min(1),
   mapping: mappingSchema,
-  scale: z.number().default(1),
+  scale: z.number().finite().refine(value => value !== 0, 'Scale must not be zero').default(1),
   offset: z.number().default(0),
   unit: z.string().default(''),
   access: z.enum(['ro', 'rw']),
@@ -126,6 +127,38 @@ export const workspaceSchema = z.object({
   templates: z.array(templateSchema).default([]),
   trendGroups: z.array(trendGroupSchema).default([]),
   layout: layoutSchema.default({ module: 'devices', selection: {} }),
+}).superRefine((ws, ctx) => {
+  const fail = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+  for (const [label, rows] of [['connection', ws.connections], ['slave', ws.slaves], ['template', ws.templates], ['group', ws.trendGroups]] as const) {
+    if (new Set(rows.map(row => row.id)).size !== rows.length) fail(`Duplicate ${label} id`);
+  }
+  const pointIds = new Set<string>();
+  for (const template of ws.templates) {
+    if (new Set(template.blocks.map(block => block.id)).size !== template.blocks.length) fail('Duplicate block id');
+    if (findBlockOverlaps(template.blocks).length) fail('Blocks in the same area overlap');
+    for (const block of template.blocks) {
+      if (block.start + block.length > 65536 || (block.area >= 3 && block.length > 125)) fail('Block exceeds Modbus address/quantity limits');
+    }
+    for (const point of template.points) {
+      if (pointIds.has(point.id)) fail('Point ids must be unique between templates');
+      pointIds.add(point.id);
+      const block = template.blocks.find(b => b.id === point.blockId);
+      if (!block) { fail('Point references missing block'); continue; }
+      const width = block.area <= 2 ? 1 : registersForType(point.mapping.rawType, point.mapping.stringLength);
+      if (point.mapping.offset + width > block.length || point.mapping.registerCount < width) fail(`Point ${point.name} exceeds its block`);
+      if (block.area <= 2 && point.mapping.rawType !== 'Bool') fail('Coils/discrete inputs require Bool points');
+      if ((block.area === 2 || block.area === 4) && point.access !== 'ro') fail('Input areas are read-only');
+      if (point.mapping.rawType === 'BitField' && point.mapping.bitOffset + point.mapping.bitWidth > 16) fail('Bit field exceeds one register');
+    }
+  }
+  const unitIds = new Set<string>();
+  for (const slave of ws.slaves) {
+    if (!ws.connections.some(c => c.id === slave.connectionId)) fail('Slave references missing connection');
+    if (slave.templateId && !ws.templates.some(t => t.id === slave.templateId)) fail('Slave references missing template');
+    const key = `${slave.connectionId}:${slave.unitId}`;
+    if (unitIds.has(key)) fail('Unit ID is already used on this connection');
+    unitIds.add(key);
+  }
 });
 export type Workspace = z.infer<typeof workspaceSchema>;
 

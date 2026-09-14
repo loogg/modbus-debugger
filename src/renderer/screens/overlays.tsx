@@ -8,6 +8,8 @@ import { registersForType, type RawType } from '../../domain/mapping';
 import { engineeringToRaw } from '../../domain/scale';
 import type { BlockDef, PointDef } from '../../domain/model';
 import { useTranslation } from '../i18n';
+import { pointKey } from '../../shared/point-key';
+import { decodeRaw, type RawMemory } from '../../domain/mapping';
 
 const uid = (p: string) => `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -17,7 +19,7 @@ export function Overlays() {
   switch (overlay.kind) {
     case 'dialog':
       if (overlay.id === 'add-connection') return <AddConnectionDialog connectionId={overlay.connectionId} />;
-      if (overlay.id === 'add-slave') return <AddSlaveDialog connectionId={overlay.connectionId} slaveId={overlay.slaveId} />;
+      if (overlay.id === 'add-slave') return <AddSlaveDialog connectionId={overlay.connectionId} slaveId={overlay.slaveId} unitId={overlay.unitId} />;
       if (overlay.id === 'edit-block') return <EditBlockDialog templateId={overlay.templateId} blockId={overlay.blockId} />;
       if (overlay.id === 'new-trend-group') return <NewTrendGroupDialog />;
       if (overlay.id === 'add-signal') return <AddSignalDialog groupId={overlay.groupId} />;
@@ -96,7 +98,7 @@ function AddConnectionDialog(props: { connectionId?: string }) {
     const connections = existingConn
       ? workspace.connections.map((c) => (c.id === existingConn.id ? conn : c))
       : [...workspace.connections, conn];
-    await command({ type: 'workspace.apply', workspace: { ...workspace, connections } });
+    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, connections } })).ok) return;
     toast({ kind: 'success', title: existingConn ? t('overlays.toastConnUpdated') : t('overlays.toastConnCreated'), message: existingConn ? t('overlays.toastConnUpdatedMsg') : t('overlays.toastConnCreatedMsg') });
     close();
   };
@@ -163,7 +165,7 @@ function AddConnectionDialog(props: { connectionId?: string }) {
     </Dialog>
   );
 }
-function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
+function AddSlaveDialog(props: { connectionId: string; slaveId?: string; unitId?: number }) {
   const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
@@ -178,8 +180,8 @@ function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
     while (used.has(n) && n < 247) n += 1;
     return n;
   })();
-  const [name, setName] = useState(existing?.name ?? t('overlays.slaveDefaultName', { unit: String(nextUnit) }));
-  const [unit, setUnit] = useState(String(existing?.unitId ?? nextUnit));
+  const [name, setName] = useState(existing?.name ?? t('overlays.slaveDefaultName', { unit: String(props.unitId ?? nextUnit) }));
+  const [unit, setUnit] = useState(String(existing?.unitId ?? props.unitId ?? nextUnit));
   const [templateId, setTemplateId] = useState(existing?.templateId ?? workspace?.templates[0]?.id ?? '');
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
@@ -190,9 +192,9 @@ function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
     if (!workspace) return;
     const ws = workspace;
     if (existing) {
-      await command({ type: 'workspace.apply', workspace: { ...ws, slaves: ws.slaves.map((s) => (s.id === existing.id ? { ...s, name, unitId: Number(unit), templateId, enabled } : s)) } });
+      if (!(await command({ type: 'workspace.apply', workspace: { ...ws, slaves: ws.slaves.map((s) => (s.id === existing.id ? { ...s, name, unitId: Number(unit), templateId, enabled } : s)) } })).ok) return;
     } else {
-      await command({ type: 'workspace.apply', workspace: { ...ws, slaves: [...ws.slaves, { id: uid('slave'), connectionId: props.connectionId, unitId: Number(unit), name, templateId, enabled }] } });
+      if (!(await command({ type: 'workspace.apply', workspace: { ...ws, slaves: [...ws.slaves, { id: uid('slave'), connectionId: props.connectionId, unitId: Number(unit), name, templateId, enabled }] } })).ok) return;
     }
     close();
   };
@@ -219,7 +221,7 @@ function AddSlaveDialog(props: { connectionId: string; slaveId?: string }) {
               <button className="focus-ring cursor-pointer hover:underline" onClick={async () => {
                 if (!workspace) return;
                 const copy = { ...template, id: uid('tpl'), name: t('overlays.templateCopyName', { name: template.name }) };
-                await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, copy] } });
+                if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, copy] } })).ok) return;
                 setTemplateId(copy.id);
               }}>{t('overlays.copyAsNewTemplate')}</button>
             </span>
@@ -263,7 +265,7 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
   const bad = overlaps.length > 0;
   const save = async () => {
     const blocks = existing ? template.blocks.map((b) => (b.id === existing.id ? { ...candidate, id: existing.id } : b)) : [...template.blocks, { ...candidate, id: uid('blk') }];
-    await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks } : t)) } });
+    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks } : t)) } })).ok) return;
     close();
   };
   return (
@@ -360,7 +362,7 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
       description: existing?.description ?? '',
     };
     const points = existing ? template.points.map((p) => (p.id === existing.id ? point : p)) : [...template.points, point];
-    await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, points } : t)) } });
+    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, points } : t)) } })).ok) return;
     close();
   };
 
@@ -438,11 +440,13 @@ function InspectorDrawer(props: { pointId: string }) {
   const setModule = useApp((s) => s.setModule);
   const point = workspace?.templates.flatMap((t) => t.points).find((p) => p.id === props.pointId);
   const block = workspace?.templates.flatMap((t) => t.blocks).find((b) => b.id === point?.blockId);
-  const entry = block ? Object.values(blockStates).find((b) => b.blockId === block.id) : undefined;
-  const view = points[props.pointId];
-  if (!workspace || !point || !block || !entry) return null;
-  const regs = Array.from({ length: Math.min(4, block.length) }, () => 0);
-  void regs;
+  const selectedSlave = useApp(s => s.selection.slaveId);
+  const entry = block ? Object.values(blockStates).find((b) => b.blockId === block.id && (!selectedSlave || b.slaveId === selectedSlave)) : undefined;
+  const view = points[pointKey(entry?.slaveId, props.pointId)];
+  if (!workspace || !point || !block || !entry) return <Drawer title={t('overlays.inspectorTitle')} width={500} onClose={close}><InfoBand>{t('overlays.inspectorEmpty')}</InfoBand></Drawer>;
+  const raw: RawMemory | null = entry.registers ? { kind: 'registers', registers: new Uint16Array(entry.registers) } : entry.bits ? { kind: 'bits', bits: entry.bits } : null;
+  const rawValues = entry.registers ?? entry.bits?.map(value => value ? 1 : 0) ?? [];
+  const regs = rawValues.slice(point.mapping.offset, point.mapping.offset + Math.min(4, point.mapping.registerCount));
   return (
     <Drawer title={t('overlays.inspectorTitle')} subtitle={t('overlays.inspectorSubtitle', { point: point.name, type: point.mapping.rawType, offset: String(point.mapping.offset) })} width={500} onClose={close}
       footer={<Button onClick={() => { close(); select({ commView: 'messages' }); setModule('comm'); }}>{t('overlays.viewRecentComm')}</Button>}>
@@ -456,10 +460,10 @@ function InspectorDrawer(props: { pointId: string }) {
       <div className="mt-5 text-sm font-bold mb-2">{t('overlays.rawRegisters')}</div>
       <InfoBand>
         <div className="grid grid-cols-2 gap-4">
-          {[0, 1].map((i) => (
+          {regs.map((value, i) => (
             <div key={i}>
               <div className="text-xs text-ink2">+{point.mapping.offset + i}</div>
-              <div className="mono text-lg font-bold mt-1">0x0000</div>
+              <div className="mono text-lg font-bold mt-1">0x{value.toString(16).toUpperCase().padStart(4, '0')}</div>
             </div>
           ))}
         </div>
@@ -467,12 +471,18 @@ function InspectorDrawer(props: { pointId: string }) {
       </InfoBand>
       <div className="mt-5 text-sm font-bold mb-2">{t('overlays.dataInterpretation')}</div>
       <div className="rounded-card border border-line bg-surface px-4">
-        {(['Float32 · ABCD', 'Float32 · BADC', 'Float32 · CDAB', 'Float32 · DCBA', 'UInt32 · ABCD'] as const).map((label, i) => (
+        {(['Float32 · ABCD', 'Float32 · BADC', 'Float32 · CDAB', 'Float32 · DCBA', 'UInt32 · ABCD'] as const).map((label, i) => {
+          let decoded = '—';
+          if (raw?.kind === 'registers' && raw.registers.length >= point.mapping.offset + 2) {
+            try { decoded = String(decodeRaw(raw, { ...point.mapping, rawType: i === 4 ? 'UInt32' : 'Float32', registerCount: 2, wordOrder: label.split(' · ')[1] as 'ABCD' | 'BADC' | 'CDAB' | 'DCBA' })); } catch { /* insufficient memory: show unavailable */ }
+          }
+          return (
           <div key={label} className="flex justify-between border-b border-[#E7EAEE] py-2 text-xs last:border-0">
             <span className={i === 0 ? 'text-accent' : ''}>{label}</span>
-            <span className={i === 0 ? 'text-accent mono' : 'mono'}>{i === 0 ? view?.engText ?? '—' : '—'}</span>
+            <span className={i === 0 ? 'text-accent mono' : 'mono'}>{decoded}</span>
           </div>
-        ))}
+          );
+        })}
       </div>
       <div className="mt-5 text-sm font-bold mb-2">{t('overlays.conversionRules')}</div>
       <InfoBand>
@@ -483,10 +493,11 @@ function InspectorDrawer(props: { pointId: string }) {
     </Drawer>
   );
 }
-function pointOwner(ws: import('../../domain/model').Workspace, pointId: string): { slaveId: string; connectionId: string } | null {
+function pointOwner(ws: import('../../domain/model').Workspace, instanceId: string): { slaveId: string; connectionId: string; pointId: string } | null {
   for (const slave of ws.slaves) {
     const template = ws.templates.find((t) => t.id === slave.templateId);
-    if (template?.points.some((p) => p.id === pointId)) return { slaveId: slave.id, connectionId: slave.connectionId };
+    const point = template?.points.find(p => pointKey(slave.id, p.id) === instanceId);
+    if (point) return { slaveId: slave.id, connectionId: slave.connectionId, pointId: point.id };
   }
   return null;
 }
@@ -499,15 +510,15 @@ function AddSignalDialog(props: { groupId: string }) {
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [search, setSearch] = useState('');
   const group = workspace?.trendGroups.find((g) => g.id === props.groupId);
-  const inGroup = new Set(group?.signals.map((s) => s.pointRef.pointId) ?? []);
+  const inGroup = new Set(group?.signals.map((s) => pointKey(s.pointRef.slaveId, s.pointRef.pointId)) ?? []);
   const pickedIds = Object.keys(picked).filter((k) => picked[k]);
   if (!workspace || !group) return null;
   const add = async () => {
     const signals = pickedIds.map((pointId) => {
       const owner = pointOwner(workspace, pointId);
-      return { id: uid('sig'), pointRef: { connectionId: owner?.connectionId ?? '', slaveId: owner?.slaveId ?? '', pointId }, visible: true };
+      return { id: uid('sig'), pointRef: { connectionId: owner?.connectionId ?? '', slaveId: owner?.slaveId ?? '', pointId: owner?.pointId ?? '' }, visible: true };
     });
-    await command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: workspace.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: [...g.signals, ...signals] } : g)) } });
+    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: workspace.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: [...g.signals, ...signals] } : g)) } })).ok) return;
     close();
   };
   return (
@@ -529,9 +540,9 @@ function AddSignalDialog(props: { groupId: string }) {
                         <div className="text-xs text-accent mb-1">▼ {b.name}</div>
                         {template.points.filter((p) => p.blockId === b.id && (!search || p.name.includes(search))).map((p) => (
                           <div key={p.id} className="ml-4 flex items-center gap-2 py-0.5">
-                            <Checkbox checked={!!picked[p.id]} disabled={inGroup.has(p.id)} onCheckedChange={(v) => setPicked({ ...picked, [p.id]: v })} />
+                            <Checkbox checked={!!picked[pointKey(s.id, p.id)]} disabled={inGroup.has(pointKey(s.id, p.id))} onCheckedChange={(v) => setPicked({ ...picked, [pointKey(s.id, p.id)]: v })} />
                             <span className="text-sm">{p.name}</span>
-                            {inGroup.has(p.id) ? <span className="text-xs text-ink2">{t('overlays.inGroup')}</span> : null}
+                            {inGroup.has(pointKey(s.id, p.id)) ? <span className="text-xs text-ink2">{t('overlays.inGroup')}</span> : null}
                           </div>
                         ))}
                       </div>
@@ -574,7 +585,7 @@ function NewTrendGroupDialog() {
   const create = async () => {
     if (!workspace) return;
     const id = uid('g');
-    await command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: [...workspace.trendGroups, { id, name, windowSec: Number(windowSec), description: desc, signals: [] }] } });
+    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: [...workspace.trendGroups, { id, name, windowSec: Number(windowSec), description: desc, signals: [] }] } })).ok) return;
     select({ groupId: id });
     close();
     openOverlay({ kind: 'dialog', id: 'add-signal', groupId: id });
@@ -612,7 +623,7 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
   const save = async () => {
     if (!workspace || !template) return;
     const block: BlockDef = { ...candidate, id: uid('blk') };
-    await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: [...t.blocks, block] } : t)) } });
+    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: [...t.blocks, block] } : t)) } })).ok) return;
     close();
   };
 
@@ -643,7 +654,7 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
         <Dialog title={t('overlays.newTemplateTitle')} width={520} onClose={() => setNewTemplateOpen(false)} footer={<><Button onClick={() => setNewTemplateOpen(false)}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={async () => {
           if (!workspace) return;
           const id = uid('tpl');
-          await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, { id, name: newTemplateName, version: '1.0', description: newTemplateDesc, blocks: [], points: [] }] } });
+          if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, { id, name: newTemplateName, version: '1.0', description: newTemplateDesc, blocks: [], points: [] }] } })).ok) return;
           setTemplateId(id);
           setNewTemplateOpen(false);
         }}>{t('overlays.createAndSelect')}</Button></>}>

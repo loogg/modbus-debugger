@@ -1,12 +1,13 @@
 import React, { useMemo, useState } from 'react';
-import { useApp, useBlocks, useConnectionStates, useWorkspace } from '../store/app';
+import { useApp, useBlocks, useConnectionStates, useWorkspace, useWorkspacePath } from '../store/app';
 import { Button, EmptyState, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput } from '../components/ui';
 import { DataTable, type Column } from '../components/table';
 import { AREAS, parsePlcReference, toPlcReference } from '../../domain/address';
 import { findBlockOverlaps } from '../../domain/overlap';
 import type { BlockDef, PointDef } from '../../domain/model';
-import { registersForType } from '../../domain/mapping';
+import { buildImportPlan } from '../../domain/import-plan';
 import { useTranslation } from '../i18n';
+import { copyTemplate } from '../../domain/template-copy';
 
 export function TemplatesScreen() {
   const { t } = useTranslation();
@@ -16,6 +17,7 @@ export function TemplatesScreen() {
   const select = useApp((s) => s.select);
   const command = useApp((s) => s.command);
   const overlay = useApp((s) => s.overlay);
+  const setModule = useApp((s) => s.setModule);
 
   const template = workspace?.templates.find((t) => t.id === selection.templateId) ?? workspace?.templates[0];
   if (!workspace) return null;
@@ -36,8 +38,9 @@ export function TemplatesScreen() {
             <Button
               onClick={async () => {
                 const ws = workspace;
-                const copy = { ...template, id: `tpl-${Date.now().toString(36)}`, name: t('templates.duplicateName', { name: template.name }) };
-                await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, copy] } });
+                const copy = copyTemplate(template, `tpl-${Date.now().toString(36)}`, t('templates.duplicateName', { name: template.name }));
+                const res = await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, copy] } });
+                if (res.ok) select({ templateId: copy.id, templateEditing: false });
               }}
             >
               {t('templates.duplicate')}
@@ -80,7 +83,7 @@ export function TemplatesScreen() {
               <span>{conn?.name} / {s.name}</span>
               <span className="text-xs text-ink2">{t('templates.slaveUnit', { n: s.unitId })}</span>
               <StatusDot tone={online ? 'ok' : 'idle'} label={online ? t('templates.online') : t('templates.offline')} />
-              <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => select({ slaveId: s.id, connectionId: s.connectionId })}>{t('templates.openDevice')}</button>
+              <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => { select({ slaveId: s.id, connectionId: s.connectionId, deviceView: 'topology' }); setModule('devices'); }}>{t('templates.openDevice')}</button>
             </div>
           );
         })}
@@ -104,6 +107,17 @@ function TemplateEdit(props: { templateId: string }) {
   const [tab, setTab] = useState<'map' | 'memory' | 'block'>('map');
   const [search, setSearch] = useState('');
   const [selectedPoint, setSelectedPoint] = useState<string | null>(null);
+  const workspacePath = useWorkspacePath();
+  const save = async () => {
+    let target = workspacePath;
+    if (!target) {
+      const chosen = await command<string>({ type: 'dialog.saveFile', defaultName: 'workspace.workspace.json' });
+      if (!chosen.ok) return;
+      target = chosen.value;
+    }
+    const res = await command({ type: 'workspace.saveAs', path: target });
+    if (res.ok) toast({ kind: 'success', title: t('templates.savedToast') });
+  };
 
   const template = workspace?.templates.find((t) => t.id === props.templateId);
   const block = template?.blocks.find((b) => b.id === selection.editBlockId) ?? template?.blocks[0];
@@ -131,7 +145,7 @@ function TemplateEdit(props: { templateId: string }) {
         actions={
           <>
             <Button onClick={() => openOverlay({ kind: 'dialog', id: 'edit-block', templateId: template.id, blockId: block.id })}>{t('templates.editBlock')}</Button>
-            <Button variant="primary" onClick={() => toast({ kind: 'success', title: t('templates.savedToast') })}>{t('templates.save')}</Button>
+            <Button variant="primary" onClick={() => void save()}>{t('templates.save')}</Button>
           </>
         }
       />
@@ -190,7 +204,7 @@ function TemplateEdit(props: { templateId: string }) {
             {Array.from({ length: Math.min(block.length, 32) }, (_, i) => (
               <div key={i} className="rounded-ctl bg-surface2 px-3 py-2">
                 <div className="flex justify-between text-xs text-ink2"><span>+{i}</span><span>+{i + 1}</span></div>
-                <div className="mono text-sm mt-1">0x{(cacheEntry ? 0 : 0).toString(16).toUpperCase().padStart(4, '0')}</div>
+                <div className="mono text-sm mt-1">{cacheEntry?.registers?.[i] !== undefined ? `0x${cacheEntry.registers[i]!.toString(16).toUpperCase().padStart(4, '0')}` : cacheEntry?.bits?.[i] !== undefined ? String(Number(cacheEntry.bits[i])) : '—'}</div>
               </div>
             ))}
           </div>
@@ -244,7 +258,7 @@ function ImportRegisters(props: { templateId: string }) {
         const rawAddr = idx('address') >= 0 ? (r[idx('address')] ?? '') : '';
         const plc = parsePlcReference(rawAddr);
         return {
-          address: plc ? plc.address : Number(rawAddr) || 0,
+          address: plc ? plc.address : rawAddr.trim() === '' ? NaN : Number(rawAddr),
           area: plc?.area,
           name: idx('name') >= 0 ? (r[idx('name')] ?? '') : rawAddr,
           type: idx('type') >= 0 ? (r[idx('type')] ?? '') : 'UInt16',
@@ -254,7 +268,7 @@ function ImportRegisters(props: { templateId: string }) {
           offset: idx('offset') >= 0 ? (r[idx('offset')] ?? '') : '0',
         } as ImportRow & { area?: 1 | 2 | 3 | 4 };
       })
-      .filter((r) => r.name);
+      ;
   }, [table, mapping]);
 
   const plcDetected = useMemo(() => {
@@ -267,50 +281,29 @@ function ImportRegisters(props: { templateId: string }) {
     }).filter(Boolean);
   }, [table, mapping]);
 
-  const errors = parsed.filter((p) => !p.name).length;
+  const preview = useMemo(() => {
+    try { return { plan: buildImportPlan(parsed, blockStrategy, 'preview'), error: '' }; }
+    catch (error) { return { plan: null, error: String(error) }; }
+  }, [parsed, blockStrategy]);
 
   const doImport = async () => {
     if (!workspace) return;
     const template = workspace.templates.find((t) => t.id === props.templateId);
     if (!template) return;
-    const areas = new Set(parsed.map((p) => (p as { area?: number }).area ?? 3));
-    const blocks: BlockDef[] = [];
-    const points: PointDef[] = [];
-    if (blockStrategy === 'auto') {
-      for (const area of areas) {
-        const list = parsed.filter((p) => ((p as { area?: number }).area ?? 3) === area).sort((a, b) => a.address - b.address);
-        if (!list.length) continue;
-        let chunk: typeof list = [];
-        const flush = () => {
-          if (!chunk.length) return;
-          const start = (chunk[0] as ImportRow).address;
-          const end = Math.max(...chunk.map((c) => c.address)) + 1;
-          const id = `blk-${Date.now().toString(36)}-${blocks.length}`;
-          blocks.push({ id, name: t('templates.importBlockName', { n: blocks.length + 1 }), area: area as 1 | 2 | 3 | 4, start, length: end - start, periodMs: 200 });
-          for (const p of chunk) {
-            points.push(makePoint(id, p));
-          }
-          chunk = [];
-        };
-        for (const p of list) {
-          if (chunk.length && p.address - (chunk[chunk.length - 1] as ImportRow).address > 8) flush();
-          chunk.push(p);
-        }
-        flush();
-      }
-    } else {
-      const id = `blk-${Date.now().toString(36)}`;
-      const start = Math.min(...parsed.map((p) => p.address));
-      const end = Math.max(...parsed.map((p) => p.address)) + 1;
-      blocks.push({ id, name: t('templates.importBlockName', { n: 1 }), area: 3, start, length: end - start, periodMs: 200 });
-      for (const p of parsed) points.push(makePoint(id, p));
+    let blocks: BlockDef[];
+    let points: PointDef[];
+    try {
+      ({ blocks, points } = buildImportPlan(parsed, blockStrategy, `import-${Date.now().toString(36)}`));
+    } catch (error) {
+      toast({ kind: 'error', title: t('templates.importBlockedTitle'), message: String(error) });
+      return;
     }
     const nextBlocks = [...template.blocks, ...blocks];
     if (findBlockOverlaps(nextBlocks).length) {
       toast({ kind: 'error', title: t('templates.importBlockedTitle'), message: t('templates.importBlockedMessage') });
       return;
     }
-    await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: nextBlocks, points: [...t.points, ...points] } : t)) } });
+    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: nextBlocks, points: [...t.points, ...points] } : t)) } })).ok) return;
     toast({ kind: 'success', title: t('templates.importedToast', { n: points.length }) });
     closeOverlay();
   };
@@ -384,7 +377,7 @@ function ImportRegisters(props: { templateId: string }) {
                 </div>
               ))}
             </div>
-            <div className="mt-3 text-xs text-ok">{t('templates.previewSummary', { ok: parsed.length, warn: errors })}</div>
+            <div className="mt-3 text-xs text-ok">{preview.error || `✓ ${preview.plan?.points.length ?? 0} 行可导入`}</div>
             <div className="mt-1 text-xs text-ink2">{t('templates.convertedZeroBased')}</div>
           </div>
         </div>
@@ -400,45 +393,17 @@ function ImportRegisters(props: { templateId: string }) {
           {t('templates.strategySingle')}
         </label>
         <div className="text-xs mt-3">
-          {t('templates.suggestLabel')}{blockStrategy === 'auto' ? t('templates.suggestAuto') : t('templates.suggestSingle')}
+          {t('templates.suggestLabel')}{preview.plan?.blocks.map(b => `${AREAS[b.area]} ${b.start}–${b.start + b.length - 1}`).join(' · ') || '—'}
           <br />
           {t('templates.importTargetLabel')}{workspace?.templates.find((tpl) => tpl.id === props.templateId)?.name}{t('templates.importTargetSuffix')}
         </div>
       </InfoBand>
       <div className="mt-6 flex items-center justify-between">
         <span className="text-xs text-ink2">{t('templates.supportedFormats')}</span>
-        <Button variant="primary" disabled={!parsed.length} onClick={() => void doImport()}>{t('templates.importPoints', { n: parsed.length })}</Button>
+        <Button variant="primary" disabled={!preview.plan} onClick={() => void doImport()}>{t('templates.importPoints', { n: parsed.length })}</Button>
       </div>
     </>
   );
-}
-
-function makePoint(blockId: string, p: ImportRow & { area?: 1 | 2 | 3 | 4 }): PointDef {
-  const rawType = /float/i.test(p.type) ? 'Float32' : /int16/i.test(p.type) ? 'Int16' : /uint16/i.test(p.type) ? 'UInt16' : /bool/i.test(p.type) ? 'Bool' : /string/i.test(p.type) ? 'String' : 'UInt16';
-  return {
-    id: `pt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-    blockId,
-    name: p.name,
-    mapping: {
-      rawType,
-      offset: p.address,
-      registerCount: registersForType(rawType, 8),
-      wordOrder: 'ABCD',
-      byteSelector: 'low',
-      bitOffset: 0,
-      bitWidth: 16,
-      stringLength: rawType === 'String' ? 8 : 0,
-      stringEncoding: 'ascii',
-    },
-    scale: Number(p.scale) || 1,
-    offset: Number(p.offset) || 0,
-    unit: p.unit,
-    access: /rw|w/i.test(p.access) ? 'rw' : 'ro',
-    displayFormat: 'auto',
-    enumMap: {},
-    highRisk: false,
-    description: '',
-  };
 }
 
 export { toPlcReference };

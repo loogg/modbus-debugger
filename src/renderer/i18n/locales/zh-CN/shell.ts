@@ -99,9 +99,9 @@ export const shell = {
     resultTimeout: '超时',
     resultException: 'Modbus 异常',
     capture: '捕获设置',
-    autoScroll: '自动滚动：开启',
+    autoScroll: '报文按时间倒序',
     keepRawFrames: '保留原始帧：开启',
-    maxEntries: '最大 50,000 条',
+    maxEntries: '界面保留最近 500 条',
   },
   templates: {
     newTemplateName: '新设备模板',

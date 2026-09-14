@@ -22,6 +22,7 @@ export function DevicesScreen() {
   const select = useApp((s) => s.select);
   const openOverlay = useApp((s) => s.openOverlay);
   const setModule = useApp((s) => s.setModule);
+  const command = useApp((s) => s.command);
   // A connection selected without a slave owns the main area (settings + slave list);
   // only fall back to the first slave when nothing at all is selected yet.
   const slave = selection.slaveId
@@ -46,8 +47,8 @@ export function DevicesScreen() {
         actions={
           <>
             <Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-connection' })}>{t('devices.addFirstConnection')}</Button>
-            <Button onClick={() => openOverlay({ kind: 'dialog', id: 'add-connection' })}>{t('devices.importWorkspace')}</Button>
-            <Button onClick={() => setModule('templates')}>{t('devices.importTemplate')}</Button>
+            <Button onClick={async () => { const res = await command<string>({ type: 'dialog.openFile', accept: ['json'] }); if (res.ok) await command({ type: 'workspace.open', path: res.value }); }}>{t('devices.importWorkspace')}</Button>
+            <Button onClick={async () => { const file = await command<string>({ type: 'dialog.openFile', accept: ['json'] }); if (!file.ok) return; const res = await command<string>({ type: 'template.importFile', path: file.value }); if (res.ok) { select({ templateId: res.value }); setModule('templates'); } }}>{t('devices.importTemplate')}</Button>
           </>
         }
       />
@@ -251,7 +252,7 @@ export function ScanView(props: { connectionId: string }) {
               workspace?.slaves.some((s) => s.connectionId === props.connectionId && s.unitId === r.unitId) ? (
                 <span className="text-xs text-ink2">{t('devices.alreadyAdded')}</span>
               ) : (
-                <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: props.connectionId })}>
+                <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: props.connectionId, unitId: r.unitId })}>
                   {t('devices.addSlave')}
                 </button>
               ),
@@ -298,6 +299,7 @@ export function TempReadView(props: { connectionId: string }) {
   const [qty, setQty] = useState('10');
   const [result, setResult] = useState<{ registers: number[]; ms: number; at: string; request: TemporaryReadCommand } | null>(null);
   const [reading, setReading] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
   const [failure, setFailure] = useState<{ message: string; request: TemporaryReadCommand; traceId?: string } | null>(null);
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
   const slave = workspace?.slaves.find((s) => s.connectionId === props.connectionId && s.unitId === Number(unit));
@@ -317,6 +319,7 @@ export function TempReadView(props: { connectionId: string }) {
     };
     setReading(true);
     setResult(null);
+    setShowRaw(false);
     setFailure(null);
     try {
       const res = await command<RequestOutcome>(request);
@@ -389,12 +392,7 @@ export function TempReadView(props: { connectionId: string }) {
             <div className="flex gap-3">
               <Button
                 size="sm"
-                onClick={() => {
-                  const firstSlave = workspace?.slaves.find((s2) => s2.connectionId === props.connectionId);
-                  const tpl = workspace?.templates.find((t2) => t2.id === firstSlave?.templateId);
-                  const firstPoint = tpl?.points.find((p2) => p2.blockId === tpl.blocks[0]?.id);
-                  if (firstPoint) openOverlay({ kind: 'drawer', id: 'inspector', pointId: firstPoint.id });
-                }}
+                onClick={() => setShowRaw(!showRaw)}
               >
                 {t('devices.rawData')}
               </Button>
@@ -418,6 +416,7 @@ export function TempReadView(props: { connectionId: string }) {
               </Button>
             </div>
           </InfoBand>
+          {showRaw ? <InfoBand className="mt-3"><div data-testid="temporary-raw" className="mono text-sm break-all">{result.registers.map(value => value.toString(16).toUpperCase().padStart(result.request.area <= 2 ? 1 : 4, '0')).join(' ')}</div></InfoBand> : null}
         </>
       ) : !reading && !failure ? (
         <InfoBand className="mt-6">{t('devices.tempHint')}</InfoBand>
@@ -438,7 +437,7 @@ function ConnectionSettingsView(props: { connectionId: string }) {
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
   const state = connStates[props.connectionId]?.state ?? 'offline';
   const [name, setName] = useState(conn?.name ?? '');
-  const [port, setPort] = useState(conn?.rtu?.port ?? 'COM3');
+  const [port, setPort] = useState(conn?.rtu?.port ?? '');
   const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [baud, setBaud] = useState(String(conn?.rtu?.baudRate ?? 115200));
   const [host, setHost] = useState(conn?.tcp?.host ?? '');

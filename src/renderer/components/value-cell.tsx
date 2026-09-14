@@ -4,6 +4,7 @@ import type { PointViewState } from '../../shared/snapshot';
 import { useApp } from '../store/app';
 import { useTranslation } from '../i18n';
 import { Select } from './ui';
+import { pointKey } from '../../shared/point-key';
 
 function Spinner() {
   return (
@@ -20,12 +21,22 @@ function Spinner() {
  */
 export function ValueCell(props: { point: PointDef; view: PointViewState | undefined }) {
   const { t } = useTranslation();
-  const writeState = useApp((s) => s.writeStates[props.point.id]);
+  const writeKey = pointKey(props.view?.slaveId, props.point.id);
+  const writeState = useApp((s) => s.writeStates[writeKey]);
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
+  const openOverlay = useApp((s) => s.openOverlay);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const [markerFresh, setMarkerFresh] = useState(true);
+  useEffect(() => {
+    setMarkerFresh(true);
+    if (!writeState || writeState.phase === 'writing') return;
+    const ttl = writeState.phase === 'confirmed' ? 2500 : 10000;
+    const timer = setTimeout(() => setMarkerFresh(false), Math.max(0, ttl - (Date.now() - writeState.at)));
+    return () => clearTimeout(timer);
+  }, [writeState]);
 
   const writable = props.point.access === 'rw';
   const view = props.view;
@@ -37,14 +48,21 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
-  const commit = async () => {
+  const commit = async (confirmed = false) => {
     setEditing(false);
-    const text = draft.trim();
-    if (!text) return;
+    const text = isString ? draft : draft.trim();
+    if (!isString && !text) return;
+    if (props.point.highRisk && !confirmed) {
+      openOverlay({ kind: 'dialog', id: 'confirm', title: t('ui.valueCell.confirmTitle'), message: t('ui.valueCell.confirmMessage', { name: props.point.name, value: text }), confirmLabel: t('ui.valueCell.confirmWrite'), danger: true, onConfirm: () => void commit(true) });
+      return;
+    }
     let engineering: number | null = null;
     let boolValue: boolean | null = null;
     let stringValue: string | null = null;
-    if (isBool) boolValue = text === '1' || text.toLowerCase() === 'on' || text.toLowerCase() === 'true';
+    if (isBool) {
+      if (!['1', '0', 'on', 'off', 'true', 'false'].includes(text.toLowerCase())) { toast({ kind: 'error', title: t('ui.valueCell.invalidBool') }); return; }
+      boolValue = ['1', 'on', 'true'].includes(text.toLowerCase());
+    }
     else if (isString) stringValue = text;
     else if (isEnum) {
       const entry = Object.entries(props.point.enumMap).find(([k, v]) => v === text || k === text);
@@ -61,14 +79,14 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
       }
     }
     useApp.setState((s) => ({
-      writeStates: { ...s.writeStates, [props.point.id]: { phase: 'writing', attempted: text, at: Date.now(), exceptionCode: null } },
+      writeStates: { ...s.writeStates, [writeKey]: { phase: 'writing', attempted: text, at: Date.now(), exceptionCode: null } },
     }));
     const slaveId = useApp.getState().selection.slaveId;
     const res = await command({ type: 'point.write', slaveId: slaveId ?? '', pointId: props.point.id, engineering, boolValue, stringValue });
     if (!res.ok) {
       useApp.setState((s) => {
         const ws = { ...s.writeStates };
-        delete ws[props.point.id];
+        delete ws[writeKey];
         return { writeStates: ws };
       });
     }
@@ -102,7 +120,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') void commit();
+            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); void commit(); }
             if (e.key === 'Escape') setEditing(false);
           }}
         />
@@ -140,7 +158,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
     >
       {valueNode}
       {unit && view?.hasValue ? <span className="text-xs text-ink2">{unit}</span> : null}
-      {marker}
+      {markerFresh ? marker : null}
     </span>
   );
 }

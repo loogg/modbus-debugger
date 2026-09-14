@@ -15,6 +15,7 @@ import type { Command, CommandResult } from '../../shared/commands';
 import type { ModbusApi } from '../../shared/preload-api';
 import { setDisplayTimeZone } from '../time';
 import { applyLanguage } from '../i18n';
+import { pointKey } from '../../shared/point-key';
 
 export type ModuleId = 'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates' | 'settings';
 
@@ -36,7 +37,7 @@ export interface Selection {
 
 export type Overlay =
   | { kind: 'dialog'; id: 'add-connection'; connectionId?: string }
-  | { kind: 'dialog'; id: 'add-slave'; connectionId: string; slaveId?: string }
+  | { kind: 'dialog'; id: 'add-slave'; connectionId: string; slaveId?: string; unitId?: number }
   | { kind: 'dialog'; id: 'edit-block'; templateId: string; blockId?: string }
   | { kind: 'dialog'; id: 'new-trend-group' }
   | { kind: 'dialog'; id: 'save-as-block'; connectionId: string; unitId: number; area: 1 | 2 | 3 | 4; start: number; quantity: number; registers: number[] }
@@ -61,6 +62,8 @@ export interface Toast {
 }
 
 interface AppState {
+  commSlaveFilter: Record<string, boolean>;
+  commResultFilter: { ok: boolean; timeout: boolean; exception: boolean };
   api: ModbusApi | null;
   snapshot: AppSnapshot | null;
   module: ModuleId;
@@ -127,6 +130,8 @@ function appendLive(live: Record<string, LiveSeries>, points: AppSnapshot['point
 }
 
 export const useApp = create<AppState>((set, get) => ({
+  commSlaveFilter: {},
+  commResultFilter: { ok: true, timeout: true, exception: true },
   api: null,
   snapshot: null,
   module: 'devices',
@@ -171,9 +176,9 @@ export const useApp = create<AppState>((set, get) => ({
       workspace: d.workspace ?? prev.workspace,
       workspacePath: d.workspacePath !== undefined ? d.workspacePath : prev.workspacePath,
       dirty: d.dirty !== undefined ? d.dirty : prev.dirty,
-      connections: d.connections ? { ...prev.connections, ...d.connections } : prev.connections,
-      blocks: d.blocks ? { ...prev.blocks, ...d.blocks } : prev.blocks,
-      points: d.points ? { ...prev.points, ...d.points } : prev.points,
+      connections: d.workspace ? d.connections ?? prev.connections : d.connections ? { ...prev.connections, ...d.connections } : prev.connections,
+      blocks: d.workspace ? d.blocks ?? {} : d.blocks ? { ...prev.blocks, ...d.blocks } : prev.blocks,
+      points: d.workspace ? d.points ?? {} : d.points ? { ...prev.points, ...d.points } : prev.points,
       diagRev: d.diagRev ?? prev.diagRev,
       transactions: cleared
         ? (d.transactions ?? []).slice(-500)
@@ -205,12 +210,14 @@ export const useApp = create<AppState>((set, get) => ({
       const now = Date.now();
       for (const tx of d.transactions) {
         if (!tx.sourceId) continue;
+        const slave = next.workspace.slaves.find(s => s.connectionId === tx.connectionId && s.unitId === tx.unitId);
+        const writeKey = pointKey(slave?.id, tx.sourceId);
         if (tx.sourceKind === 'write') {
-          if (tx.result === 'ok') writeStates[tx.sourceId] = { phase: 'writing', attempted: writeStates[tx.sourceId]?.attempted ?? '', at: now, exceptionCode: null };
-          else if (tx.result === 'exception') writeStates[tx.sourceId] = { phase: 'rejected', attempted: writeStates[tx.sourceId]?.attempted ?? '', at: now, exceptionCode: tx.exceptionCode };
-          else if (tx.result === 'timeout') writeStates[tx.sourceId] = { phase: 'unknown', attempted: writeStates[tx.sourceId]?.attempted ?? '', at: now, exceptionCode: null };
+          if (tx.result === 'ok') writeStates[writeKey] = { phase: 'writing', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: null };
+          else if (tx.result === 'exception') writeStates[writeKey] = { phase: 'rejected', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: tx.exceptionCode };
+          else writeStates[writeKey] = { phase: 'unknown', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: null };
         } else if (tx.sourceKind === 'readback' && tx.result === 'ok') {
-          writeStates[tx.sourceId] = { phase: 'confirmed', attempted: '', at: now, exceptionCode: null };
+          writeStates[writeKey] = { phase: 'confirmed', attempted: '', at: now, exceptionCode: null };
         }
       }
       if (hasWriteTx) for (const [k, v] of Object.entries(writeStates)) {
@@ -226,7 +233,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setModule: (m) => set({ module: m }),
-  select: (patch) => set({ selection: { ...get().selection, ...patch } }),
+  select: (patch) => set({ selection: { ...get().selection, ...patch }, ...(patch.slaveId !== undefined && patch.slaveId !== get().selection.slaveId ? { selectedPoints: {} } : {}) }),
   setSidebarWidth: (w) => {
     const clamped = Math.min(320, Math.max(220, w));
     set({ sidebarWidth: clamped });
@@ -243,7 +250,9 @@ export const useApp = create<AppState>((set, get) => ({
   command: async <T,>(cmd: Command) => {
     const api = get().api;
     if (!api) return { ok: false, error: 'api not ready' } as CommandResult<T>;
-    const res = (await api.command<T>(cmd)) as CommandResult<T>;
+    let res: CommandResult<T>;
+    try { res = await api.command<T>(cmd); }
+    catch (error) { res = { ok: false, error: String(error) }; }
     if (!res.ok) get().toast({ kind: 'error', title: '操作失败', message: res.error });
     return res;
   },

@@ -216,9 +216,9 @@ export function PageHeader(props: { title: React.ReactNode; subtitle?: React.Rea
   );
 }
 
-export function SectionTitle(props: { children: React.ReactNode; right?: React.ReactNode }) {
+export function SectionTitle(props: { id?: string; children: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between mb-3 mt-6">
+      <div id={props.id} className="flex items-center justify-between mb-3 mt-6 scroll-mt-4">
       <h2 className="text-xl font-bold text-ink">{props.children}</h2>
       {props.right}
     </div>
@@ -337,9 +337,10 @@ export function Toasts() {
   const dismiss = useApp((s) => s.dismissToast);
   const tone: Record<string, string> = { info: 'border-accent', success: 'border-ok', warning: 'border-warn', error: 'border-err' };
   return (
-    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 w-[360px]">
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2 w-[360px]">
       {toasts.map((t) => (
-        <div key={t.id} className={`rounded-ctl border-l-4 ${tone[t.kind]} bg-surface shadow-lg px-4 py-3`} onClick={() => dismiss(t.id)}>
+        <div key={t.id} className={`relative rounded-ctl border-l-4 ${tone[t.kind]} bg-surface shadow-lg pl-4 pr-8 py-3`}>
+          <button aria-label="关闭提示" className="pointer-events-auto absolute right-2 top-2 focus-ring text-ink2" onClick={() => dismiss(t.id)}>×</button>
           <div className="text-sm font-medium">{t.title}</div>
           {t.message ? <div className="text-xs text-ink2 mt-1 break-words">{t.message}</div> : null}
         </div>

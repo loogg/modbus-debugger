@@ -35,12 +35,12 @@ npm test -- tests/integration/runtime-tcp.test.ts
 E2E 通过 WebdriverIO + Electron Service 运行打包版，并自动启动 PyModbus：
 
 ```powershell
-python -m pip install pymodbus==3.15.0
+python -m pip install -r tools/simulator/requirements.txt
 npm run package
 npm run test:e2e -- --spec tests/e2e/app.e2e.ts --mochaOpts.grep "launches with"
 ```
 
-需要全部 E2E 时运行 `npm run test:e2e`。固定 fixture 为 `tools/e2e/demo.workspace.json`，测试会复制后使用；临时数据、偏好和缓存在 `out/test-temp/`，不得写入日常 AppData 配置。E2E 截图在 `tests/e2e/screenshots/`，文档截图独立维护于 `docs/images/`。
+需要全部 E2E 时运行 `npm run test:e2e`。固定 fixture 为 `tools/e2e/demo.workspace.json`，测试会复制后使用；临时数据、偏好和缓存在 `out/test-temp/`，不得写入日常 AppData 配置。本次 E2E 截图在 `out/audit/screenshots/`，文档截图独立维护于 `docs/images/`。
 
 ## Vite 构建与运行边界
 
@@ -84,3 +84,5 @@ Setup 使用安装向导和程序文件清单，支持自选目录，保留用�
 截图使用可复现的示例数据和实际运行的程序，不使用日常工作区。新增功能截图优先通过 Computer Use 采集，文件放 `docs/images/`；每张图说明入口、操作和结果。仅改文档时检查链接、图片、示例及命令一致性，不重新构建应用。
 
 README 的组织参考了 [LocalSend](https://github.com/localsend/localsend/blob/main/README.md)、[Serial Studio](https://github.com/Serial-Studio/Serial-Studio/blob/master/README.md) 与 [ModbusScope](https://github.com/ModbusScope/ModbusScope/blob/master/README.md)：用户入口和快速上手放在显眼位置，工程细节链接到开发文档。截图和具体操作均以本项目为准。
+
+串口/TCP 参数、完整数据区与故障注入见 [模拟器说明](../tools/simulator/README.md)。实际 COM 对使用 `MODBUS_RTU_MASTER_PORT` / `MODBUS_RTU_SLAVE_PORT` 配置；全量审计必须检查是否发生跳过，参见 [审计记录](full-audit.md)。

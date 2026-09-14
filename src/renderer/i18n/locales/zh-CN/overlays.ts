@@ -1,4 +1,5 @@
 export const overlays = {
+  inspectorEmpty: '暂无缓存数据，请先连接绑定此模板的从站并读取。',
   defaultConnName: '生产线 RS485',
   toastConnUpdated: '连接已更新',
   toastConnCreated: '连接已创建',

@@ -34,7 +34,7 @@ export interface RuntimeHooks {
 interface PendingWaiter {
   ctx: RequestContext;
   traceId: string;
-  resolve(verdict: AduVerdict): void;
+  resolve(verdict: AduVerdict, adu: Uint8Array): void;
   abort(result: ResultKind, reason: string): void;
 }
 
@@ -71,6 +71,7 @@ export class ConnectionRuntime {
   private reconnectAt = 0;
   private reconnectDelay = 1000;
   private stopped = false;
+  private lastRequestEnd = 0;
   private expectedLen: number | null = null;
 
   constructor(opts: {
@@ -106,11 +107,13 @@ export class ConnectionRuntime {
   }
 
   configure(targets: PollTarget[]): void {
+    const previous = new Map(this.targets.map(t => [blockKey(t.slave.id, t.block.id), t]));
     this.targets = targets;
     const now = this.clock.now();
     for (const t of targets) {
       const key = blockKey(t.slave.id, t.block.id);
-      if (!this.due.has(key)) this.due.set(key, now + t.block.periodMs);
+      const old = previous.get(key);
+      if (!this.due.has(key) || old?.block.periodMs !== t.block.periodMs || old?.slave.enabled !== t.slave.enabled || old?.slave.unitId !== t.slave.unitId || old?.block.start !== t.block.start) this.due.set(key, now + t.block.periodMs);
       this.cache.ensure(t.slave, t.block);
     }
     const keys = new Set(targets.map((t) => blockKey(t.slave.id, t.block.id)));
@@ -160,7 +163,7 @@ export class ConnectionRuntime {
   }
 
   private scheduleReconnect(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.config.reconnect === 'manual') return;
     this.reconnectAt = this.clock.now() + this.reconnectDelay;
     this.reconnectDelay = Math.min(10000, this.reconnectDelay * 2);
   }
@@ -196,7 +199,7 @@ export class ConnectionRuntime {
           mono: this.clock.now(),
         });
         this.hooks.onChange();
-        for (const recovered of ev.recovered) this.deliverAdu(recovered);
+        // Recovered bytes are also emitted as ADU events by the framer; deliver exactly once.
       } else {
         this.deliverAdu(ev.bytes);
       }
@@ -272,7 +275,7 @@ export class ConnectionRuntime {
     const w = waiter;
     this.waiter = null;
     this.expectedLen = null;
-    w.resolve(verdict);
+    w.resolve(verdict, adu);
   }
 
   private failWaiter(result: ResultKind, reason: string): void {
@@ -299,6 +302,11 @@ export class ConnectionRuntime {
     req: ModbusRequest,
     opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number },
   ): Promise<RequestOutcome> {
+    // Every path (including retry and write/read-back groups) must observe RTU recovery.
+    while (this.clock.now() < this.drainUntil) await new Promise(resolve => setTimeout(resolve, 2));
+    if (this.drainUntil) { this.drainUntil = 0; this.framer.reset(); }
+    const gap = this.config.interFrameMs - (this.clock.now() - this.lastRequestEnd);
+    if (gap > 0) await new Promise(resolve => setTimeout(resolve, gap));
     const startedMono = this.clock.now();
     const startedUtc = new Date().toISOString();
     const traceId = this.diagnostics.nextTraceId();
@@ -361,10 +369,10 @@ export class ConnectionRuntime {
           });
           void reason;
         },
-        resolve: (verdict) => {
+        resolve: (verdict, responseAdu) => {
           const durationMs = this.clock.now() - startedMono;
           if (verdict.type === 'ok') {
-            finish({ result: 'ok', response: verdict.response, exceptionCode: null, durationMs, requestAduHex: hex(adu), responseAduHex: null, traceId });
+            finish({ result: 'ok', response: verdict.response, exceptionCode: null, durationMs, requestAduHex: hex(adu), responseAduHex: hex(responseAdu), traceId });
           } else if (verdict.type === 'exception') {
             finish({
               result: 'exception',
@@ -372,7 +380,7 @@ export class ConnectionRuntime {
               exceptionCode: verdict.response.kind === 'exception' ? verdict.response.code : null,
               durationMs,
               requestAduHex: hex(adu),
-              responseAduHex: null,
+              responseAduHex: hex(responseAdu),
               traceId,
             });
           } else {
@@ -418,6 +426,7 @@ export class ConnectionRuntime {
       summary: summarizeRequest(req),
     };
     this.diagnostics.recordTransaction(rec);
+    this.lastRequestEnd = this.clock.now();
     this.hooks.onChange();
     return outcome;
   }
@@ -553,6 +562,15 @@ export class ConnectionRuntime {
   }
 
   /* ------------------------- high level ops ------------------------- */
+
+  async refresh(slaveId: string, blockId?: string): Promise<void> {
+    if (this.state !== 'online' || this.stopped) throw new Error('Connection is offline');
+    const targets = this.targets.filter(target => target.slave.id === slaveId && target.slave.enabled && (!blockId || target.block.id === blockId));
+    if (!targets.length) throw new Error('No enabled blocks to refresh');
+    await this.enqueue(PRIORITY.manual, 'refresh', async () => {
+      for (const target of targets) await this.pollBlock(target);
+    });
+  }
 
   /** Single request at manual/diagnostic priority; pauses nothing else but jumps the queue. */
   temporaryRead(unitId: number, area: 1 | 2 | 3 | 4, start: number, quantity: number): Promise<RequestOutcome> {

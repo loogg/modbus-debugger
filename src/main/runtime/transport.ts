@@ -88,6 +88,9 @@ export class TcpTransport implements Transport {
 }
 
 export interface SerialPortLike {
+  flush?(cb: (err?: Error | null) => void): void;
+  set?(options: { rts: boolean }, cb: (err?: Error | null) => void): void;
+  drain?(cb: (err?: Error | null) => void): void;
   open(cb: (err: Error | null) => void): void;
   write(data: Buffer, cb?: (err: Error | null) => void): boolean;
   close(cb?: (err: Error | null) => void): void;
@@ -125,6 +128,7 @@ export class SerialTransport implements Transport {
   constructor(
     private readonly settings: RtuSettings,
     private readonly factory: SerialPortFactory = loadSerialFactory(),
+    private readonly rtsControl: 'none' | 'toggle' = 'none',
   ) {}
 
   get connected(): boolean {
@@ -150,21 +154,31 @@ export class SerialTransport implements Transport {
           return;
         }
         this.port = port;
-        this.handlers?.onOpen();
-        resolve();
+        const ready = (error?: Error | null) => {
+          if (error) { port.close(); this.port = null; reject(error); return; }
+          this.handlers?.onOpen(); resolve();
+        };
+        // Discard bytes retained by the driver before this connection was opened.
+        if (port.flush) port.flush(ready); else ready();
       });
     });
   }
 
-  write(bytes: Uint8Array): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const port = this.port;
-      if (!port || !port.isOpen) {
-        reject(new Error('serial port not open'));
-        return;
-      }
-      port.write(Buffer.from(bytes), (err) => (err ? reject(err) : resolve()));
+  async write(bytes: Uint8Array): Promise<void> {
+    const port = this.port;
+    if (!port?.isOpen) throw new Error('serial port not open');
+    const control = (rts: boolean) => new Promise<void>((resolve, reject) => {
+      if (!port.set) { reject(new Error('RTS control is not supported by this serial driver')); return; }
+      port.set({ rts }, error => error ? reject(error) : resolve());
     });
+    if (this.rtsControl === 'toggle') await control(true);
+    try {
+      await new Promise<void>((resolve, reject) => port.write(Buffer.from(bytes), error => error ? reject(error) : resolve()));
+      if (this.rtsControl === 'toggle') await new Promise<void>((resolve, reject) => {
+        if (!port.drain) { reject(new Error('Serial drain is unavailable')); return; }
+        port.drain(error => error ? reject(error) : resolve());
+      });
+    } finally { if (this.rtsControl === 'toggle') await control(false); }
   }
 
   close(): Promise<void> {

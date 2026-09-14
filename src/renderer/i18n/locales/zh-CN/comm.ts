@@ -1,4 +1,5 @@
 export const comm = {
+  resume: '继续显示',
   // Page headers
   title: '通信诊断',
   subtitle: '实时捕获 Modbus 请求 / 响应、超时与异常帧。',
@@ -15,14 +16,14 @@ export const comm = {
   // Header actions, toolbar and toasts
   health: '连接健康',
   pause: '暂停',
-  pausedToast: '已暂停自动滚动',
+  pausedToast: '已暂停新报文置顶',
   clear: '清空',
   exportLog: '导出日志',
   exportedToast: '日志已复制到剪贴板',
   searchPlaceholder: '搜索地址 / 功能码 / 点位',
-  recent10s: '最近 10 秒 ▾',
+  recent10s: '最近 200 条 ▾',
   onlyErrors: '仅异常',
-  autoScroll: '自动滚动',
+  autoScroll: '新报文置顶',
 
   // Transaction table columns
   colTime: '时间',

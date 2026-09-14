@@ -41,6 +41,9 @@ export function CommScreen() {
   const [search, setSearch] = useState('');
   const [onlyErrors, setOnlyErrors] = useState(false);
   const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
+  const [paused, setPaused] = useState<TransactionRecord[] | null>(null);
+  const slaveFilter = useApp(s => s.commSlaveFilter);
+  const resultFilter = useApp(s => s.commResultFilter);
 
   const connectionId = selection.connectionId ?? workspace?.connections[0]?.id ?? null;
   const connection = workspace?.connections.find((c) => c.id === connectionId);
@@ -48,13 +51,17 @@ export function CommScreen() {
   // Narrow slice: the transactions array keeps its identity between deltas that only
   // carry point values, so this filter (up to 500 records) does not run ten times a second.
   const transactions = useMemo(() => {
-    const list = allTransactions.filter((t) => t.connectionId === connectionId);
+    const list = (paused ?? allTransactions).filter((t) => t.connectionId === connectionId);
     return list
+      .filter(tx => {
+        const slave = workspace?.slaves.find(s => s.connectionId === tx.connectionId && s.unitId === tx.unitId);
+        return (!slave || slaveFilter[slave.id] !== false) && resultFilter[tx.result === 'ok' ? 'ok' : tx.result === 'timeout' ? 'timeout' : 'exception'];
+      })
       .filter((t) => !onlyErrors || t.result !== 'ok')
       .filter((t) => !search || t.summary.includes(search) || String(t.functionCode).includes(search) || t.traceId.includes(search))
       .slice(-200)
       .reverse();
-  }, [allTransactions, connectionId, onlyErrors, search]);
+  }, [allTransactions, paused, connectionId, onlyErrors, search, workspace, slaveFilter, resultFilter]);
 
   const connectionName = connection?.name ?? '';
   // Stable identity is required for DataTable's row memo to bail out on unchanged rows.
@@ -80,7 +87,7 @@ export function CommScreen() {
     );
   }
 
-  const selected = allTransactions.find((t) => t.traceId === selectedTrace) ?? transactions[0];
+  const selected = transactions.find((t) => t.traceId === selectedTrace) ?? transactions[0];
 
   if (selection.commView === 'health') return <HealthView connectionId={connection.id} connectionName={connection.name} />;
   if (selection.commView === 'trace') return <TraceView connectionId={connection.id} />;
@@ -95,8 +102,8 @@ export function CommScreen() {
         actions={
           <>
             <Button onClick={() => select({ commView: 'health' })}>{t('comm.health')}</Button>
-            <Button onClick={() => toast({ kind: 'info', title: t('comm.pausedToast') })}>{t('comm.pause')}</Button>
-            <Button onClick={() => void command({ type: 'diagnostics.clear' })}>{t('comm.clear')}</Button>
+            <Button onClick={() => setPaused(paused ? null : [...allTransactions])}>{paused ? t('comm.resume') : t('comm.pause')}</Button>
+            <Button onClick={async () => { const res = await command({ type: 'diagnostics.clear' }); if (res.ok && paused) setPaused([]); }}>{t('comm.clear')}</Button>
             <Button
               variant="primary"
               onClick={() => {
@@ -301,13 +308,13 @@ function TraceView(props: { connectionId: string }) {
   const traceCols = useMemo<Array<Column<TransactionRecord>>>(
     () => [
       { id: 'time', header: t('comm.colTime'), width: 110, render: (r) => <span className="mono text-xs">{fmtTimeMs(r.startUtc)}</span> },
-      { id: 'conn', header: t('comm.colConnection'), width: 90, render: () => <span className="text-xs">COM3</span> },
+      { id: 'conn', header: t('comm.colConnection'), width: 90, render: () => <span className="text-xs">{workspace?.connections.find(c => c.id === connectionId)?.name ?? connectionId}</span> },
       { id: 'slave', header: t('comm.colSlave'), width: 80, render: (r) => <span className="text-xs">{t('comm.slaveUnit', { id: r.unitId })}</span> },
       { id: 'fc', header: t('comm.colFunctionCode'), width: 80, render: (r) => <span className="text-xs mono">FC{r.functionCode.toString(16).toUpperCase().padStart(2, '0')}</span> },
       { id: 'range', header: t('comm.colRangeValue'), width: 200, render: (r) => <span className="text-xs">{r.summary}</span> },
       { id: 'result', header: t('comm.colResult'), width: 90, render: (r) => <span className={`text-xs ${RESULT_COLOR[r.result]}`}>{resultLabel(r.result)}</span> },
     ],
-    [resultLabel, t],
+    [resultLabel, t, workspace, connectionId],
   );
   const handleTraceClick = useCallback((r: TransactionRecord) => setSelectedTrace(r.traceId), []);
   return (
@@ -332,7 +339,7 @@ function TraceView(props: { connectionId: string }) {
             <div className="text-sm mb-3">{workspace?.templates.flatMap((t) => t.blocks).find((b) => b.id === selected.sourceId)?.name ?? selected.sourceId ?? '—'}</div>
             <div className="text-xs text-ink2 mb-1">{t('comm.relatedPoints')}</div>
             <div className="text-sm mb-3">{pointIndexName(selected.sourceId) ? `${pointIndexName(selected.sourceId)}` : selected.sourceKind === 'poll' ? t('comm.pointCount', { points: workspace?.templates.flatMap((tpl) => tpl.points).filter((p) => p.blockId === selected.sourceId).length ?? 0 }) : '—'}</div>
-            <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => { select({ realtimeScope: 'block', blockId: selected.sourceId }); setModule('realtime'); }}>{t('comm.openRealtime')}</button>
+            <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => { const slave = workspace?.slaves.find(s => s.connectionId === connectionId && s.unitId === selected.unitId); const point = workspace?.templates.flatMap(t => t.points).find(p => p.id === selected.sourceId); const blockId = point?.blockId ?? selected.sourceId; select({ connectionId, slaveId: slave?.id ?? null, realtimeScope: blockId ? 'block' : 'device', blockId }); setModule('realtime'); }}>{t('comm.openRealtime')}</button>
           </div>
           <div className="rounded-card border border-line bg-surface p-5">
             <div className="text-sm font-bold mb-3">{t('comm.rawFrame')}</div>

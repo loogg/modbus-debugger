@@ -519,3 +519,38 @@ describe('configured request timeout', () => {
     await runtime.stop();
   });
 });
+
+
+describe('configured connection scheduling', () => {
+  it('manual reconnect stays offline after a transport drop until explicit start', async () => {
+    const { runtime, transport } = setup({ ...conn, reconnect: 'manual' });
+    await runtime.start(); transport.drop();
+    await new Promise(resolve => setTimeout(resolve, 650));
+    expect(transport.connected).toBe(false);
+    await runtime.start(); expect(transport.connected).toBe(true);
+    await runtime.stop();
+  });
+  it('enforces inter-frame delay between completed requests', async () => {
+    const { runtime, transport } = setup({ ...conn, interFrameMs: 60 });
+    const at: number[] = [];
+    transport.onResponse(adu => { at.push(performance.now()); return [respRegs([1], tidOf(adu))]; });
+    await runtime.start();
+    try {
+      await runtime.executeRequest(1, { kind: 'read', fc: 3, address: 0, quantity: 1 }, { sourceKind: 'temporary-read', sourceId: null });
+      await runtime.executeRequest(1, { kind: 'read', fc: 3, address: 0, quantity: 1 }, { sourceKind: 'temporary-read', sourceId: null });
+      expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(55);
+    } finally { await runtime.stop(); }
+  });
+});
+
+
+it('shortening a block period reschedules it without waiting for the old long period', async () => {
+  const { runtime, transport } = setup();
+  transport.onResponse(adu => [respRegs([1,2,3,4], tidOf(adu))]);
+  runtime.configure([{ slave, block: { ...block, periodMs: 60000 } }]);
+  await runtime.start();
+  try {
+    runtime.configure([{ slave, block: { ...block, periodMs: 25 } }]);
+    await waitFor(() => transport.sent.length > 0, 500);
+  } finally { await runtime.stop(); }
+});

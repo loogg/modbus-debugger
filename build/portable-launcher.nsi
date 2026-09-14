@@ -32,6 +32,20 @@ Section
   ExecWait '"$AppDirectory\modbus-debugger.exe" --portable-dir="$EXEDIR" $0' $1
   SetOutPath "$EXEDIR"
   ; RunDirectory is exclusively this invocation's GetTempFileName path, never the user's data tree.
+  ; GPU/utility processes and scanners may briefly keep extracted files open after the main process exits.
+  StrCpy $2 0
+cleanup:
+  ClearErrors
   RMDir /r "$RunDirectory"
+  IfFileExists "$RunDirectory\*.*" 0 cleaned
+  IntOp $2 $2 + 1
+  IntCmp $2 40 cleanupFailed 0 cleanupFailed
+  Sleep 250
+  Goto cleanup
+cleanupFailed:
+  ; Do not silently claim successful cleanup; preserve the directory for diagnosis.
+  SetErrorLevel 2
+  Quit
+cleaned:
   SetErrorLevel $1
 SectionEnd

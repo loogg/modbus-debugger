@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp, useSessions, useSnapshotReady } from '../store/app';
-import { Button, InfoBand, PageHeader, StatusDot, Tabs } from '../components/ui';
+import { Button, InfoBand, PageHeader, StatusDot, Tabs, TextInput } from '../components/ui';
 import { NumericChart, type LineSeries } from '../components/chart';
 import { StateTrack } from '../components/state-track';
 import { fmtDateTime, fmtEpochDateTime } from '../time';
@@ -40,7 +40,7 @@ const COLORS = ['#0078D4', '#D97706', '#178A4D', '#7A5AF8', '#C42B1C', '#0E7C86'
 export function HistoryScreen() {
   const { t } = useTranslation();
   const kindLabel = (kind: string): string =>
-    kind === 'write' ? t('history.kindWrite') : kind === 'bool' ? 'Bool' : kind === 'enum' ? 'Enum' : kind === 'string' ? 'String' : kind === 'connection' ? t('history.kindConnection') : kind;
+    kind === 'marker' ? '备注' : kind === 'write' ? t('history.kindWrite') : kind === 'bool' ? 'Bool' : kind === 'enum' ? 'Enum' : kind === 'string' ? 'String' : kind === 'connection' ? t('history.kindConnection') : kind;
   const sessions = useSessions();
   const ready = useSnapshotReady();
   const selection = useApp((s) => s.selection);
@@ -52,12 +52,14 @@ export function HistoryScreen() {
   const [cursorMs, setCursorMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [note, setNote] = useState<string | null>(null);
 
   const session = sessions.find((s) => s.id === selection.sessionId) ?? sessions[0];
 
   const sessionId = session?.id ?? null;
   useEffect(() => {
     let cancelled = false;
+    setNote(null); setPlaying(false); setReplay(false); setCursorMs(0);
     if (!sessionId) {
       setData(null);
       return;
@@ -93,7 +95,8 @@ export function HistoryScreen() {
     return data.detail.schema
       .filter((s) => s.recordMode === 'samples')
       .map((s, i) => ({
-        name: s.pointName,
+        name: data.detail.schema.filter(other => other.pointName === s.pointName).length > 1 ? `${s.pointName} · ${s.connectionName} / ${s.slaveName}` : s.pointName,
+        unit: s.unit,
         color: COLORS[i % COLORS.length] ?? '#0078D4',
         data: data.samples.filter((x) => x.signalId === s.signalId).map((x) => [x.tMs, x.value] as [number, number]),
       }));
@@ -112,11 +115,12 @@ export function HistoryScreen() {
   const schema = data.detail.schema;
   const startMs = new Date(data.detail.startUtc).getTime();
 
-  const exportCsv = () => {
+  const exportCsv = async () => {
+    const cell = (value: unknown) => `"${String(value).replaceAll('"', '""')}"`;
     const lines: string[] = ['signal,t_ms,value'];
-    for (const s of data.samples) lines.push(`${s.signalId},${s.tMs},${s.value}`);
-    for (const e of data.events) lines.push(`${e.signalId},${e.tMs},"${e.value}"`);
-    void navigator.clipboard.writeText(lines.join('\n'));
+    for (const s of data.samples) lines.push(`${cell(s.signalId)},${s.tMs},${cell(s.value)}`);
+    for (const e of data.events) lines.push(`${cell(e.signalId)},${e.tMs},${cell(e.value)}`);
+    await navigator.clipboard.writeText(lines.join('\n'));
     toast({ kind: 'success', title: t('history.csvToast') });
   };
 
@@ -197,7 +201,7 @@ export function HistoryScreen() {
     { id: 't', header: t('history.colTime'), width: 100, render: (r) => <span className="mono text-xs text-ink2">{fmt(r.tMs)}</span> },
     { id: 'kind', header: t('history.colType'), width: 80, render: (r) => <span className={`text-xs ${kindColor(r.kind)}`}>{kindLabel(r.kind)}</span> },
     { id: 'value', header: t('history.colContent'), width: 420, render: (r) => <span className="text-sm">{r.value}</span> },
-    { id: 'result', header: t('history.colResult'), width: 100, render: (r) => (r.kind === 'write' ? <span className="text-xs text-ok">{t('history.writeOk')}</span> : null) },
+    { id: 'result', header: t('history.colResult'), width: 100, render: (r) => (r.kind === 'write' ? <span className="text-xs text-ink2">—</span> : null) },
   ];
 
   const sampleRows = data.samples.slice(0, 500);
@@ -216,11 +220,20 @@ export function HistoryScreen() {
         actions={
           <>
             <Button variant="quiet" onClick={() => { setReplay(true); setCursorMs(0); }}>{t('history.replay')}</Button>
-            <Button onClick={() => toast({ kind: 'info', title: t('history.noteToast') })}>{t('history.addNote')}</Button>
+            <Button onClick={() => setNote('')}>{t('history.addNote')}</Button>
             <Button variant="primary" onClick={exportCsv}>{t('history.exportCsv')}</Button>
           </>
         }
       />
+      {note !== null && <div className="my-4 flex gap-3" data-testid="history-note">
+        <TextInput aria-label="备注内容" maxLength={2000} value={note} onChange={e => setNote(e.target.value)} placeholder="会话备注（记录在起点）" />
+        <Button disabled={!note.trim()} onClick={async () => {
+          if (!(await command({ type: 'history.addNote', sessionId: data.detail.id, text: note, tMs: 0 })).ok) return;
+          const res = await command<SessionData>({ type: 'history.sessionData', sessionId: data.detail.id });
+          if (res.ok) { setData(res.value); setNote(null); select({ historyTab: 'events' }); }
+        }}>保存备注</Button>
+        <Button onClick={() => setNote(null)}>取消</Button>
+      </div>}
       <Tabs
         tabs={[{ id: 'trend', label: t('history.tabTrend') }, { id: 'events', label: t('history.tabEvents') }, { id: 'data', label: t('history.tabData') }, { id: 'signals', label: t('history.tabSignals') }]}
         active={selection.historyTab}
@@ -275,7 +288,7 @@ export function HistoryScreen() {
                 />
               );
             })}
-          {data.events.filter((e) => e.kind === 'write' || e.kind === 'connection').map((e, i) => (
+          {data.events.filter((e) => e.kind === 'write' || e.kind === 'connection' || e.kind === 'marker').map((e, i) => (
             <div key={i} className="flex gap-4 text-xs">
               <span className="mono text-ink2">{fmt(e.tMs)}</span>
               <span className={kindColor(e.kind)}>{kindLabel(e.kind)}</span>

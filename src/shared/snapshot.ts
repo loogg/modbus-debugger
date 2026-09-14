@@ -7,6 +7,8 @@ import type { ScanOptions } from './scan-options';
 export type BlockStatusView = 'idle' | 'ok' | 'timeout' | 'exception' | 'transport-error' | 'disabled';
 
 export interface BlockViewState {
+  registers?: number[];
+  bits?: boolean[];
   key: string;
   slaveId: string;
   blockId: string;
@@ -23,6 +25,7 @@ export interface BlockViewState {
 }
 
 export interface PointViewState {
+  slaveId?: string;
   pointId: string;
   /** decoded raw rendered for engineering columns / inspector */
   rawText: string;

@@ -149,7 +149,9 @@ export class TcpStreamingFramer implements Framer {
       if (headerBad || total > TCP_MAX_ADU) {
         // Controlled resync: find the next plausible MBAP start instead of clearing everything.
         const next = this.findMbapStart(1);
-        const raw = this.buf.slice(0, next === -1 ? this.buf.length : next);
+        // Keep a possible split MBAP header; a bad frame may be followed by only a prefix.
+        const discard = next === -1 ? Math.max(1, this.buf.length - MBAP_LENGTH - 1) : next;
+        const raw = this.buf.slice(0, discard);
         const recovered: Uint8Array[] = [];
         events.push({
           type: 'parse-error',
@@ -161,7 +163,7 @@ export class TcpStreamingFramer implements Framer {
           discarded: raw.length,
           recovered,
         });
-        this.buf = next === -1 ? new Uint8Array(0) : this.buf.slice(next);
+        this.buf = this.buf.slice(discard);
         if (this.buf.length) this.candidateStart = at;
         continue;
       }
@@ -185,7 +187,7 @@ export class TcpStreamingFramer implements Framer {
       const len = ((this.buf[o + 4] as number) << 8) | (this.buf[o + 5] as number);
       const total = MBAP_LENGTH + len;
       if (proto !== 0 || !mbapLengthValid(len) || total > TCP_MAX_ADU) continue;
-      if (o + total > this.buf.length) continue;
+      // A plausible header with a known function may be a partial following frame.
       if (!KNOWN_FC.has(this.buf[o + 7] as number)) continue;
       return o;
     }
@@ -265,6 +267,14 @@ export class RtuStreamingFramer implements Framer {
         continue;
       }
       const expected = this.hooks.expectedAduLength?.() ?? null;
+      // An exception is a complete five-byte ADU, even when the current read expects many registers.
+      // Check it before normal expected-length framing, including exception + normal sticky input.
+      if (this.buf.length >= 5 && KNOWN_FC.has(this.buf[1] as number) && ((this.buf[1] as number) & 0x80) && checkCrc(this.buf.subarray(0, 5))) {
+        events.push({ type: 'adu', bytes: this.buf.slice(0, 5) });
+        this.buf = this.buf.slice(5);
+        if (this.buf.length) this.candidateStart = at;
+        continue;
+      }
       if (expected !== null && this.buf.length >= expected) {
         const cand = this.buf.slice(0, expected);
         this.buf = this.buf.slice(expected);

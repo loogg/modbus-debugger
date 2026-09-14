@@ -26,26 +26,14 @@ export interface PlcReference {
  */
 export function parsePlcReference(input: string | number): PlcReference | null {
   const text = String(input).trim();
-  const m = /^(\d+)$/.exec(text);
-  if (!m) return null;
-  const n = Number(m[1]);
-  const table: Array<[number, number, AreaCode]> = [
-    [400001, 400001, 3],
-    [300001, 300001, 4],
-    [40001, 499999, 3],
-    [30001, 399999, 4],
-    [10001, 19999, 2],
-    [1, 9999, 1],
-  ];
-  if (n >= 400001 && n <= 465536) return { area: 3, address: n - 400001 };
-  if (n >= 300001 && n <= 365536) return { area: 4, address: n - 300001 };
-  for (const [lo, hi, area] of table) {
-    if (n >= lo && n <= hi) {
-      const base = area === 3 ? 40001 : area === 4 ? 30001 : area === 2 ? 10001 : 1;
-      return { area, address: n - base };
-    }
-  }
-  return null;
+  // Bare protocol addresses such as 1 or 100 must not become Coil references.
+  // PLC notation is explicitly five/six digits, including the leading zero for Coils.
+  const match = /^([0134])(\d{4,5})$/.exec(text);
+  if (!match) return null;
+  const ordinal = Number(match[2]);
+  if (ordinal < 1 || ordinal > 65536) return null;
+  const area = ({ '0': 1, '1': 2, '3': 4, '4': 3 } as const)[match[1] as '0' | '1' | '3' | '4'];
+  return { area, address: ordinal - 1 };
 }
 
 export function toPlcReference(area: AreaCode, address: number): number {

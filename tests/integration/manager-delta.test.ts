@@ -108,7 +108,7 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
   it('caches the point index against the workspace revision and invalidates it on edit', async () => {
     const { svc, mgr, history } = await harness();
     const first = mgr.pointIndex();
-    expect([...first.keys()].sort()).toEqual(['p1', 'p2']);
+    expect([...first.keys()].sort()).toEqual(['s1::p1', 's1::p2']);
     // Same workspace object => identical Map instance (this ran on every 100 ms tick before).
     expect(mgr.pointIndex()).toBe(first);
 
@@ -118,7 +118,7 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
     }));
     const second = mgr.pointIndex();
     expect(second).not.toBe(first);
-    expect([...second.keys()].sort()).toEqual(['p1', 'p2', 'p3']);
+    expect([...second.keys()].sort()).toEqual(['s1::p1', 's1::p2', 's1::p3']);
     expect(mgr.pointIndex()).toBe(second);
     await mgr.stop();
     history.close();
@@ -280,4 +280,72 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
     await mgr.stop();
     history.close();
   });
+});
+
+
+describe('same template bound to multiple slaves', () => {
+  it('keeps confirmed values, write targets and recording samples isolated by slave', async () => {
+    const { svc, history, mgr } = await harness();
+    const values = new Map([[1, 111], [2, 222]]);
+    const fake = new FakeTransport('tcp');
+    fake.onResponse(adu => {
+      const unit = adu[6]!; const fc = adu[7]!;
+      if (fc === 6) { values.set(unit, (adu[10]! << 8) | adu[11]!); return [adu.slice()]; }
+      if (fc !== 3) return null;
+      const count = (adu[10]! << 8) | adu[11]!;
+      const reply = Buffer.alloc(9 + count * 2);
+      reply[0] = adu[0]!; reply[1] = adu[1]!; reply.writeUInt16BE(3 + count * 2, 4);
+      reply[6] = unit; reply[7] = 3; reply[8] = count * 2;
+      for (let i = 0; i < count; i++) reply.writeUInt16BE(values.get(unit)!, 9 + i * 2);
+      return [reply];
+    });
+    // This harness manager has not started; the new manager owns the same open store.
+    void mgr;
+    const ws = demoWorkspace();
+    ws.slaves.push({ ...slave, id: 's2', unitId: 2 });
+    ws.trendGroups.push({ id: 'g', name: 'isolated', description: '', windowSec: 60, signals: ws.slaves.map(s => ({ id: `sig-${s.id}`, pointRef: { connectionId: 'c1', slaveId: s.id, pointId: 'p1' }, visible: true })) });
+    svc.adopt(ws, null);
+    const runtime = new RuntimeManager(svc, history, { transportFactory: () => fake });
+    runtime.start();
+    try {
+      await sleep(250);
+      let snap = runtime.buildSnapshot();
+      expect(snap.points['s1::p1']?.engNumber).toBe(111);
+      expect(snap.points['s2::p1']?.engNumber).toBe(222);
+      expect((await runtime.handleCommand({ type: 'point.write', slaveId: 's1', pointId: 'p1', engineering: 999, boolValue: null, stringValue: null })).ok).toBe(true);
+      await sleep(200);
+      snap = runtime.buildSnapshot();
+      expect(snap.points['s1::p1']?.engNumber).toBe(999);
+      expect(snap.points['s2::p1']?.engNumber).toBe(222);
+      expect(snap.blocks['s1::b1']?.registers?.[0]).toBe(999);
+      expect(snap.transactions.some(tx => tx.result === 'ok' && tx.responseAduHex)).toBe(true);
+      expect(runtime.startRecording('g').ok).toBe(true);
+      await sleep(350);
+      runtime.stopRecording();
+      const session = history.listSessions()[0]!;
+      const samples = history.readSamples(session.id);
+      expect(samples.filter(s => s.signalId === 'sig-s1').map(s => s.value)).not.toHaveLength(0);
+      expect(new Set(samples.filter(s => s.signalId === 'sig-s1').map(s => s.value))).toEqual(new Set([999]));
+      expect(new Set(samples.filter(s => s.signalId === 'sig-s2').map(s => s.value))).toEqual(new Set([222]));
+      expect((await runtime.handleCommand({ type: 'history.addNote', sessionId: session.id, tMs: 0, text: 'quoted "note", line' })).ok).toBe(true);
+      expect(history.readEvents(session.id).at(-1)?.value).toBe('quoted "note", line');
+    } finally { await runtime.stop(); history.close(); }
+  });
+  it('a first-read timeout does not fabricate a confirmed zero', async () => {
+    const { mgr, history } = await harness(); mgr.start();
+    try { await sleep(200); expect(mgr.buildSnapshot().points['s1::p1']?.hasValue).toBe(false); }
+    finally { await mgr.stop(); history.close(); }
+  });
+});
+
+
+it('repeated snapshot reads cannot steal pending cache or transaction deltas', async () => {
+  const { mgr, history, deltas } = await harness();
+  mgr.buildSnapshot(); mgr.start();
+  try {
+    mgr.diagnostics.recordTransaction(txOf(999));
+    mgr.buildSnapshot();
+    await sleep(150);
+    expect(deltas.flatMap(d => d.transactions ?? []).some(tx => tx.traceId === 'pre999')).toBe(true);
+  } finally { await mgr.stop(); history.close(); }
 });

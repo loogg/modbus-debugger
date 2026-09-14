@@ -4,6 +4,7 @@ import path from 'node:path';
 import initSqlJs, { type Database } from 'sql.js';
 
 export interface SessionSignalSchema {
+  slaveId?: string;
   signalId: string;
   pointId: string;
   pointName: string;
@@ -19,6 +20,7 @@ export interface SessionSignalSchema {
 }
 
 export interface SessionSummary {
+  slaveNames?: string[];
   id: string;
   groupId: string;
   groupName: string;
@@ -216,6 +218,7 @@ export class HistoryStore {
       startUtc: r.start_utc as string,
       endUtc: (r.end_utc as string | null) ?? null,
       status: r.status as 'recording' | 'completed',
+      slaveNames: [...new Set((JSON.parse(r.schema_json as string) as SessionSignalSchema[]).map(s => s.slaveName))],
       signalCount: (JSON.parse(r.schema_json as string) as SessionSignalSchema[]).length,
       sampleCount: r.sample_count as number,
       eventCount: r.event_count as number,
@@ -265,4 +268,3 @@ export class HistoryStore {
     }));
   }
 }
-

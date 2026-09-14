@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import { templateSchema, workspaceSchema } from '../../domain/model';
+import { copyTemplate } from '../../domain/template-copy';
 import { BlockCache, blockKey } from './block-cache';
 import { ConnectionRuntime, type ConnectionState } from './connection-runtime';
 import { DiagnosticsStore, type ConnectionHealth } from './diagnostics';
@@ -10,6 +13,7 @@ import type { BlockDef, ConnectionDef, DeviceTemplate, PointDef, SlaveDef } from
 import { decodeRaw, type DecodedRaw } from '../../domain/mapping';
 import { engineeringToRaw, toEngineering } from '../../domain/scale';
 import { systemClock, type Clock } from '../../domain/protocol';
+import { pointKey } from '../../shared/point-key';
 
 export interface PointRef {
   slave: SlaveDef;
@@ -23,7 +27,7 @@ export type TransportFactory = (config: ConnectionDef) => Transport;
 
 export function defaultTransportFactory(config: ConnectionDef): Transport {
   if (config.transport === 'tcp' && config.tcp) return new TcpTransport(config.tcp);
-  if (config.transport === 'rtu' && config.rtu) return new SerialTransport(config.rtu);
+  if (config.transport === 'rtu' && config.rtu) return new SerialTransport(config.rtu, undefined, config.rtsControl);
   throw new Error(`connection ${config.name} has no transport settings`);
 }
 
@@ -101,8 +105,13 @@ export class RuntimeManager {
 
   workspaceChanged(): void {
     this.workspaceRev++;
+    this.sentCacheRev.clear();
     this.rebuildRuntimes();
     this.workspaceService.scheduleAutosave();
+    // Publish authoritative edits before the command resolves, so immediate follow-up actions use the new workspace.
+    this.revision++;
+    const delta = this.collectDelta();
+    if (delta) this.onDelta?.(delta);
   }
 
   private rebuildRuntimes(): void {
@@ -156,6 +165,8 @@ export class RuntimeManager {
         });
       rt.configure(targets);
     }
+    const validKeys = new Set(ws.slaves.flatMap(slave => (ws.templates.find(t => t.id === slave.templateId)?.blocks ?? []).map(block => blockKey(slave.id, block.id))));
+    for (const entry of this.cache.all()) if (!validKeys.has(entry.key)) this.cache.remove(entry.slaveId, entry.block.id);
   }
 
   runtimeFor(connectionId: string): ConnectionRuntime | undefined {
@@ -189,7 +200,7 @@ export class RuntimeManager {
       }
       for (const block of template.blocks) {
         for (const point of byBlock.get(block.id) ?? []) {
-          map.set(point.id, { slave, block, point, template, connection });
+          map.set(pointKey(slave.id, point.id), { slave, block, point, template, connection });
         }
       }
     }
@@ -202,6 +213,7 @@ export class RuntimeManager {
     const entry = this.cache.get(key);
     const base: PointViewState = {
       pointId: ref.point.id,
+      slaveId: ref.slave.id,
       rawText: '—',
       engText: '—',
       finite: true,
@@ -212,7 +224,7 @@ export class RuntimeManager {
       enumLabel: null,
       hasValue: false,
     };
-    if (!entry || entry.status === 'idle' || entry.status === 'disabled') return base;
+    if (!entry || !entry.lastUpdateUtc || entry.status === 'idle' || entry.status === 'disabled') return base;
     let raw: DecodedRaw | null = null;
     try {
       raw = decodeRaw(entry.memory, ref.point.mapping);
@@ -265,6 +277,8 @@ export class RuntimeManager {
     return {
       key,
       slaveId: entry.slaveId,
+      registers: entry.lastUpdateUtc && entry.memory.kind === 'registers' ? Array.from(entry.memory.registers) : undefined,
+      bits: entry.lastUpdateUtc && entry.memory.kind === 'bits' ? [...entry.memory.bits] : undefined,
       blockId: entry.block.id,
       blockName: entry.block.name,
       area: entry.block.area,
@@ -296,6 +310,8 @@ export class RuntimeManager {
 
   /* ---------------- snapshot / delta ---------------- */
 
+  private snapshotPrimed = false;
+
   buildSnapshot(): AppSnapshot {
     const ws = this.workspaceService.current;
     const index = this.pointIndex();
@@ -310,9 +326,11 @@ export class RuntimeManager {
     for (const conn of ws.connections) health[conn.id] = this.healthFor(conn.id);
     // The snapshot already carries the tail of both rings, so align the delta cursors:
     // the next tick must only stream records the renderer does not have yet.
-    this.sentTxTotal = this.diagnostics.transactionTotal;
-    this.sentEventTotal = this.diagnostics.parseEventTotal;
-    for (const entry of this.cache.all()) this.sentCacheRev.set(entry.key, entry.revision);
+    if (!this.snapshotPrimed) {
+      this.sentTxTotal = this.diagnostics.transactionTotal;
+      this.sentEventTotal = this.diagnostics.parseEventTotal;
+      for (const entry of this.cache.all()) this.sentCacheRev.set(entry.key, entry.revision);
+    }
     const snapshot: AppSnapshot = {
       revision: this.revision,
       workspace: ws,
@@ -332,8 +350,11 @@ export class RuntimeManager {
       historyDbPath: this.history.dbPath,
     };
     // Align the prefs/dirty trackers with the snapshot so the first tick does not re-emit them.
-    this.sentPrefsRev = this.workspaceService.prefsRevision;
-    this.sentDirty = snapshot.dirty;
+    if (!this.snapshotPrimed) {
+      this.sentPrefsRev = this.workspaceService.prefsRevision;
+      this.sentDirty = snapshot.dirty;
+      this.snapshotPrimed = true;
+    }
     return snapshot;
   }
 
@@ -556,11 +577,12 @@ export class RuntimeManager {
     if (!group) return { ok: false, error: '趋势组不存在' };
     const index = this.pointIndex();
     const schema: SessionSignalSchema[] = group.signals.map((sig) => {
-      const ref = index.get(sig.pointRef.pointId);
+      const ref = index.get(pointKey(sig.pointRef.slaveId, sig.pointRef.pointId));
       const numeric = ref ? !['Bool', 'String'].includes(ref.point.mapping.rawType) && Object.keys(ref.point.enumMap).length === 0 : true;
       return {
         signalId: sig.id,
         pointId: sig.pointRef.pointId,
+        slaveId: sig.pointRef.slaveId,
         pointName: ref?.point.name ?? sig.pointRef.pointId,
         connectionName: ref?.connection.name ?? '',
         slaveName: ref?.slave.name ?? '',
@@ -607,7 +629,7 @@ export class RuntimeManager {
     const index = this.pointIndex();
     const tMs = Math.round(this.clock.now() - rec.startedMono);
     for (const sig of rec.schema) {
-      const ref = index.get(sig.pointId);
+      const ref = index.get(pointKey(sig.slaveId, sig.pointId));
       if (!ref) continue;
       const view = this.pointView(ref);
       if (!view.hasValue) continue;
@@ -662,6 +684,23 @@ export class RuntimeManager {
   async handleCommand(cmd: Command): Promise<CommandResult> {
     const wsSvc = this.workspaceService;
     switch (cmd.type) {
+      case 'template.importFile': {
+        try {
+          const parsed = templateSchema.parse(JSON.parse(fs.readFileSync(cmd.path, 'utf8')));
+          const template = copyTemplate(parsed, `tpl-${Date.now().toString(36)}`, parsed.name);
+          wsSvc.set(workspaceSchema.parse({ ...wsSvc.current, templates: [...wsSvc.current.templates, template] }));
+          this.workspaceChanged();
+          return { ok: true, value: template.id };
+        } catch (error) { return { ok: false, error: String(error) }; }
+      }
+      case 'history.addNote': {
+        const session = this.history.getSession(cmd.sessionId);
+        if (!session) return { ok: false, error: 'session not found' };
+        const duration = Math.max(0, new Date(session.endUtc ?? new Date().toISOString()).getTime() - new Date(session.startUtc).getTime());
+        if (cmd.tMs > duration) return { ok: false, error: 'Note is outside the session' };
+        this.history.insertEvents(cmd.sessionId, [{ signalId: '', tMs: cmd.tMs, kind: 'marker', value: cmd.text }]);
+        return { ok: true, value: null };
+      }
       case 'workspace.new':
         wsSvc.newWorkspace();
         this.workspaceChanged();
@@ -731,6 +770,13 @@ export class RuntimeManager {
         rt.stopScan();
         return { ok: true, value: null };
       }
+      case 'device.refresh': {
+        const slave = wsSvc.current.slaves.find(s => s.id === cmd.slaveId);
+        const rt = slave ? this.runtimes.get(slave.connectionId) : undefined;
+        if (!rt) return { ok: false, error: 'connection runtime missing' };
+        await rt.refresh(cmd.slaveId, cmd.blockId);
+        return { ok: true, value: null };
+      }
       case 'trend.startRecording':
         return this.startRecording(cmd.groupId);
       case 'trend.stopRecording':
@@ -772,7 +818,7 @@ export class RuntimeManager {
 
   private async writePoint(cmd: Extract<Command, { type: 'point.write' }>): Promise<CommandResult> {
     const index = this.pointIndex();
-    const ref = index.get(cmd.pointId);
+    const ref = index.get(pointKey(cmd.slaveId, cmd.pointId));
     if (!ref) return { ok: false, error: '点位不存在' };
     const rt = this.runtimes.get(ref.connection.id);
     if (!rt || rt.state !== 'online') return { ok: false, error: '连接不在线' };
@@ -803,7 +849,7 @@ export class RuntimeManager {
       pointId: ref.point.id,
       readBackRange: { start: ref.block.start, length: ref.block.length },
     });
-    this.recordWriteEvent(`${ref.point.name} ← ${cmd.boolValue !== null ? cmd.boolValue : cmd.stringValue ?? cmd.engineering}`);
+    this.recordWriteEvent(`${ref.slave.name} / ${ref.point.name} ← ${cmd.boolValue !== null ? cmd.boolValue : cmd.stringValue ?? cmd.engineering} · ${outcome.result}${outcome.exceptionCode === null ? '' : ` (0x${outcome.exceptionCode.toString(16)})`}`);
     this.healthDirty = true;
     if (outcome.result === 'ok') return { ok: true, value: { result: 'ok' } };
     if (outcome.result === 'exception') return { ok: true, value: { result: 'exception', exceptionCode: outcome.exceptionCode } };

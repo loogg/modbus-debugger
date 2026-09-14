@@ -107,10 +107,13 @@ describe('Block overlap / point overlap', () => {
 
 describe('PLC reference conversion (import layer only)', () => {
   it('40001 -> Holding 0', () => {
+    expect(parsePlcReference('100')).toBeNull();
+    expect(parsePlcReference('1')).toBeNull();
+    expect(parsePlcReference('100001')).toEqual({ area: 2, address: 0 });
     expect(parsePlcReference('40001')).toEqual({ area: 3, address: 0 });
     expect(parsePlcReference(30001)).toEqual({ area: 4, address: 0 });
     expect(parsePlcReference(10001)).toEqual({ area: 2, address: 0 });
-    expect(parsePlcReference(1)).toEqual({ area: 1, address: 0 });
+    expect(parsePlcReference('00001')).toEqual({ area: 1, address: 0 });
     expect(toPlcReference(3, 5)).toBe(40006);
   });
 });

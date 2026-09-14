@@ -11,6 +11,7 @@ process.env.MODBUS_DATA_DIR = testRunDir;
 const legacyPreferences = snapshotLegacyPreferences();
 
 let sim: ChildProcess | null = null;
+let rtuSim: ChildProcess | null = null;
 let workspaceCopyDir: string | null = null;
 const SIM_PORT = 50520;
 const FIXTURE = path.resolve('tools', 'e2e', 'demo.workspace.json');
@@ -62,9 +63,10 @@ function seedPrefs(workspacePath: string): void {
 
 export const config = {
   runner: 'local',
+  logLevel: 'warn',
   specs: ['./tests/e2e/**/*.e2e.ts'],
   maxInstances: 1,
-  specFileRetries: 1,
+  specFileRetries: 0,
   specFileRetryInterval: 3,
   capabilities: [
     {
@@ -89,9 +91,22 @@ export const config = {
     process.env.MODBUS_E2E_WORKSPACE = staged;
     sim = spawn('python', [path.resolve('tools', 'simulator', 'modbus_sim.py'), '--port', String(SIM_PORT)], { stdio: 'ignore' });
     await waitForPort(SIM_PORT);
+    if (process.env.MODBUS_RTU_SLAVE_PORT) {
+      rtuSim = spawn('python', [path.resolve('tools/simulator/modbus_sim.py'), '--transport', 'rtu', '--serial-port', process.env.MODBUS_RTU_SLAVE_PORT], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = rtuSim;
+      await new Promise<void>((resolve, reject) => {
+        let output = '';
+        const timer = setTimeout(() => { child.kill(); reject(new Error(output || 'RTU simulator start timeout')); }, 15000);
+        child.stdout!.on('data', chunk => { output += String(chunk); if (output.includes('"event": "ready"')) { clearTimeout(timer); resolve(); } });
+        child.stderr!.on('data', chunk => { output += String(chunk); });
+        child.once('exit', code => { clearTimeout(timer); reject(new Error(`RTU exited ${code}: ${output}`)); });
+        child.once('error', err => { clearTimeout(timer); reject(err); });
+      });
+    }
   },
   onComplete: () => {
     sim?.kill();
+    rtuSim?.kill();
     assertLegacyPreferencesUnchanged(legacyPreferences);
     if (workspaceCopyDir) removeScratch(workspaceCopyDir);
   },

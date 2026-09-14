@@ -5,12 +5,14 @@ import { NumericChart, type LineSeries } from '../components/chart';
 import { StateTrack } from '../components/state-track';
 import { DataTable, type Column } from '../components/table';
 import { useTranslation } from '../i18n';
+import { pointKey } from '../../shared/point-key';
 
 const SERIES_COLORS = ['#0078D4', '#D97706', '#178A4D', '#7A5AF8', '#C42B1C', '#0E7C86'];
 
 interface SignalRow {
   signalId: string;
   pointId: string;
+  instanceKey: string;
   name: string;
   source: string;
   type: string;
@@ -27,11 +29,12 @@ export function TrendScreen() {
   const openOverlay = useApp((s) => s.openOverlay);
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
-  const [windowSec, setWindowSec] = useState(60);
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
+  const [frozenEnd, setFrozenEnd] = useState<number | null>(null);
 
   const group = workspace?.trendGroups.find((g) => g.id === selection.groupId) ?? workspace?.trendGroups[0];
+  const windowSec = group?.windowSec ?? 60;
   const recording = useRecording();
   const isRecordingThis = recording?.groupId === group?.id;
 
@@ -45,6 +48,7 @@ export function TrendScreen() {
       return {
         signalId: sig.id,
         pointId: sig.pointRef.pointId,
+        instanceKey: pointKey(sig.pointRef.slaveId, sig.pointRef.pointId),
         name: point?.name ?? sig.pointRef.pointId,
         source: `${conn?.name ?? ''} / ${slave ? t('trend.slaveUnit', { id: slave.unitId }) : ''} / ${block?.name ?? ''}`,
         type: point?.mapping.rawType ?? '—',
@@ -64,26 +68,27 @@ export function TrendScreen() {
   }
 
   const now = Date.now();
-  const end = follow && !paused ? now : now;
+  const end = follow && !paused ? now : frozenEnd ?? now;
   const start = end - windowSec * 1000;
 
   const series: LineSeries[] = rows
-    .filter((r) => r.visible && live[r.pointId]?.samples.length)
+    .filter((r) => r.visible && live[r.instanceKey]?.samples.length)
     .map((r, i) => ({
-      name: r.name,
+      name: rows.filter(other => other.name === r.name).length > 1 ? `${r.name} · ${r.source}` : r.name,
+      unit: workspace.templates.flatMap(t => t.points).find(p => p.id === r.pointId)?.unit ?? '',
       color: SERIES_COLORS[i % SERIES_COLORS.length] ?? '#0078D4',
-      data: (live[r.pointId]?.samples ?? []).filter(([t]) => t >= start) as Array<[number, number]>,
+      data: (live[r.instanceKey]?.samples ?? []).filter(([t]) => t >= start && t <= end) as Array<[number, number]>,
     }));
 
   const discrete = rows.filter((r) => {
-    const buf = live[r.pointId];
+    const buf = live[r.instanceKey];
     const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
     return buf && point && (point.mapping.rawType === 'Bool' || point.mapping.rawType === 'String' || Object.keys(point.enumMap).length > 0);
   });
 
   const toggleRecord = async () => {
-    if (recording) {
-      await command({ type: 'trend.stopRecording' });
+    if (isRecordingThis) {
+      if (!(await command({ type: 'trend.stopRecording' })).ok) return;
       toast({ kind: 'success', title: t('trend.recordStopped'), message: t('trend.recordStoppedMsg') });
     } else {
       const res = await command({ type: 'trend.startRecording', groupId: group.id });
@@ -119,7 +124,7 @@ export function TrendScreen() {
       header: t('trend.colValue'),
       width: 150,
       render: (r) => {
-        const v = points[r.pointId];
+        const v = points[r.instanceKey];
         return <span className={v?.enumLabel || v?.boolValue !== null && v?.boolValue !== undefined ? 'text-accent font-medium' : ''}>{v?.hasValue ? v.engText : '—'}</span>;
       },
     },
@@ -157,7 +162,7 @@ export function TrendScreen() {
         actions={
           <>
             <Button onClick={() => openOverlay({ kind: 'dialog', id: 'add-signal', groupId: group.id })}>{t('trend.addSignal')}</Button>
-            <Button variant="primary" onClick={() => void toggleRecord()}>
+            <Button variant="primary" disabled={Boolean(recording && !isRecordingThis)} onClick={() => void toggleRecord()}>
               {isRecordingThis ? t('trend.stopRecording') : t('trend.startRecording')}
             </Button>
           </>
@@ -169,13 +174,13 @@ export function TrendScreen() {
         <div className="flex items-center gap-4 pb-2">
           {selection.trendTab === 'chart' ? (
             <>
-              <select className="focus-ring h-8 rounded-ctl border border-line bg-surface px-2 text-xs" value={windowSec} onChange={(e) => setWindowSec(Number(e.target.value))}>
+              <select className="focus-ring h-8 rounded-ctl border border-line bg-surface px-2 text-xs" value={windowSec} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: workspace.trendGroups.map(g => g.id === group.id ? { ...g, windowSec: Number(e.target.value) } : g) } })}>
                 <option value={30}>{t('trend.window30')}</option>
                 <option value={60}>{t('trend.window60')}</option>
                 <option value={300}>{t('trend.window300')}</option>
               </select>
-              <button className="focus-ring cursor-pointer text-xs text-ink2 hover:text-ink" onClick={() => setFollow(!follow)}>{t('trend.autoFollow')}</button>
-              <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => setPaused(!paused)}>{paused ? t('trend.resume') : t('trend.pause')}</button>
+              <button aria-pressed={follow} className="focus-ring cursor-pointer text-xs text-ink2 hover:text-ink" onClick={() => { setFrozenEnd(end); setFollow(!follow); }}>{t('trend.autoFollow')}</button>
+              <button aria-pressed={paused} className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => { setFrozenEnd(end); setPaused(!paused); }}>{paused ? t('trend.resume') : t('trend.pause')}</button>
             </>
           ) : (
             <>
@@ -190,7 +195,7 @@ export function TrendScreen() {
         <DataTable columns={cols} rows={rows} rowKey={(r) => r.signalId} empty={t('trend.emptySignals')} />
       ) : (
         <>
-          <div className="rounded-card border border-line bg-surface p-4">
+          <div data-testid="trend-window" data-end-ms={end} className="rounded-card border border-line bg-surface p-4">
             <div className="flex flex-wrap gap-4 px-2 pb-2">
               {series.map((s) => (
                 <span key={s.name} className="inline-flex items-center gap-1.5 text-xs" style={{ color: s.color }}>
@@ -208,10 +213,10 @@ export function TrendScreen() {
               <div className="rounded-card border border-line bg-surface2 px-4 py-3 flex flex-col gap-3">
                 {discrete.map((r) => {
                   const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
-                  const buf = live[r.pointId];
+                  const buf = live[r.instanceKey];
                   if (!point || !buf) return null;
                   const kind = point.mapping.rawType === 'Bool' ? 'bool' : point.mapping.rawType === 'String' ? 'string' : 'enum';
-                  const initial = buf.events[0]?.value ?? points[r.pointId]?.engText ?? null;
+                  const initial = buf.events.filter(e => e.t <= start).at(-1)?.value ?? buf.events[0]?.value ?? null;
                   return (
                     <StateTrack
                       key={r.signalId}
@@ -219,7 +224,7 @@ export function TrendScreen() {
                       label={r.name}
                       sublabel={kind === 'bool' ? t('trend.boolSublabel') : kind === 'string' ? t('trend.stringSublabel', { name: r.name }) : undefined}
                       initialValue={initial}
-                      events={buf.events.filter((e) => e.t >= start).map((e) => ({ tMs: e.t, value: e.value }))}
+                      events={buf.events.filter((e) => e.t >= start && e.t <= end).map((e) => ({ tMs: e.t, value: e.value }))}
                       startMs={start}
                       endMs={end}
                     />

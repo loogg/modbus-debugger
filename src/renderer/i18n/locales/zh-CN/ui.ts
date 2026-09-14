@@ -11,10 +11,14 @@ export const ui = {
   expandOptions: '展开选项',
   /** ValueCell shares this fragment; the cell always shows the confirmed device value. */
   valueCell: {
+    confirmTitle: '确认高风险写入',
+    confirmMessage: '将 {{name}} 写为 {{value}}，是否继续？',
+    confirmWrite: '确认写入',
+    invalidBool: '请输入 ON/OFF、true/false 或 1/0',
     invalidEnum: '无效枚举值',
     invalidNumber: '无效数值',
     rejectedTitle: '设备拒绝（异常码 {{code}}），保留旧值',
-    unknownTitle: '写结果未知，正在回读确认',
+    unknownTitle: '写结果未知，请检查回读结果或通信诊断',
     doubleClickEdit: '双击编辑',
   },
 } as const;

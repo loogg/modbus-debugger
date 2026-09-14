@@ -7,6 +7,7 @@ import { AREAS } from '../../domain/address';
 import type { BlockDef, PointDef, SlaveDef } from '../../domain/model';
 import type { BlockViewState, PointViewState } from '../../shared/snapshot';
 import { useTranslation } from '../i18n';
+import { pointKey } from '../../shared/point-key';
 
 interface Row {
   type: 'group' | 'point';
@@ -193,8 +194,8 @@ export function RealtimeScreen() {
       toast({ kind: 'warning', title: t('realtime.noPointsSelected') });
       return;
     }
-    const existing = new Set(group.signals.map((s) => s.pointRef.pointId));
-    const added = ids.filter((id) => !existing.has(id));
+    const existing = new Set(group.signals.map((s) => pointKey(s.pointRef.slaveId, s.pointRef.pointId)));
+    const added = ids.filter((id) => !existing.has(pointKey(slave.id, id)));
     const next = {
       ...ws,
       trendGroups: ws.trendGroups.map((g) =>
@@ -218,7 +219,7 @@ export function RealtimeScreen() {
             {scopeBlock ? (
               <span className="inline-flex h-10 items-center rounded-ctl bg-accentsoft px-4 text-sm text-accent font-medium">● {scopeBlock.periodMs} ms</span>
             ) : null}
-            <Button onClick={() => toast({ kind: 'info', title: t('realtime.refreshTriggered') })}>{scopeBlock ? t('realtime.refreshOnce') : t('realtime.refreshAll')}</Button>
+            <Button onClick={async () => { const res = await command({ type: 'device.refresh', slaveId: slave.id, blockId: scopeBlock?.id }); if (res.ok) toast({ kind: 'info', title: t('realtime.refreshTriggered') }); }}>{scopeBlock ? t('realtime.refreshOnce') : t('realtime.refreshAll')}</Button>
             {!scopeBlock ? <Button variant="primary" onClick={() => void joinTrend()}>{t('realtime.joinTrend')}</Button> : null}
           </>
         }
@@ -267,7 +268,7 @@ export function RealtimeScreen() {
               const point = row.point as PointDef;
               return (
                 <div key={vi.key} className="absolute left-0 w-full" style={{ top: vi.start, height: vi.size }}>
-                  <PointRow point={point} view={points[point.id]} checked={!!selectedPoints[point.id]} onToggle={togglePoint} />
+                  <PointRow point={point} view={points[pointKey(slave.id, point.id)]} checked={!!selectedPoints[point.id]} onToggle={togglePoint} />
                 </div>
               );
             })}

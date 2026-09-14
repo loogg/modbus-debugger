@@ -4,6 +4,7 @@ import { fmtDuration, fmtDurationMs, fmtEpoch, fmtEpochDateTime } from '../time'
 
 export interface LineSeries {
   name: string;
+  unit?: string;
   color: string;
   data: Array<[number, number]>;
 }
@@ -24,6 +25,13 @@ const MIN_SET_INTERVAL_MS = 250;
 
 /** Numeric trend chart. Axis text and line widths never scale with the window. */
 export function NumericChart(props: NumericChartProps) {
+  const units = [...new Set(props.series.map(s => s.unit ?? ''))];
+  // Two axes fit compact windows. More unit groups get full-width plots rather than overlapping labels.
+  if (units.length > 2) return <div>{units.map(unit => <div key={unit}><div className="text-xs text-ink2">{unit || '—'}</div><UnitChart {...props} series={props.series.filter(s => (s.unit ?? '') === unit)} /></div>)}</div>;
+  return <UnitChart {...props} />;
+}
+
+function UnitChart(props: NumericChartProps) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
   const lastSetAt = useRef(0);
@@ -45,6 +53,8 @@ export function NumericChart(props: NumericChartProps) {
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    const units = [...new Set(props.series.map(s => s.unit ?? ''))];
+    if (!units.length) units.push('');
     const fmtX = props.xMode === 'duration' ? fmtDuration : fmtEpoch;
     const fmtXFull = props.xMode === 'duration' ? fmtDurationMs : fmtEpochDateTime;
     const apply = () => {
@@ -52,7 +62,7 @@ export function NumericChart(props: NumericChartProps) {
       chart.setOption(
         {
           animation: false,
-          grid: { left: 56, right: 24, top: 40, bottom: 28 },
+          grid: { left: 56, right: units.length > 1 ? 56 : 24, top: 40, bottom: 28 },
           tooltip: {
             trigger: 'axis',
             // axis values are epoch ms; format them in the user-configured display timezone
@@ -68,18 +78,21 @@ export function NumericChart(props: NumericChartProps) {
             type: 'time',
             min: props.startMs,
             max: props.endMs,
-            axisLabel: { fontSize: 10, color: '#62666F', formatter: (v: number) => fmtX(v) },
+            axisLabel: { hideOverlap: true, fontSize: 10, color: '#62666F', formatter: (v: number) => fmtX(v) },
             axisLine: { lineStyle: { color: '#D9DEE5' } },
             splitLine: { show: true, lineStyle: { color: '#EEF1F4' } },
           },
-          yAxis: {
+          yAxis: units.map((unit, index) => ({
             type: 'value',
+            name: unit,
+            position: index === 0 ? 'left' : 'right',
             scale: true,
             axisLabel: { fontSize: 10, color: '#62666F' },
-            splitLine: { lineStyle: { color: '#EEF1F4' } },
-          },
+            splitLine: { show: index === 0, lineStyle: { color: '#EEF1F4' } },
+          })),
           series: props.series.map((s) => ({
             name: s.name,
+            yAxisIndex: units.indexOf(s.unit ?? ''),
             type: 'line',
             showSymbol: false,
             lineStyle: { width: 1.5, color: s.color },
@@ -87,7 +100,7 @@ export function NumericChart(props: NumericChartProps) {
             data: s.data,
           })),
         },
-        { replaceMerge: ['series'] },
+        { replaceMerge: ['series', 'yAxis'] },
       );
     };
     // Live screens push new samples several times a second; ECharts setOption is the

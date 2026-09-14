@@ -2,7 +2,7 @@ import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const SHOTS = path.resolve('tests', 'e2e', 'screenshots');
+const SHOTS = path.resolve('out', 'audit', 'screenshots');
 
 interface PuppeteerBrowser {
   getPuppeteer(): Promise<{ targets(): Array<{ type(): string; page(): Promise<unknown> }> }>;
@@ -18,13 +18,11 @@ async function setViewport(width: number, height: number): Promise<void> {
 }
 
 async function setNative(selector: string, value: string): Promise<void> {
-  await browser.execute((sel, v) => {
-    const input = document.querySelector(sel) as HTMLInputElement | null;
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-    setter?.call(input, v);
-    input?.dispatchEvent(new Event('input', { bubbles: true }));
-  }, selector, value);
-  await browser.pause(200);
+  const input = await $(selector);
+  await input.click();
+  await browser.keys(['Control', 'a']);
+  await browser.keys('Backspace');
+  await input.addValue(value);
 }
 async function bodyText(): Promise<string> {
   return (await browser.execute(() => document.body.innerText)) as string;
@@ -60,11 +58,9 @@ describe('Modbus Debugger packaged app E2E', () => {
   });
 
   it('writes 目标转速 and confirms via read-back', async () => {
-    const res = await browser.execute(async () => {
-      const api = (window as unknown as { modbus: { command: (c: unknown) => Promise<{ ok: boolean; value?: unknown }> } }).modbus;
-      return api.command({ type: 'point.write', slaveId: 'slave-1', pointId: 'pt-speed', engineering: 1800, boolValue: null, stringValue: null });
-    });
-    expect(res.ok).toBe(true);
+    await $('//div[text()="目标转速"]/following-sibling::div[2]').doubleClick();
+    await setNative('input.w-24', '1800');
+    await browser.keys('Enter');
     await browser.waitUntil(async () => (await bodyText()).includes('1800'), {
       timeout: 20000,
       timeoutMsg: 'expected confirmed write value 1800 after read-back',
@@ -79,10 +75,7 @@ describe('Modbus Debugger packaged app E2E', () => {
     await shot('13-comm-1440');
 
     // a row click must drive the frame-detail pane (the old data-idx lookup never matched)
-    await browser.execute(() => {
-      const row = document.querySelectorAll('tbody tr')[1] as HTMLElement | undefined;
-      row?.click();
-    });
+    await $('//tbody/tr[2]').click();
     await browser.pause(500);
     expect(await bodyText()).toContain('帧详情');
 
@@ -117,11 +110,12 @@ describe('Modbus Debugger packaged app E2E', () => {
     await setNative('input[data-testid="scan-from"]', '1');
     await setNative('input[data-testid="scan-to"]', '20');
     await $('//button[text()="开始扫描"]').click();
-    await browser.pause(500);
-    await browser.waitUntil(async () => /已发现 [1-9][0-9]* 个从站/.test(await bodyText()), { timeout: 25000 });
+    await browser.waitUntil(async () => (await bodyText()).includes('扫描摘要'), { timeout: 25000 });
     const text = await bodyText();
     expect(text).toContain('扫描摘要');
-    expect(text).toMatch(/已发现 [1-9][0-9]* 个从站/);
+    expect(text).toContain('已发现 3 个从站');
+    const units = await browser.execute(() => [...document.querySelectorAll('tbody tr')].map(row => row.children[0]?.textContent?.trim()));
+    expect(units).toEqual(['1', '2', '3']);
     await shot('17-scan-1440');
   });
 
@@ -139,10 +133,7 @@ describe('Modbus Debugger packaged app E2E', () => {
   it('connection settings open in the main area with edit and save', async () => {
     await $('//button[contains(., "设备")]').click();
     await browser.pause(400);
-    await browser.execute(() => {
-      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('生产线 TCP'));
-      (b as HTMLElement | undefined)?.click();
-    });
+    await $('//button[contains(., "生产线 TCP")]').click();
     await browser.waitUntil(async () => (await bodyText()).includes('连接名称'), { timeout: 15000 });
     const text = await bodyText();
     expect(text).toContain('从站');
@@ -155,10 +146,7 @@ describe('Modbus Debugger packaged app E2E', () => {
     expect(t2).toContain('已连接：参数已锁定');
     await shot('01B-connection-settings-1440');
     // back to the slave device page
-    await browser.execute(() => {
-      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('伺服驱动器 A'));
-      (b as HTMLElement | undefined)?.click();
-    });
+    await $('//button[contains(., "伺服驱动器 A")]').click();
     await browser.pause(500);
   });
 
@@ -172,4 +160,27 @@ describe('Modbus Debugger packaged app E2E', () => {
     await shot('04A-realtime-1024');
     await setViewport(1440, 960);
   });
+  it('all main pages fit four window widths, keeping horizontal scrolling inside tables', async () => {
+    await $('//nav//button[contains(.,"趋势")]').click();
+    await $('//button[contains(.,"开始记录")]').click();
+    await browser.pause(900);
+    await $('//button[contains(.,"停止记录")]').click();
+    for (const [width, height] of [[1440,960], [1280,960], [1279,960], [1024,680]]) {
+      await setViewport(width!, height!);
+      for (const label of ['设备','实时','趋势','历史','通信','模板','设置']) {
+        await $(`//nav//button[contains(., "${label}")]`).click();
+        if (label === '实时') {
+          await $('//button[contains(.,"伺服驱动器 A")]').click();
+          expect(await bodyText()).toContain('目标转速');
+        }
+        if (label === '趋势') await $('//button[text()="图表"]').click();
+        await browser.pause(250);
+        const bounds = await browser.execute(() => { const main = document.querySelector('main')!; return { client: main.clientWidth, scroll: main.scrollWidth }; });
+        if (bounds.scroll > bounds.client + 1) throw new Error(`${label} at ${width}: main scrollWidth ${bounds.scroll} > clientWidth ${bounds.client}`);
+        await shot(`audit-${label}-${width}`);
+      }
+    }
+    await setViewport(1440, 960);
+  });
+
 });

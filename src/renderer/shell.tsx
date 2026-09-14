@@ -33,6 +33,7 @@ import { SettingsScreen } from './screens/settings';
 import { Overlays } from './screens/overlays';
 import { useTranslation } from './i18n';
 import { dayKey, fmtTime, todayKey } from './time';
+import { copyTemplate } from '../domain/template-copy';
 
 type RailLabelKey = `shell.rail.${'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates'}`;
 
@@ -332,14 +333,18 @@ function TrendSidebar() {
   );
 }
 
-function HistorySidebar() {
+export function HistorySidebar() {
   const { t } = useTranslation();
   const allSessions = useSessions();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
   const [query, setQuery] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [groupFilter, setGroupFilter] = useState('');
+  const [slaveFilter, setSlaveFilter] = useState('');
   const groups = useMemo(() => {
-    const sessions = allSessions.filter((s) => !query || s.groupName.includes(query));
+    const sessions = allSessions.filter(s => (!query || s.groupName.includes(query)) && (!fromDate || dayKey(s.startUtc) >= fromDate) && (!toDate || dayKey(s.startUtc) <= toDate) && (!groupFilter || s.groupId === groupFilter) && (!slaveFilter || s.slaveNames?.some(name => name.includes(slaveFilter))));
     const map = new Map<string, typeof sessions>();
     for (const s of sessions) {
       const key = dayKey(s.startUtc);
@@ -347,7 +352,7 @@ function HistorySidebar() {
       map.set(label, [...(map.get(label) ?? []), s]);
     }
     return [...map.entries()];
-  }, [allSessions, query, t]);
+  }, [allSessions, query, t, fromDate, toDate, groupFilter, slaveFilter]);
   return (
     <SidebarShell title={t('shell.sidebar.title.history')}>
       <div className="relative mb-4">
@@ -361,6 +366,7 @@ function HistorySidebar() {
             {list.map((s) => (
               <button
                 key={s.id}
+                data-session-id={s.id}
                 onClick={() => select({ sessionId: s.id })}
                 className={`focus-ring cursor-pointer rounded-ctl px-3 py-2.5 text-left ${selection.sessionId === s.id ? 'bg-accentsoft' : 'bg-surface hover:bg-surface2'}`}
               >
@@ -374,10 +380,11 @@ function HistorySidebar() {
         </div>
       ))}
       <div className="mt-4 mb-2 text-xs text-ink2">{t('shell.history.filter')}</div>
-      <div className="flex flex-col gap-1.5 text-xs text-accent">
-        <span>{t('shell.history.dateRange')}</span>
-        <span>{t('shell.history.trendGroup')}</span>
-        <span>{t('shell.history.deviceSlave')}</span>
+      <div className="flex flex-col gap-2 text-xs text-ink2">
+        <label>{t('shell.history.dateRange')}<TextInput aria-label="历史起始日期" type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} /><TextInput aria-label="历史结束日期" type="date" value={toDate} onChange={e => setToDate(e.target.value)} /></label>
+        <label>{t('shell.history.trendGroup')}<select aria-label="历史趋势组" className="focus-ring h-9 w-full rounded-ctl border border-line bg-surface px-2" value={groupFilter} onChange={e => setGroupFilter(e.target.value)}><option value="">全部</option>{[...new Map(allSessions.map(s => [s.groupId, s.groupName])).entries()].map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
+        <label>{t('shell.history.deviceSlave')}<TextInput aria-label="历史从站筛选" value={slaveFilter} onChange={e => setSlaveFilter(e.target.value)} /></label>
+        <Button size="sm" onClick={() => { setFromDate(''); setToDate(''); setGroupFilter(''); setSlaveFilter(''); setQuery(''); }}>清除筛选</Button>
       </div>
       <div className="mt-6 text-xs text-ink2">{t('shell.history.dbInfo', { count: allSessions.length })}</div>
     </SidebarShell>
@@ -390,8 +397,10 @@ function CommSidebar() {
   const connStates = useConnectionStates();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
-  const [slaveFilter, setSlaveFilter] = useState<Record<string, boolean>>({});
-  const [resultFilter, setResultFilter] = useState({ ok: true, timeout: true, exception: true });
+  const slaveFilter = useApp(s => s.commSlaveFilter);
+  const resultFilter = useApp(s => s.commResultFilter);
+  const setSlaveFilter = (filter: Record<string, boolean>) => useApp.setState({ commSlaveFilter: filter });
+  const setResultFilter = (filter: typeof resultFilter) => useApp.setState({ commResultFilter: filter });
   return (
     <SidebarShell title={t('shell.sidebar.title.comm')}>
       <div className="mb-2 text-xs text-ink2">{t('shell.comm.view')}</div>
@@ -469,7 +478,7 @@ function TemplatesSidebar() {
         <button
           className="focus-ring cursor-pointer text-left hover:underline"
           onClick={async () => {
-            const tpl = workspace?.templates.find((x) => x.id === selection.templateId);
+            const tpl = workspace?.templates.find((x) => x.id === selection.templateId) ?? workspace?.templates[0];
             if (!tpl) return;
             const text = JSON.stringify(tpl, null, 2);
             await navigator.clipboard.writeText(text);
@@ -482,10 +491,11 @@ function TemplatesSidebar() {
           className="focus-ring cursor-pointer text-left hover:underline"
           onClick={async () => {
             const ws = workspace;
-            const tpl = ws?.templates.find((x) => x.id === selection.templateId);
+            const tpl = ws?.templates.find((x) => x.id === selection.templateId) ?? ws?.templates[0];
             if (!ws || !tpl) return;
-            const copy = { ...tpl, id: `tpl-${Date.now().toString(36)}`, name: `${tpl.name} ${t('shell.common.copySuffix')}` };
-            await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, copy] } });
+            const copy = copyTemplate(tpl, `tpl-${Date.now().toString(36)}`, `${tpl.name} ${t('shell.common.copySuffix')}`);
+            const res = await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, copy] } });
+            if (res.ok) select({ templateId: copy.id, templateEditing: false });
           }}
         >
           {t('shell.templates.duplicateTemplate')}
@@ -515,7 +525,7 @@ function SettingsSidebar() {
     <SidebarShell title={t('shell.sidebar.title.settings')}>
       <div className="flex flex-col gap-1">
         {SETTINGS_SECTIONS.map((it) => (
-          <button key={it.id} className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${active === it.id ? 'bg-accentsoft text-accent font-medium' : 'hover:bg-surface2'}`} onClick={() => setActive(it.id)}>
+          <button key={it.id} className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${active === it.id ? 'bg-accentsoft text-accent font-medium' : 'hover:bg-surface2'}`} onClick={() => { setActive(it.id); document.getElementById(`settings-${it.id}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }); }}>
             {t(it.key)}
           </button>
         ))}
@@ -566,7 +576,7 @@ function Main() {
   const module = useApp((s) => s.module);
   return (
     <main className="min-w-0 flex-1 overflow-y-auto bg-app">
-      <div className="px-7 py-6 min-w-[700px]">
+      <div className="px-7 py-6 min-w-0">
         {module === 'devices' ? <DevicesScreen /> : module === 'realtime' ? <RealtimeScreen /> : module === 'trend' ? <TrendScreen /> : module === 'history' ? <HistoryScreen /> : module === 'comm' ? <CommScreen /> : module === 'templates' ? <TemplatesScreen /> : <SettingsScreen />}
       </div>
     </main>

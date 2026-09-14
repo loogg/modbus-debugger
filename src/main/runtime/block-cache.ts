@@ -5,6 +5,7 @@ import type { ModbusResponse } from '../../domain/protocol';
 export type BlockStatus = 'idle' | 'ok' | 'timeout' | 'exception' | 'transport-error' | 'disabled';
 
 export interface BlockCacheEntry {
+  sourceKey: string;
   key: string;
   slaveId: string;
   block: BlockDef;
@@ -47,6 +48,7 @@ export class BlockCache {
       entry = {
         key,
         slaveId: slave.id,
+        sourceKey: `${slave.connectionId}:${slave.unitId}`,
         block,
         memory: emptyMemory(block),
         status: 'idle',
@@ -57,13 +59,19 @@ export class BlockCache {
         revision: 0,
       };
       this.entries.set(key, entry);
-    } else if (entry.block.length !== block.length || entry.block.area !== block.area) {
+    } else if (entry.block.length !== block.length || entry.block.area !== block.area || entry.block.start !== block.start || entry.sourceKey !== `${slave.connectionId}:${slave.unitId}`) {
+      entry.sourceKey = `${slave.connectionId}:${slave.unitId}`;
       entry.block = block;
       entry.memory = emptyMemory(block);
       entry.status = 'idle';
+      entry.lastUpdateUtc = null;
+      entry.lastDurationMs = null;
+      entry.exceptionCode = null;
       this.bump(entry);
     } else {
+      const changed = JSON.stringify(entry.block) !== JSON.stringify(block);
       entry.block = block;
+      if (changed) this.bump(entry);
     }
     return entry;
   }

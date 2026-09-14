@@ -51,7 +51,7 @@ npm start
 在一个终端中启动模拟器：
 
 ```powershell
-python -m pip install pymodbus==3.15.0
+python -m pip install -r tools/simulator/requirements.txt
 npm run simulator -- --port 50535
 ```
 
@@ -245,3 +245,5 @@ release/
 提交问题时，请附上版本号、RTU/TCP 类型、复现步骤、异常提示和必要的通信记录；可先移除设备地址、名称等不希望公开的信息。
 
 开发实现与验证命令：[开发说明](docs/development.md) · [架构](docs/architecture.md) · [协议说明](docs/protocol/01-application-protocol.md)。
+
+RTU 虚拟串口与 TCP 从站联调、命令参数和故障注入详见 [模拟器说明](tools/simulator/README.md)。

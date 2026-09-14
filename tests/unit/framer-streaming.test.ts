@@ -202,6 +202,17 @@ describe('RTU streaming framer', () => {
   });
 });
 
+describe('RTU exception while waiting for a normal read length', () => {
+  it('emits a fragmented exception immediately and preserves a following frame', () => {
+    const f = new RtuStreamingFramer({ expectedAduLength: () => 25 });
+    // Independent standard exception vector: unit 1, FC03 exception 02, CRC C0F1.
+    const exception = unhex('018302c0f1');
+    expect(adus(f.push(exception.slice(0, 3)))).toEqual([]);
+    expect(adus(f.push(exception.slice(3)))).toEqual(['018302c0f1']);
+    expect(f.pendingBytes()).toBe(0);
+  });
+});
+
 function concatAll(list: Uint8Array[]): Uint8Array {
   const total = list.reduce((a, b) => a + b.length, 0);
   const out = new Uint8Array(total);
@@ -212,3 +223,14 @@ function concatAll(list: Uint8Array[]): Uint8Array {
   }
   return out;
 }
+
+
+it('preserves every possible partial TCP prefix after malformed bytes', () => {
+  const good = unhex('000100000005010302007b');
+  for (let split = 1; split < good.length; split++) {
+    const framer = new TcpStreamingFramer();
+    const first = framer.push(concatAll([unhex('ffffffffffffffffffff'), good.subarray(0, split)]));
+    const rest = framer.push(good.subarray(split));
+    expect(adus([...first, ...rest]), `split ${split}`).toEqual([hex(good)]);
+  }
+});

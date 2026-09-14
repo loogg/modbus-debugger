@@ -4,6 +4,8 @@ import { scanOptionsSchema } from './scan-options';
 
 export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('workspace.new') }),
+  z.object({ type: z.literal('template.importFile'), path: z.string() }),
+  z.object({ type: z.literal('history.addNote'), sessionId: z.string(), text: z.string().trim().min(1).max(2000), tMs: z.number().int().min(0) }),
   z.object({ type: z.literal('workspace.open'), path: z.string().nullable() }),
   z.object({ type: z.literal('workspace.save') }),
   z.object({ type: z.literal('workspace.saveAs'), path: z.string() }),
@@ -22,6 +24,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('device.scan'), connectionId: z.string(), from: z.number().int().min(1).max(247), to: z.number().int().min(1).max(247), options: scanOptionsSchema.optional() }),
   z.object({ type: z.literal('device.stopScan'), connectionId: z.string() }),
+  z.object({ type: z.literal('device.refresh'), slaveId: z.string(), blockId: z.string().optional() }),
   z.object({
     type: z.literal('device.temporaryRead'),
     connectionId: z.string(),

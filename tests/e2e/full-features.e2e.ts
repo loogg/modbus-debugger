@@ -2,51 +2,38 @@ import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const SHOTS = path.resolve('tests', 'e2e', 'screenshots');
+const SHOTS = path.resolve('out', 'audit', 'screenshots');
 async function shot(name: string): Promise<void> {
   fs.mkdirSync(SHOTS, { recursive: true });
   await browser.saveScreenshot(path.join(SHOTS, `${name}.png`));
 }
 
-/** Set a controlled input value through the native setter (React-safe). */
+/** Use real keyboard input so focus and validation paths participate. */
 async function setNative(selector: string, value: string): Promise<void> {
-  await browser.execute((sel, v) => {
-    const input = document.querySelector(sel) as HTMLInputElement | null;
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-    setter?.call(input, v);
-    input?.dispatchEvent(new Event('input', { bubbles: true }));
-  }, selector, value);
-  await browser.pause(200);
+  const input = await $(selector);
+  await input.click();
+  await browser.keys(['Control', 'a']);
+  await browser.keys('Backspace');
+  await input.addValue(value);
 }
 async function bodyText(): Promise<string> {
   return (await browser.execute(() => document.body.innerText)) as string;
 }
 
-/** Click by exact visible text through the DOM (immune to overlay interception). */
 async function clickText(text: string): Promise<void> {
-  const ok = await browser.execute((t) => {
-    const el = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === t);
-    if (!el) return false;
-    (el as HTMLElement).click();
-    return true;
-  }, text);
-  if (!ok) throw new Error(`button not found: ${text}`);
-  await browser.pause(400);
+  await $(`//button[normalize-space(.)="${text}"]`).click();
+  await browser.pause(200);
 }
-
 async function rail(label: string): Promise<void> {
-  await browser.execute((t) => {
-    const el = [...document.querySelectorAll('nav button')].find((b) => (b.textContent ?? '').includes(t));
-    (el as HTMLElement)?.click();
-  }, label);
-  await browser.pause(500);
+  await $(`//nav//button[contains(., "${label}")]`).click();
+  await browser.pause(300);
 }
 
 async function waitGone(fragment: string, ms = 8000): Promise<void> {
   await browser.waitUntil(async () => !(await bodyText()).includes(fragment), { timeout: ms });
 }
 
-describe('上位机全量功能自测 (full-feature self test)', () => {
+describe('既有页面操作回归', () => {
   it('添加连接对话框：串口下拉每次打开重新枚举、波特率支持自定义', async () => {
     await rail('设备');
     await clickText('添加连接');
@@ -76,20 +63,14 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
 
   it('实时表双击进入编辑态、Esc 取消且不污染确认值', async () => {
     await rail('实时');
-    await browser.execute(() => {
-      const el = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('伺服驱动器 A'));
-      (el as HTMLElement)?.click();
-    });
+    await $('//button[contains(., "伺服驱动器 A")]').click();
     await browser.pause(800);
     const cell = await $('//div[text()="目标转速"]/following-sibling::div[2]');
     await cell.doubleClick();
     await browser.pause(400);
     const editing = await $('//input[contains(@class,"w-24")]');
     expect(await editing.isExisting()).toBe(true);
-    await browser.execute(() => {
-      const input = document.querySelector('input.w-24') as HTMLInputElement | null;
-      input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    });
+    await browser.keys('Escape');
     await browser.pause(300);
     expect(await $('//input[contains(@class,"w-24")]').isExisting()).toBe(false);
   });
@@ -102,10 +83,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     let text = await bodyText();
     expect(text).toContain('点位映射');
     expect(text).toContain('母线电压');
-    await browser.execute(() => {
-      const el = [...document.querySelectorAll('div')].find((d) => d.textContent === '母线电压' && d.children.length === 0);
-      (el as HTMLElement)?.click();
-    });
+    await $('//tbody/tr[1]').click();
     await browser.pause(400);
     text = await bodyText();
     expect(text).toContain('映射详情');
@@ -129,26 +107,17 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
 
   it('趋势记录 → 历史会话 → 信号页 全链路', async () => {
     await rail('趋势');
-    await browser.execute(() => {
-      const el = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('开始记录'));
-      (el as HTMLElement)?.click();
-    });
+    await $('//button[contains(., "开始记录")]').click();
     await browser.pause(3000);
     expect(await bodyText()).toContain('停止记录');
-    await browser.execute(() => {
-      const el = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('停止记录'));
-      (el as HTMLElement)?.click();
-    });
+    await $('//button[contains(., "停止记录")]').click();
     await browser.pause(1000);
     await rail('历史');
     await browser.pause(400);
     await shot('14-history-1440');
     let text = await bodyText();
     expect(text).toContain('功耗分析');
-    await browser.execute(() => {
-      const el = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('功耗分析'));
-      (el as HTMLElement)?.click();
-    });
+    await $('//button[contains(., "功耗分析")]').click();
     await browser.pause(800);
     await clickText('信号');
     text = await bodyText();
@@ -172,10 +141,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
 
   it('连接设置：连接时锁定，断开后可编辑保存，再连接恢复锁定', async () => {
     await rail('设备');
-    await browser.execute(() => {
-      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes('生产线 TCP'));
-      (b as HTMLElement | undefined)?.click();
-    });
+    await $('//button[contains(., "生产线 TCP")]').click();
     await browser.pause(500);
     const text = await bodyText();
     expect(text).toContain('连接名称');
@@ -220,7 +186,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     await browser.waitUntil(async () => (await bodyText()).includes('已连接：参数已锁定'), { timeout: 20000 });
   });
 
-  it('时区：侧栏与表头同一时区，切换 UTC 后整体偏移 8 小时', async () => {
+  it('时区：侧栏与表头同一时区，切换 UTC 后按系统时区偏移', async () => {
     await rail('历史');
     await browser.pause(600);
     const readFirstSessionTime = () =>
@@ -234,10 +200,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     expect(before).toMatch(/\d{2}:\d{2}:\d{2} – /);
 
     // the detail header must show the SAME wall clock as the sidebar card
-    await browser.execute((stamp) => {
-      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent ?? '').includes(stamp));
-      (b as HTMLElement | undefined)?.click();
-    }, before.slice(0, 8));
+    await $(`//button[contains(.,"${before.slice(0, 8)}")]`).click();
     await browser.pause(700);
     const head = await bodyText();
     const m = head.match(/(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) –/);
@@ -258,7 +221,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
       expect(await (await $(tzTrigger)).getText()).toContain(label);
     };
 
-    // switch to UTC: this machine runs UTC+8, so every displayed hour shifts by -8
+    // Compare against the actual system offset, not an assumed UTC+8 host.
     await rail('设置');
     await pickTimezone('UTC');
     await rail('历史');
@@ -266,7 +229,8 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     await shot('22-history-utc-1440');
     const utc = await readFirstSessionTime();
     const hour = (s: string) => Number(s.slice(0, 2));
-    expect(hour(utc)).toBe((hour(before) + 24 - 8) % 24);
+    const offset = await browser.execute(() => new Date().getTimezoneOffset() / 60);
+    expect(hour(utc)).toBe((hour(before) + 24 + offset) % 24);
 
     // back to following the OS
     await rail('设置');
@@ -343,7 +307,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     await (await $(baud)).click();
     await browser.pause(300);
     expect(await listOpen()).toBe(true);
-    await browser.execute(() => (document.querySelector('input[data-testid="port-combo"]') as HTMLInputElement | null)?.focus());
+    await $('input[data-testid="port-combo"]').click();
     await browser.pause(400);
     expect(await listOpen()).toBe(false);
 
@@ -353,11 +317,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     expect(await listOpen()).toBe(true);
     // cancelable matters: Radix honours preventDefault() from our layered-Escape handler,
     // and preventDefault is a no-op on a non-cancelable synthetic event
-    await browser.execute(() => {
-      (document.querySelector('input[data-testid="baud-combo"]') as HTMLInputElement | null)?.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
-      );
-    });
+    await browser.keys('Escape');
     await browser.pause(300);
     expect(await listOpen()).toBe(false);
 
@@ -365,9 +325,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
     await (await $(baud)).click();
     await browser.pause(300);
     expect(await listOpen()).toBe(true);
-    await browser.execute(() => {
-      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    });
+    await $('//h2[contains(.,"添加连接")]').click();
     await browser.pause(300);
     expect(await listOpen()).toBe(false);
 
@@ -384,7 +342,7 @@ describe('上位机全量功能自测 (full-feature self test)', () => {
   it('未绑定模板也能添加从站：从站建立但不参与轮询', async () => {
     await rail('设备');
     // a previous failure could leave a dialog mounted; start from a clean overlay state
-    await browser.execute(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await browser.keys('Escape');
     await browser.pause(300);
     await clickText('＋ 添加从站');
     await browser.pause(500);
