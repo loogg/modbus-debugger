@@ -44,6 +44,13 @@
 构建：`npm start`（Vite dev server + Electron）、`npm run package`（`.vite/build` + `.vite/renderer/main_window`）、`npm run make`（Squirrel 安装包）。
 Main / Preload 打包为 CJS；生产渲染层通过特权 `app://` scheme 提供（保持 webSecurity 与 sandbox 开启）。
 
+每次正式打包必须同时生成以下四种交付产物，缺一不可：
+
+- 打包后的目录版：包含完整运行文件，可直接启动。
+- ZIP 解压版：解压后即可运行，无需安装。
+- 单文件 Portable 版：以单个可执行文件交付，无需安装即可启动。
+- Setup 安装版：提供 Squirrel Setup 安装程序，支持安装、启动和卸载。
+
 可自行解决的问题直接修复；公共组件、Domain、Scheduler 或 IPC 修改后回归所有受影响路径。
 
 ### 禁止
@@ -58,3 +65,5 @@ Main / Preload 打包为 CJS；生产渲染层通过特权 `app://` scheme 提�
 ### 完成门槛
 
 `docs/acceptance.md` 全部通过后才允许结束；最后必须通过 lint、typecheck、Unit、Integration、E2E、Simulator、关键尺寸截图审核、Production Build、Installer / distributable Smoke Test 和 Full Regression。
+
+打包验收必须确认目录版、ZIP 解压版、单文件 Portable 版和 Setup 安装版全部生成，并分别完成启动 Smoke Test；Setup 安装版还必须验证安装与卸载。
