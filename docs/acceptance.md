@@ -1,3 +1,9 @@
+### 使用范围
+
+本文件是完整产品验收清单及历史验收证据，不是每次增量任务的必跑清单。日常文档修改、局部功能修复、UI 调整和打包任务，按 `AGENTS.md` 的“测试与回归策略”选择相关检查；相关项通过即可完成本次任务，无需重跑全部勾选项。
+
+只有正式发布验收、用户明确要求全量回归，或有具体证据表明影响范围无法可靠限定时，才执行全量回归。普通版本递增或重新打包不等于正式发布验收；已有未受本次改动影响的验证结果可以复用。下方历史记录中的“全通过”仅表示对应轮次的结果，不对后续每次任务追加全量要求。
+
 ### Domain / Communication
 
 - [x]  Connection → Slave → Template → Block → Point 模型正确；Unit ID 不进入 Template。
@@ -68,7 +74,7 @@
 
 - [x]  1440×960、1280、1279、1024×680 完成实际截图审核。
 - [x]  Sidebar resize/persistence 正确；Table 达到最小列宽后内部横向滚动，Header Sticky，Point 列在横向滚动时保持左侧可见；Drawer Overlay、Dialog internal scroll 正确。
-- [x]  公共组件修改后回归全部受影响 Screen。
+- [x]  公共组件修改后按影响范围验证相关 Screen / 状态；不默认检查所有页面。
 
 ### Simulator / Fixtures
 
@@ -76,14 +82,14 @@
 - [x]  Standalone Simulator 与正式 TS Client 保持独立实现，并覆盖 FC01/02/03/04/05/06/15/16、多 Unit、动态 Numeric、Bool edge、Enum、String、写成功/拒绝/结果未知、RMW、Scanner、Temporary Read。
 - [x]  Golden Fixtures 的 expected bytes 不由被测 Codec 生成；额外包含错误帧/垃圾数据后紧跟合法帧、TCP 迟到 TID、RTU Timeout 后迟到旧响应等恢复序列，验证 Parser / Runtime 能继续正确关联后续正常帧。
 
-### Final DoD
+### Final DoD（正式发布验收）
 
 - [x] Windows 正式打包同时生成目录版、ZIP 解压版、单文件 Portable 和 Squirrel Setup，按 `modbus-debugger-<version>-win-<arch>` 命名，四项直接平铺在 `release/`，不套版本/平台目录。
 - [x] 四种交付产物分别通过真实启动、版本、Renderer / IPC / serialport 检查；Portable 仅复制单个 EXE 到含空格与中文的独立目录也能运行，退出重启后默认历史库仍保留；Setup 安装与卸载通过。
 - [x]  无关键 TODO / FIXME / placeholder / 最终 mock。
 - [x]  lint / typecheck / unit / integration / E2E 全通过。
 - [x]  Production Build（Vite）成功；打包版实际启动，`serialport`（N-API prebuilds）与 `sql.js`（WASM，Main external + 随包 node_modules）加载正常；项目不含 ABI 敏感原生模块。
-- [x]  Installer / distributable Smoke Test 和 Final Full Regression 通过后才允许结束。
+- [x]  正式发布验收须通过 Installer / distributable Smoke Test 和 Final Full Regression；日常增量任务按顶部使用范围及 AGENTS.md 完成相关验证即可结束。
 
 ## 验收证据（2026-09-11）
 
