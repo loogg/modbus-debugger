@@ -15,7 +15,7 @@ it('stopped RTU scan drains a late response before the queued read uses the same
   const response = (value: number) => buildRtuAdu(1, encodeResponsePdu({ kind: 'registers', fc: 3, registers: [value] }));
   await runtime.start();
   try {
-    const scan = runtime.scanUnits({ from: 1, to: 247 }, 20);
+    const scan = runtime.scanUnits({ from: 1, to: 247 }, { timeoutMs: 20 });
     const next = runtime.temporaryRead(1, 3, 0, 1);
     runtime.stopScan();
     await scan;

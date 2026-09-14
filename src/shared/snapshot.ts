@@ -2,6 +2,7 @@ import type { Workspace } from '../domain/model';
 import type { ConnectionHealth, ParseEventRecord, TransactionRecord } from '../main/runtime/diagnostics';
 import type { Prefs } from '../main/services/workspace';
 import type { SessionSummary } from '../main/services/history';
+import type { ScanOptions } from './scan-options';
 
 export type BlockStatusView = 'idle' | 'ok' | 'timeout' | 'exception' | 'transport-error' | 'disabled';
 
@@ -43,6 +44,7 @@ export interface ScanRow {
 }
 
 export interface ScanStateView {
+  options: ScanOptions;
   phase: 'running' | 'stopping' | 'completed' | 'stopped';
   from: number;
   to: number;

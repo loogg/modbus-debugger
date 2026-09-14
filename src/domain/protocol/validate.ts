@@ -52,7 +52,8 @@ function pduShapeValid(pdu: Uint8Array): boolean {
     case 0x02:
     case 0x03:
     case 0x04: {
-      if (pdu.length < 4) return false;
+      // FC01/02 may return a single data byte (1–8 bits): FC + byteCount + data = 3 bytes.
+      if (pdu.length < (fc === 0x01 || fc === 0x02 ? 3 : 4)) return false;
       const bc = pdu[1] as number;
       return pdu.length === 2 + bc && bc >= 1;
     }

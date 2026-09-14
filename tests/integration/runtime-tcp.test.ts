@@ -201,9 +201,40 @@ describe('ConnectionRuntime over fake TCP transport', () => {
       return null;
     });
     await ctx.runtime.start();
-    const found = await ctx.runtime.scanUnits({ from: 1, to: 4 }, 40);
+    const found = await ctx.runtime.scanUnits({ from: 1, to: 4 }, { timeoutMs: 40 });
     expect(found.map((f) => f.unitId)).toEqual([1, 3]);
     await ctx.runtime.stop();
+  });
+
+  it.each([1, 2, 3, 4] as const)('scans using FC0%i and the configured PDU address with quantity one', async fc => {
+    ctx.transport.onResponse(adu => [buildTcpAdu(tidOf(adu), unitOf(adu), encodeResponsePdu(
+      fc === 1 || fc === 2 ? { kind: 'bits', fc, bits: [true] } : { kind: 'registers', fc, registers: [42] },
+    ))]);
+    await ctx.runtime.start();
+    try {
+      const found = await ctx.runtime.scanUnits({ from: 7, to: 7 }, { fc, start: 65535, timeoutMs: 300, retries: 0 });
+      expect(found.map(row => row.unitId)).toEqual([7]);
+      expect(ctx.transport.sent[0]?.slice(7)).toEqual(new Uint8Array([fc, 255, 255, 0, 1]));
+      expect(ctx.runtime.scan?.options).toEqual({ fc, start: 65535, timeoutMs: 300, retries: 0 });
+    } finally { await ctx.runtime.stop(); }
+  });
+
+  it('applies per-scan timeout/retries including zero, then restores connection defaults', async () => {
+    ctx = setup({ ...conn, retries: 2 });
+    ctx.runtime.configure([]);
+    await ctx.runtime.start();
+    try {
+      await ctx.runtime.scanUnits({ from: 1, to: 1 }, { timeoutMs: 20, retries: 0 });
+      expect(ctx.transport.sent).toHaveLength(1);
+      expect(ctx.diag.recentTransactions(1)[0]?.durationMs).toBeLessThan(150);
+      await ctx.runtime.scanUnits({ from: 2, to: 2 }, { timeoutMs: 20, retries: 1 });
+      expect(ctx.transport.sent.filter(adu => unitOf(adu) === 2)).toHaveLength(2);
+      await ctx.runtime.scanUnits({ from: 3, to: 3 }, { timeoutMs: 20 });
+      expect(ctx.transport.sent.filter(adu => unitOf(adu) === 3)).toHaveLength(3);
+      expect(ctx.runtime.scan?.options.retries).toBe(2);
+      await ctx.runtime.temporaryRead(4, 3, 0, 1);
+      expect(ctx.transport.sent.filter(adu => unitOf(adu) === 4)).toHaveLength(3);
+    } finally { await ctx.runtime.stop(); }
   });
 
   it('temporary read returns a single result at manual priority', async () => {
@@ -220,7 +251,7 @@ describe('ConnectionRuntime over fake TCP transport', () => {
     ctx.transport.onResponse(adu => unitOf(adu) === 2 ? null : [respRegs(new Array(qtyOf(adu)).fill(7), tidOf(adu), unitOf(adu))]);
     await ctx.runtime.start();
     try {
-      const scan = ctx.runtime.scanUnits({ from: 1, to: 247 }, 35);
+      const scan = ctx.runtime.scanUnits({ from: 1, to: 247 }, { timeoutMs: 35 });
       await waitFor(() => ctx.transport.sent.some(adu => unitOf(adu) === 2));
       const queued = ctx.runtime.temporaryRead(1, 3, 0, 2);
       expect(ctx.runtime.scan?.found.map(r => r.unitId)).toEqual([1]);
@@ -265,7 +296,7 @@ describe('ConnectionRuntime over fake TCP transport', () => {
       for (const range of [{ from: 0, to: 1 }, { from: 1, to: 248 }, { from: 4, to: 2 }, { from: 1.5, to: 2 }]) {
         await expect(ctx.runtime.scanUnits(range)).rejects.toThrow('range');
       }
-      const scan = ctx.runtime.scanUnits({ from: 1, to: 2 }, 30);
+      const scan = ctx.runtime.scanUnits({ from: 1, to: 2 }, { timeoutMs: 30 });
       await expect(ctx.runtime.scanUnits({ from: 1, to: 2 })).rejects.toThrow('already running');
       ctx.runtime.stopScan();
       await scan;
@@ -459,7 +490,7 @@ describe('configured request timeout', () => {
     const { runtime, diag } = silentRuntime({ ...conn, timeoutMs: 5000, retries: 0 });
     await runtime.start();
     const t0 = Date.now();
-    const found = await runtime.scanUnits({ from: 9, to: 9 }, 40);
+    const found = await runtime.scanUnits({ from: 9, to: 9 }, { timeoutMs: 40 });
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(found).toEqual([]);
     expect(diag.recentTransactions(5).some((x) => x.sourceKind === 'scanner')).toBe(true);

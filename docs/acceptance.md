@@ -26,6 +26,7 @@
 
 ### Trend / History / Diagnosis / Import
 
+- [x] 从站扫描页提供默认折叠的高级配置；FC01/02/03/04、起始地址、超时、重试经 IPC 校验并作用于实际请求。折叠不重置参数，扫描中禁止修改，不改变连接默认值；FC01/02 读取 1 位的短响应正常识别。
 - [x] 临时读取默认 10 个寄存器；从站扫描支持停止、保留部分结果、恢复排队请求与轮询。扫描等待当前写确认原子组结束，不并发占用连接；重复扫描/非法范围拒绝，切换页面后进度和停止操作仍可用，合法异常响应显示实际异常码。
 - [x]  Numeric / Bool / Enum / String 四类 Trend Renderer 与记录语义完整。
 - [x]  Record Session Schema Snapshot 能抵抗后续 Template 修改。
@@ -223,3 +224,11 @@
 - UI 显示停止/正在停止/已停止、实际进度和连接配置的重试次数；异常响应保留异常码。组件测试覆盖默认数量、IPC 参数、切换页面后停止、部分结果、非法范围及 IPC 失败恢复。
 - 本次定向验证：相关文件 ESLint、typecheck；5 个相关测试文件共 39 项通过，另新增写入→回读→扫描互斥用例单独通过（合计 40 项）。包括 TCP Runtime、RTU 停止/迟到帧、Manager delta、PyModbus 互操作和设备工具组件测试。
 - 未运行无关全量测试、打包版 E2E、生产打包或安装卸载；现有 release 产物未更新。
+
+## 本轮增量验证（高级扫描配置，v0.7.0，2026-09-14）
+
+- 位置：从站扫描页的起始/结束 Unit 下方，默认折叠。配置只用于当前扫描，默认 FC03 / Start=0 / Qty=1 / 150 ms / 重试沿用连接；可选 FC01/02/03/04、起始地址 0–65535、超时 10–10000 ms、重试沿用连接或 0–5 次。折叠保留输入；扫描和停止收尾期间锁定。
+- 共享 scanOptionsSchema 在 Renderer / IPC / Runtime 约束只读功能码、地址及数值边界；Main Snapshot 保留实际生效 options，页面重新进入时可查看当前参数。单次覆盖 retries=0 也生效，后续扫描/临时读取仍沿用连接默认策略。
+- 测试发现并修复旧校验缺陷：FC01/02 的 1–8 位响应 PDU 仅 3 bytes，原校验错误要求至少 4 bytes。新增独立 TCP / RTU 短帧向量（RTU CRC 用 PyModbus 独立核对），保留 FC03/04 的原长度要求。
+- 定向测试均通过：协议/Runtime/RTU停止/PyModbus 6 个文件 67 项；扫描 IPC 参数校验 15 项；Manager delta 12 项；设备工具组件 7 项，共 101 个不同用例。组件覆盖默认折叠、展开修改下拉项、折叠后提交、非法输入、运行中参数与停止按钮锁定。真实 PyModbus 覆盖四种 FC 在非零地址的成功探测。
+- 相关文件 ESLint、typecheck 和 git diff --check 通过。未跑无关全量测试、打包版 E2E、生产打包或安装卸载；release/ 未更新。协议回归日志见 out/scan-protocol-tests.log，组件结果见 out/scan-ui-tests.log。

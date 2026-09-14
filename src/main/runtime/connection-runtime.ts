@@ -7,6 +7,7 @@ import type { ModbusRequest, ModbusResponse, ReadFC } from '../../domain/protoco
 import type { BlockDef, ConnectionDef, SlaveDef } from '../../domain/model';
 import { encodeRaw, type PointMapping, type RawMemory } from '../../domain/mapping';
 import type { ScanRow, ScanStateView } from '../../shared/snapshot';
+import { scanOptionsSchema, type ScanOverrides } from '../../shared/scan-options';
 
 export type ConnectionState = 'offline' | 'connecting' | 'online' | 'error';
 
@@ -431,10 +432,10 @@ export class ConnectionRuntime {
   async executeRequest(
     unitId: number,
     req: ModbusRequest,
-    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; signal?: AbortSignal },
+    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; retries?: number; signal?: AbortSignal },
   ): Promise<RequestOutcome> {
     const isRead = req.kind === 'read';
-    const maxAttempts = 1 + Math.max(0, this.config.retries ?? 0);
+    const maxAttempts = 1 + Math.max(0, opts.retries ?? this.config.retries ?? 0);
     let last: RequestOutcome | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       last = await this.attemptRequest(unitId, req, opts);
@@ -649,12 +650,14 @@ export class ConnectionRuntime {
     this.hooks.onChange();
   }
 
-  async scanUnits(range: { from: number; to: number }, timeoutMs = 150): Promise<ScanRow[]> {
+  async scanUnits(range: { from: number; to: number }, overrides: ScanOverrides = {}): Promise<ScanRow[]> {
     if (!Number.isInteger(range.from) || !Number.isInteger(range.to) || range.from < 1 || range.to > 247 || range.from > range.to) {
       throw new Error('Scan range must satisfy 1 <= from <= to <= 247');
     }
     if (this.scanning) throw new Error('Scan already running on this connection');
     if (this.stopped || this.state !== 'online') throw new Error('Connection must be online to scan');
+    const parsed = scanOptionsSchema.parse(overrides);
+    const options = { ...parsed, retries: parsed.retries ?? this.config.retries };
     const found: ScanRow[] = [];
     const controller = new AbortController();
     this.scanController = controller;
@@ -664,7 +667,7 @@ export class ConnectionRuntime {
     let ownsSlot = false;
     const active = () => !controller.signal.aborted && !this.stopped && this.state === 'online';
     const update = (phase: ScanStateView['phase'], currentUnit: number | null) => {
-      this.scanState = { phase, ...range, currentUnit, checked, found: [...found], elapsedMs: this.clock.now() - started };
+      this.scanState = { phase, ...range, options, currentUnit, checked, found: [...found], elapsedMs: this.clock.now() - started };
       this.hooks.onChange();
     };
     update('running', null);
@@ -680,7 +683,7 @@ export class ConnectionRuntime {
         while (active() && this.clock.now() < this.drainUntil) await new Promise((resolve) => setTimeout(resolve, 5));
         if (!active()) break;
         update('running', unit);
-        const outcome = await this.executeRequest(unit, { kind: 'read', fc: 0x03, address: 0, quantity: 1 }, { sourceKind: 'scanner', sourceId: null, timeoutMs, signal: controller.signal });
+        const outcome = await this.executeRequest(unit, { kind: 'read', fc: options.fc, address: options.start, quantity: 1 }, { sourceKind: 'scanner', sourceId: null, timeoutMs: options.timeoutMs, retries: options.retries, signal: controller.signal });
         checked++;
         if (outcome.result === 'ok' || outcome.result === 'exception') {
           found.push({ unitId: unit, responseMs: outcome.durationMs, exceptionCode: outcome.exceptionCode });

@@ -16,6 +16,17 @@ function tcpCtx(tid: number): RequestContext {
 }
 
 describe('ADU validator classification', () => {
+  it.each([
+    { fc: 1, tcp: '00010000000401010101', rtu: '010101019048' },
+    { fc: 2, tcp: '00010000000401020101', rtu: '010201016048' },
+  ] as const)('accepts one-byte FC0$fc bit responses in TCP and RTU', ({ fc, tcp, rtu }) => {
+    // Independent vectors; RTU CRC bytes verified with PyModbus FramerRTU.compute_CRC.
+    for (const [transport, bytes, expectedAduLength] of [['tcp', tcp, 10], ['rtu', rtu, 6]] as const) {
+      const result = validateAdu(Buffer.from(bytes, 'hex'), { transport, unitId: 1, fc, tid: 1, expectedAduLength });
+      expect(result.type).toBe('ok');
+      if (result.type === 'ok' && result.response.kind === 'bits') expect(result.response.bits[0]).toBe(true);
+    }
+  });
   it('ok for matching response', () => {
     const adu = buildRtuAdu(1, encodeResponsePdu({ kind: 'registers', fc: 0x03, registers: [1, 2, 3, 4] }));
     expect(validateAdu(adu, rtuCtx()).type).toBe('ok');

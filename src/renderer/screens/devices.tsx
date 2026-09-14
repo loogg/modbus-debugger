@@ -6,6 +6,7 @@ import { AREAS } from '../../domain/address';
 import { useTranslation } from '../i18n';
 import { fmtTime } from '../time';
 import type { ScanRow } from '../../shared/snapshot';
+import { scanOptionsSchema } from '../../shared/scan-options';
 
 /** Shared baud-rate presets for the add-connection dialog and the connection settings page. */
 export const BAUD_PRESETS = ['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600', '1000000'].map((b) => ({ value: b, label: b }));
@@ -136,6 +137,10 @@ export function ScanView(props: { connectionId: string }) {
   const scan = connectionState?.scan;
   const [from, setFrom] = useState(String(scan?.from ?? 1));
   const [to, setTo] = useState(String(scan?.to ?? 247));
+  const [fc, setFc] = useState(String(scan?.options.fc ?? 3));
+  const [probeStart, setProbeStart] = useState(String(scan?.options.start ?? 0));
+  const [timeout, setProbeTimeout] = useState(String(scan?.options.timeoutMs ?? 150));
+  const [retries, setRetries] = useState(scan ? String(scan.options.retries) : 'inherit');
   const [starting, setStarting] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,13 +150,22 @@ export function ScanView(props: { connectionId: string }) {
   const validRange = from.trim() !== '' && to.trim() !== '' && Number.isInteger(Number(from)) && Number.isInteger(Number(to)) && Number(from) >= 1 && Number(to) <= 247 && Number(from) <= Number(to);
   const summary = scan && !running ? t('devices.scanSummary', { addresses: String(scan.checked), responded: String(rows.length), secs: (scan.elapsedMs / 1000).toFixed(1) }) : null;
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
+  const parsedOptions = scanOptionsSchema.safeParse({
+    fc: Number(fc), start: probeStart.trim() === '' ? NaN : Number(probeStart),
+    timeoutMs: timeout.trim() === '' ? NaN : Number(timeout),
+    retries: retries === 'inherit' ? undefined : Number(retries),
+  });
+  const probe = running && scan ? scan.options : {
+    fc: Number(fc), start: probeStart, timeoutMs: timeout, retries: retries === 'inherit' ? conn?.retries ?? 0 : Number(retries),
+  };
 
   const run = async () => {
+    if (!parsedOptions.success || !validRange || running) return;
     setStarting(true);
     setStopRequested(false);
     setError(null);
     try {
-      const res = await command<ScanRow[]>({ type: 'device.scan', connectionId: props.connectionId, from: Number(from), to: Number(to) });
+      const res = await command<ScanRow[]>({ type: 'device.scan', connectionId: props.connectionId, from: Number(from), to: Number(to), options: parsedOptions.data });
       if (!res.ok) setError(res.error);
     } catch (err) {
       setError(String(err));
@@ -176,12 +190,12 @@ export function ScanView(props: { connectionId: string }) {
     <>
       <PageHeader title={t('devices.scanTitle')} subtitle={t('devices.scanSubtitle')} actions={running
         ? <Button disabled={stopping} onClick={() => void stop()}>{stopping ? t('devices.scanStopping') : t('devices.scanStop')}</Button>
-        : <Button variant="primary" disabled={!validRange || connectionState?.state !== 'online'} onClick={() => void run()}>{t('devices.scanStart')}</Button>} />
+        : <Button variant="primary" disabled={!validRange || !parsedOptions.success || connectionState?.state !== 'online'} onClick={() => void run()}>{t('devices.scanStart')}</Button>} />
       <InfoColumns
         items={[
           { label: t('devices.scanRangeLabel'), value: <span className="mono">{running ? scan?.from ?? from : from} – {running ? scan?.to ?? to : to}</span> },
-          { label: t('devices.scanTimeoutLabel'), value: '150 ms' },
-          { label: t('devices.retries'), value: t('devices.retryCount', { n: String(conn?.retries ?? 0) }) },
+          { label: t('devices.scanTimeoutLabel'), value: `${probe.timeoutMs} ms` },
+          { label: t('devices.retries'), value: t('devices.retryCount', { n: String(probe.retries) }) },
           { label: t('devices.scanConnLabel'), value: conn ? `${conn.name} · ${conn.transport === 'tcp' ? conn.tcp?.host : conn.rtu?.port}` : '—' },
         ]}
       />
@@ -194,6 +208,31 @@ export function ScanView(props: { connectionId: string }) {
         <div className="w-32"><div className="text-xs text-ink2 mb-1.5">{t('devices.scanToLabel')}</div><TextInput aria-label={t('devices.scanToLabel')} data-testid="scan-to" type="number" min={1} max={247} disabled={running} value={running ? scan?.to ?? to : to} onChange={(e) => setTo(e.target.value)} /></div>
       </div>
       {!validRange && !running ? <div role="alert" className="text-xs text-err mt-2">{t('devices.scanInvalidRange')}</div> : null}
+      <details className="mt-4 rounded-card border border-line bg-surface">
+        <summary className="focus-ring cursor-pointer px-5 py-3 text-sm font-medium">{t('devices.scanAdvanced')}</summary>
+        <div className="border-t border-line p-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            <Field label={t('devices.scanFunction')}>
+              <Select value={String(probe.fc)} disabled={running} onChange={setFc} options={[1, 2, 3, 4].map(value => ({ value: String(value), label: `FC0${value} · ${AREAS[value as 1 | 2 | 3 | 4]}` }))} />
+            </Field>
+            <Field label={t('devices.scanProbeAddress')}>
+              <TextInput aria-label={t('devices.scanProbeAddress')} type="number" min={0} max={65535} disabled={running} value={probe.start} onChange={e => setProbeStart(e.target.value)} />
+            </Field>
+            <Field label={t('devices.scanProbeTimeout')}>
+              <TextInput aria-label={t('devices.scanProbeTimeout')} type="number" min={10} max={10000} disabled={running} value={probe.timeoutMs} onChange={e => setProbeTimeout(e.target.value)} />
+            </Field>
+            <Field label={t('devices.retries')}>
+              <Select value={running ? String(probe.retries) : retries} disabled={running} onChange={setRetries} options={[
+                { value: 'inherit', label: t('devices.scanInheritRetries', { n: String(conn?.retries ?? 0) }) },
+                ...[0, 1, 2, 3, 4, 5].map(value => ({ value: String(value), label: t('devices.retryCount', { n: String(value) }) })),
+              ]} />
+            </Field>
+          </div>
+          <div className="mt-3 text-xs text-ink2">{t('devices.scanAdvancedHint')}</div>
+        </div>
+      </details>
+      <div className="mt-3 text-xs text-ink2">{t('devices.requestPreview')} <span className="mono text-ink">FC0{probe.fc} · Start {probe.start} · Qty 1</span></div>
+      {!parsedOptions.success && !running ? <div role="alert" className="text-xs text-err mt-2">{t('devices.scanInvalidOptions')}</div> : null}
       <SectionTitle>{t('devices.scanResults')}</SectionTitle>
       <div className="text-xs text-ink2 -mt-1 mb-3">{t('devices.scanFound', { n: String(rows.length) })}</div>
       <DataTable<ScanRow>

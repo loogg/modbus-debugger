@@ -89,9 +89,11 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
     mgr.start();
     try {
       await sleep(20);
-      const scanning = mgr.handleCommand(commandSchema.parse({ type: 'device.scan', connectionId: 'c1', from: 1, to: 247 }));
+      const options = { fc: 4, start: 123, timeoutMs: 150, retries: 0 };
+      const scanning = mgr.handleCommand(commandSchema.parse({ type: 'device.scan', connectionId: 'c1', from: 1, to: 247, options }));
       await sleep(120);
       expect(deltas.some(d => d.connections?.c1?.scan?.phase === 'running')).toBe(true);
+      expect(mgr.buildSnapshot().connections.c1?.scan?.options).toEqual(options);
       const stop = await mgr.handleCommand(commandSchema.parse({ type: 'device.stopScan', connectionId: 'c1' }));
       expect(stop.ok).toBe(true);
       expect(mgr.buildSnapshot().connections.c1?.scan?.phase).toBe('stopping');

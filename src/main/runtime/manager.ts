@@ -716,7 +716,7 @@ export class RuntimeManager {
       case 'device.scan': {
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
-        const found = await rt.scanUnits({ from: cmd.from, to: cmd.to }, 150);
+        const found = await rt.scanUnits({ from: cmd.from, to: cmd.to }, cmd.options);
         return { ok: true, value: found };
       }
       case 'device.temporaryRead': {

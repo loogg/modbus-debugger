@@ -88,8 +88,13 @@ describe('interop with the standalone PyModbus simulator', () => {
       if (tmp.response?.kind === 'registers') expect(tmp.response.registers.length).toBe(4);
 
       // scanner sees the simulated units
-      const found = await runtime.scanUnits({ from: 1, to: 3 }, 300);
+      const found = await runtime.scanUnits({ from: 1, to: 3 }, { timeoutMs: 300 });
       expect(found.map((f) => f.unitId).sort()).toEqual([1, 2, 3]);
+      for (const fc of [1, 2, 3, 4] as const) {
+        const configured = await runtime.scanUnits({ from: 1, to: 1 }, { fc, start: 5, timeoutMs: 300, retries: 0 });
+        expect(configured.map(row => row.unitId)).toEqual([1]);
+        expect(configured[0]?.exceptionCode).toBeNull();
+      }
 
       expect(diag.recentTransactions(50).length).toBeGreaterThan(3);
       await runtime.stop();

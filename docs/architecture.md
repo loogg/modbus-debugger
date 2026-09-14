@@ -39,7 +39,8 @@ flowchart LR
 - 每 Connection 独立 Runtime / Scheduler，当前 RTU / TCP 均 `maxInFlight = 1`。
 - 优先级：写确认序列 → Temporary Read / 手工诊断 → Periodic Poll。
 - RTU Scanner 独占该 Connection；扫描期间暂停 Poll，结束后恢复。
-- 从站扫描按输入范围（1–247）依次发送 FC03 / Start=0 / Qty=1，每次探测 timeout=150 ms，超时/传输失败按 Connection.retries 重试，重试间隔 50 ms；正常响应与合法异常响应均算发现设备，结果保留异常码。无响应只能说明本次探测未发现，不能断定从站不存在。
+- 从站扫描按输入范围（1–247）依次发送读取探测。默认 FC03 / Start=0 / Qty=1 / timeout=150 ms / 重试沿用 Connection.retries；扫描页 Unit 范围下方提供默认折叠的“高级扫描配置”，可选择 FC01/02/03/04、0-based 起始地址（0–65535）、超时（10–10000 ms）、重试（沿用连接或 0–5 次）。Qty 固定为 1，FC01/02 表示 1 位，FC03/04 表示 1 个寄存器。设置仅覆盖本次扫描，不修改连接配置；扫描与停止收尾期间锁定控件，折叠不会重置设置。
+- `device.scan.options` 使用共享 Zod schema 做 IPC / Runtime 校验，拒绝写功能码、非整数、越界值和非固定数量；未携带 options 的旧命令沿用默认行为。生效后的 options 存入 Main 扫描 Snapshot，页面重新打开时能显示正在执行的参数。超时/传输失败按本次生效 retries 重试，间隔 50 ms；正常响应与合法异常响应均算发现设备，结果保留异常码。无响应只能说明本次探测未发现，不能断定从站不存在。
 - Scanner 阻止当前连接新增 Poll / 手工请求进入执行，等待正在执行的事务或 Write/RMW→Read Back 原子组完成后再占用执行槽。`device.stopScan` 请求停止：当前已发出探测正常收尾，不再重试或发送下一个地址；保留已发现结果，释放执行槽并恢复队列/轮询。RTU 仍遵守超时 drain，迟到响应不能被恢复后的请求接收。断开连接也结束扫描；同一连接拒绝重复扫描。
 - 扫描进度、停止状态、实际已检查地址数和部分结果由 Main Runtime 保存，通过 Connection Snapshot / delta 下发；切换页面再返回仍可查看并停止当前扫描，Renderer 不设后台查询 Timer。
 - 临时读取默认 FC03 / Start=0 / Qty=10，用户可修改数量；只发起一次手工读取操作，沿用连接的超时/重试策略，不新增周期轮询。
@@ -132,10 +133,10 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 ### 重试与日志级别语义
 
 - 重试策略（Connection Scheduler）：
-  - 读类请求（周期轮询 / 临时读取 / 扫描 / 回读 / RMW 读）：仅在 `timeout` 或 `transport`（请求未发出）时按 `connection.retries` 追加尝试，退避 50 ms；`exception` 不重试（设备已明确拒绝）。
+  - 读类请求（周期轮询 / 临时读取 / 扫描 / 回读 / RMW 读）：仅在 `timeout` 或 `transport`（请求未发出）时追加尝试，默认按 `connection.retries`，扫描可单次覆盖；退避 50 ms，`exception` 不重试（设备已明确拒绝）。
   - 写请求：`timeout` / `crc` 类失败不重试（写可能已生效，盲重试会双重写入；由强制 Read Back 判定真实状态）；仅 `transport`（未发出）时重试。
   - 收到合法 Exception Response **立即结算**，不再等到超时；坏帧 / 不匹配帧仍按超时路径处理。
-- 超时取值：`attemptRequest` 使用 `opts.timeoutMs ?? connection.timeoutMs`，即**连接配置的超时对轮询 / 临时读取 / RMW / 写 / 回读全部生效**；只有 Unit Scanner 显式传入更短的探测超时（默认 150 ms）。
+- 超时取值：`attemptRequest` 使用 `opts.timeoutMs ?? connection.timeoutMs`，即**连接配置的超时对轮询 / 临时读取 / RMW / 写 / 回读全部生效**；Unit Scanner 显式传入本次探测超时（默认 150 ms，可配置）。
 - 日志级别（连接级 logLevel）：
   - info：事务仅记录到应用内通信诊断（UI）。
   - debug：额外将每次 TX/RX 原始 ADU hex、Validator 判决、重试决策写入 electron-log（落盘位置见下节：执行目录 `logs/main.log`）。
