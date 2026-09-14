@@ -1,7 +1,7 @@
 {
   "name": "modbus-debugger",
   "productName": "Modbus Debugger",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Modbus RTU / TCP desktop debugging tool",
   "main": ".vite/build/index.js",
   "private": true,
@@ -17,7 +17,8 @@
     "test:integration": "vitest run tests/integration",
     "test:watch": "vitest",
     "test:e2e": "wdio run wdio.conf.ts",
-    "simulator": "python tools/simulator/modbus_sim.py"
+    "simulator": "python tools/simulator/modbus_sim.py",
+    "smoke:release": "node tools/smoke-release.mjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.6.1",
@@ -25,6 +26,7 @@
     "@electron-forge/maker-zip": "^7.6.1",
     "@electron-forge/plugin-auto-unpack-natives": "^7.6.1",
     "@electron-forge/plugin-vite": "^7.11.2",
+    "@electron/asar": "3.4.1",
     "@electron/rebuild": "^3.7.1",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.3",
@@ -43,7 +45,9 @@
     "@wdio/mocha-framework": "^9.4.4",
     "@wdio/spec-reporter": "^9.4.4",
     "autoprefixer": "^10.4.20",
+    "cross-zip": "4.0.1",
     "electron": "^33.2.1",
+    "electron-builder": "26.15.3",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^4.6.2",
     "jsdom": "^25.0.1",

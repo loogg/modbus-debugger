@@ -8,6 +8,7 @@ import { RuntimeManager } from './runtime/manager';
 import { WorkspaceService } from './services/workspace';
 import { HistoryStore } from './services/history';
 import { registerIpc } from './ipc';
+import { executionDirectory } from './services/execution-directory';
 
 let mainWindow: BrowserWindow | null = null;
 let manager: RuntimeManager | null = null;
@@ -36,7 +37,7 @@ function registerAppProtocol(): void {
 }
 
 function execDir(): string {
-  return app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd();
+  return executionDirectory(app.isPackaged, app.getPath('exe'), process.cwd(), process.env.PORTABLE_EXECUTABLE_DIR);
 }
 
 // Serve the packaged renderer over a privileged standard scheme: ES-module scripts

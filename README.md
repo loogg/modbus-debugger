@@ -51,8 +51,21 @@ FC01 / 02 / 03 / 04 / 05 / 06 / 15 / 16。
 ## 生产构建 / 安装包
 
     npm run package           # out/Modbus Debugger-win32-x64
-    npm run make              # out/make/squirrel.windows/x64/*Setup.exe
-    node tools/smoke-installer.mjs   # 安装 → 启动 → 校验 → 卸载 冒烟
+    npm run make -- --platform=win32 --arch=x64   # 同次构建四种产物，平铺到 release/
+    npm run smoke:release     # 目录 / ZIP / Portable 启动与持久化验证，再安装 → 启动 → 卸载
+    node tools/smoke-installer.mjs   # 单独验证 release/ 当前版本 Setup
+
+`release/` 是最终交付目录，`out/` 保留 Forge 与 Portable 构建过程产物。以 0.5.0 / x64 为例：
+
+```text
+release/
+├── modbus-debugger-0.5.0-win-x64/
+├── modbus-debugger-0.5.0-win-x64.zip
+├── modbus-debugger-0.5.0-win-x64-Portable.exe
+└── modbus-debugger-0.5.0-win-x64-Setup.exe
+```
+
+版本号自动读取 `package.json`，架构来自 Forge 目标。无版本或平台父目录；其他版本保留，同名产物在四种产物全部成功构建后替换。ZIP 解压后运行其中的 `modbus-debugger.exe`；Portable 为无需安装的单个 EXE；Setup 使用 Squirrel 安装/卸载。Portable 的日志和默认历史数据库保存在外层 EXE 同级的 `logs/`、`data/`，退出后仍保留，偏好设置沿用 app userData。不要把实际业务数据保存在会被下一次构建替换的交付目录中。
 
 ## 存储与依赖
 

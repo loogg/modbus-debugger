@@ -41,7 +41,7 @@
 
 按 Domain → Persistence → Transport / Codec → Scheduler / Block Cache → Simulator → UI Shell / Components → 功能页面 → E2E → 全页面视觉审核 → Production Build → Installer Smoke 推进。
 
-构建：`npm start`（Vite dev server + Electron）、`npm run package`（`.vite/build` + `.vite/renderer/main_window`）、`npm run make`（Squirrel 安装包）。
+构建：`npm start`（Vite dev server + Electron）、`npm run package`（`.vite/build` + `.vite/renderer/main_window`，目录版输出到 `out/`）、`npm run make`（正式打包，生成以下全部四种交付产物）。
 Main / Preload 打包为 CJS；生产渲染层通过特权 `app://` scheme 提供（保持 webSecurity 与 sandbox 开启）。
 
 每次正式打包必须同时生成以下四种交付产物，缺一不可：
@@ -50,6 +50,18 @@ Main / Preload 打包为 CJS；生产渲染层通过特权 `app://` scheme 提�
 - ZIP 解压版：解压后即可运行，无需安装。
 - 单文件 Portable 版：以单个可执行文件交付，无需安装即可启动。
 - Setup 安装版：提供 Squirrel Setup 安装程序，支持安装、启动和卸载。
+
+`out/` 用于构建中间产物；最终交付产物必须直接平铺到 `release/` 根目录，禁止再套版本号、平台或 `unpacked` 子目录。命名如下（`<version>` 自动读取 `package.json`，`<arch>` 为实际目标架构，如 `x64`）：
+
+```text
+release/
+├── modbus-debugger-<version>-win-<arch>/
+├── modbus-debugger-<version>-win-<arch>.zip
+├── modbus-debugger-<version>-win-<arch>-Portable.exe
+└── modbus-debugger-<version>-win-<arch>-Setup.exe
+```
+
+四种产物必须来自同一版本、同一次构建；全部生成成功后才整理到 `release/`。`release/` 加入 `.gitignore`；重复构建仅替换同名产物，不清空其他版本。Portable 的持久化日志与默认数据库以外层 EXE 所在目录为基准，不得写入退出后会被清理的临时解压目录。
 
 可自行解决的问题直接修复；公共组件、Domain、Scheduler 或 IPC 修改后回归所有受影响路径。
 

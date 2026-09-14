@@ -2,6 +2,7 @@ node_modules/
 .vite/
 .webpack/
 out/
+release/
 dist/
 coverage/
 tools/natives-electron/

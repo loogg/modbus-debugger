@@ -5,6 +5,7 @@ import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { VitePlugin } from '@electron-forge/plugin-vite';
+import { assembleRelease } from './tools/release';
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -16,6 +17,10 @@ const config: ForgeConfig = {
   },
   rebuildConfig: {},
   hooks: {
+    postMake: async (_config, results) => {
+      await assembleRelease(__dirname, results);
+      return results;
+    },
     packageAfterCopy: async (_config: unknown, buildPath: string) => {
       // The Vite plugin makes the packager skip node_modules, so every dependency that the
       // bundled main process still loads through a runtime require() (native/UMD modules kept
@@ -34,7 +39,7 @@ const config: ForgeConfig = {
       setupIcon: path.resolve(__dirname, 'build', 'icon.ico'),
       name: 'modbus-debugger',
     }),
-    new MakerZIP({}, ['darwin']),
+    new MakerZIP({}, ['darwin', 'win32']),
   ],
   plugins: [
     new AutoUnpackNativesPlugin({}),

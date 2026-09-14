@@ -78,6 +78,8 @@
 
 ### Final DoD
 
+- [x] Windows 正式打包同时生成目录版、ZIP 解压版、单文件 Portable 和 Squirrel Setup，按 `modbus-debugger-<version>-win-<arch>` 命名，四项直接平铺在 `release/`，不套版本/平台目录。
+- [x] 四种交付产物分别通过真实启动、版本、Renderer / IPC / serialport 检查；Portable 仅复制单个 EXE 到含空格与中文的独立目录也能运行，退出重启后默认历史库仍保留；Setup 安装与卸载通过。
 - [x]  无关键 TODO / FIXME / placeholder / 最终 mock。
 - [x]  lint / typecheck / unit / integration / E2E 全通过。
 - [x]  Production Build（Vite）成功；打包版实际启动，`serialport`（N-API prebuilds）与 `sql.js`（WASM，Main external + 随包 node_modules）加载正常；项目不含 ABI 敏感原生模块。
@@ -196,3 +198,13 @@
 - [x]  根因定位并从根修复：`Field` 的 `<label>` 包裹会把非交互式后代（选项文本 span）的点击转发给关联控件（input），产生第二个 trusted click 触发重开；是否发生取决于点击点落点（长文本命中 span / 短文本命中 button 内边距），解释了「只有串口复现、波特率与数据位不复现」。`Field` 改为 `role="group" + aria-labelledby`；0.4.1 的 200 ms 抑制窗口（症状处理）已移除，刻意点击永远可重开。
 - [x]  事件流证据（打包版 + 真实鼠标）：修复前串口选中为 `click -> SPAN` 后紧跟 `click -> INPUT`（trusted、同 timeStamp）；修复后仅单次 click 序列，列表保持关闭。
 - [x]  回归：lint 0、tsc 0、Vitest 140（新增「点选项文本 span 关闭且不复开」「Field 不得含 label」）、E2E 22（打包版、真实鼠标点击）、npm run package / make、tools/smoke-installer.mjs（app-0.4.2）全通过。
+
+## 本轮迭代（Windows 四种交付产物，v0.5.0，2026-09-14）
+
+- [x] AGENTS.md 固定 release 根目录平铺规则；版本号与 lockfile 同步到 0.5.0。Forge postMake 以同次 maker 结果生成 ZIP / Setup，electron-builder 只封装 Forge 的 prepackaged 目录生成 Portable；校验包内版本后整理四项，重复构建验证通过，其他版本不清理。
+- [x] 最终产物：`release/modbus-debugger-0.5.0-win-x64/`、同名 `.zip`、`-Portable.exe`、`-Setup.exe`；release 已忽略提交，临时构建目录清理成功。
+- [x] Portable 日志 / 默认数据库使用外层启动器路径；新增回归覆盖临时解压路径、普通目录版、开发模式与非法相对路径。
+- [x] lint、typecheck、Vitest 144 项通过（含独立 PyModbus 互操作）；打包版 WebdriverIO E2E 22 项通过（真实 TCP 读写、回读、扫描、记录、历史、完整功能回归）。
+- [x] Production Build：`npm run make -- --platform=win32 --arch=x64` 完成 Forge package + ZIP + Squirrel + Portable，最终配置再次构建通过。日志：`out/release-build.log`；单元/集成日志：`out/release-tests.log`。
+- [x] `npm run smoke:release` 对最终 release 产物全部通过：目录 / ZIP / Portable / Setup 的真实渲染、typed IPC、serialport、版本；Portable 独立 EXE 在含中文和空格路径运行，外层 data/history.db 写入测试记录后重启仍可读取；Setup 静默安装、实际运行和卸载成功。日志：`out/release-smoke.log`。
+- [x] 16 张 E2E 页面截图已复核，副本留在 `out/release-visual-review/`；新增 1440×960、1280×960、1279×960、1024×680 实际渲染截图及页面无横向溢出断言，见 `out/release-smoke-screenshots/`。本轮不改 UI 布局，不更新既有截图基线。

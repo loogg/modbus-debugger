@@ -5,7 +5,7 @@ module.exports = {
   extends: ['eslint:recommended', 'plugin:@typescript-eslint/recommended'],
   env: { browser: true, node: true, es2022: true },
   parserOptions: { ecmaVersion: 2022, sourceType: 'module', ecmaFeatures: { jsx: true } },
-  ignorePatterns: ['node_modules', '.vite', '.webpack', 'out', 'coverage', 'dist'],
+  ignorePatterns: ['node_modules', '.vite', '.webpack', 'out', 'release', 'coverage', 'dist'],
   rules: {
     '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     '@typescript-eslint/no-explicit-any': 'error',
