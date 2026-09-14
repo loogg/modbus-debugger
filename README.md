@@ -1,111 +1,247 @@
 # Modbus Debugger
 
-Modbus RTU / TCP 桌面调试工具（Electron + Forge **Vite** + React + TypeScript strict + Tailwind）。
+用于现场调试的 Modbus RTU / TCP 桌面工具。连接设备后，可以扫描从站、临时读取寄存器、配置点位、实时读写、观察趋势，并记录和回放历史数据。
 
-主进程是通信运行时、调度器、Block Cache、通信诊断、记录器、历史库与工作区 I/O 的唯一权威状态源；
-渲染进程只消费 Main 下发的 Snapshot / revisioned delta，不直接访问串口、Socket、数据库或文件系统。
-Modbus 协议栈为自研纯 TypeScript 实现（PDU / RTU / TCP Codec + 流式 Framer + ADU Validator），
-FC01 / 02 / 03 / 04 / 05 / 06 / 15 / 16。
+[下载已发布版本](https://github.com/loogg/modbus-debugger/releases) · [下载最新构建](https://github.com/loogg/modbus-debugger/actions/workflows/windows-release.yml) · [反馈问题](https://github.com/loogg/modbus-debugger/issues)
 
-## 开发
+![实时查看从站的数据块、点位与确认值](docs/images/realtime.png)
 
-    npm install
-    npm run lint              # eslint（含 react-hooks/rules-of-hooks = error）
-    npm run typecheck         # tsc --noEmit
-    npm test                  # vitest：unit + integration + UI 组件
-    npm start                 # Vite dev server + Electron（热重载）
+*截图使用本地 PyModbus 模拟器和示例工作区，数据来自实际 TCP 通信。说明与当前主分支同步；已发布版本可能早于文档中的功能。*
 
-定向测试统一通过 `test` 传入目录或文件，不另设重复脚本：
+当前提供 Windows x64 构建。直接使用软件不需要安装 Node.js 或 Python：
 
-    npm test -- tests/unit                   # 单元 / 组件测试
-    npm test -- tests/integration            # 集成测试
-    npm test -- tests/unit/scan-options.test.ts  # 单个测试文件
+| 下载文件 | 使用方式 |
+| --- | --- |
+| `*-Portable.exe` | 单文件免安装，放到可写目录后运行 |
+| `*.zip` | 解压后运行其中的 `modbus-debugger.exe`，保留同目录的其他文件 |
+| `*-Setup.exe` | 运行安装向导，可选择安装目录；0.8.0 起使用 NSIS，卸载保留用户数据 |
 
-需要监听修改时运行 `npx vitest`。日常修复按影响范围选择测试，不默认运行全部测试。
-
-## 构建方式（Vite）
-
-`@electron-forge/plugin-vite` 驱动三个 target，产物统一落在 `.vite/`：
-
-| 配置文件 | target | 产物 | 说明 |
-| --- | --- | --- | --- |
-| `vite.main.config.ts` | main | `.vite/build/index.js` | CJS；`sql.js` / `serialport` / `@serialport/*` 为 external |
-| `vite.preload.config.ts` | preload | `.vite/build/preload.js` | 固定文件名，Main 以 `path.join(__dirname, 'preload.js')` 加载 |
-| `vite.renderer.config.ts` | renderer | `.vite/renderer/main_window/` | 入口为**仓库根** `index.html`，单文件 IIFE bundle |
-
-- `package.json` 的 `main` 指向 `.vite/build/index.js`。
-- 生产渲染层通过特权自定义 scheme 提供：`protocol.registerSchemesAsPrivileged('app')` + `protocol.handle('app', …)` → `net.fetch(pathToFileURL(…))`，窗口 `loadURL('app://./index.html')`。
-  这样既避开 `file://` 下 ES module 的 CORS 限制，又不需要关闭 `webSecurity`；`nodeIntegration=false`、`contextIsolation=true`、renderer `sandbox=true` 全程保持。
-- 开发模式使用 forge 注入的 `MAIN_WINDOW_VITE_DEV_SERVER_URL`（类型声明见 `src/main/vite-env.d.ts`）。
-- plugin-vite 会让 packager 跳过 `node_modules`，因此 `forge.config.ts` 的 `packageAfterCopy` 钩子显式把 external 依赖复制进 asar；`AutoUnpackNativesPlugin` 负责 unpack `.node` 二进制。
-- Main 中只有 external 依赖（`serialport` / `sql.js`）可以保留运行时 `require()`；被 bundle 的依赖必须用 ESM import，否则打包后会变成找不到模块的裸 `require`。
-
-## 独立模拟器（PyModbus，与 TS 客户端实现独立）
-
-    npm run simulator                 # 默认 127.0.0.1:5020，units 1,2,3
-    python tools/simulator/modbus_sim.py --port 50520
-
-## E2E（WebdriverIO + Electron Service，针对打包版）
-
-    npm run package
-    npm run test:e2e          # 自动启动模拟器 + 打包版应用
-
-- E2E 针对**打包版**运行，并用 `MODBUS_E2E=1` 暴露固定 CDP 端口。
-- `tools/e2e/demo.workspace.json` 是提交进仓库的固定 fixture。应用会自动保存工作区，
-  所以 `wdio.conf.ts` 的 `onPrepare` 会把它复制到临时目录再注入 `MODBUS_E2E_WORKSPACE`，
-  fixture 本身永不被运行结果污染。
-- 截图输出到 `tests/e2e/screenshots/`（1440×960 与 1024×680 两种尺寸）。
-
-## 生产构建 / 安装包
-
-**生成全部四种交付产物用 `npm run make`。** `make` 已包含 `package`，无需先运行一次 `package`；仅需目录版进行本地验证时才单独用 `package`。
-
-    npm run package           # out/Modbus Debugger-win32-x64
-    npm run make -- --platform=win32 --arch=x64   # 同次构建四种产物，平铺到 release/
-    npm run smoke:release     # 目录 / ZIP / Portable 启动与持久化验证，再安装 → 启动 → 卸载
-    node tools/smoke-installer.mjs   # 单独验证 release/ 当前版本 Setup
-
-`release/` 是最终交付目录，`out/` 保留 Forge 与 Portable 构建过程产物。以 0.5.0 / x64 为例：
-
-```text
-release/
-├── modbus-debugger-0.5.0-win-x64/
-├── modbus-debugger-0.5.0-win-x64.zip
-├── modbus-debugger-0.5.0-win-x64-Portable.exe
-└── modbus-debugger-0.5.0-win-x64-Setup.exe
-```
-
-版本号自动读取 `package.json`，架构来自 Forge 目标。四种产物全部成功构建后替换同名产物并清理旧版本，失败保留原文件。旧目录中若有数据/日志等非程序文件，保留到 `release/data/backups/`。ZIP 解压后运行 `modbus-debugger.exe`；Portable 是免安装 EXE；Setup 使用 NSIS 向导，可选择安装目录，重装/卸载保留用户数据。旧 Squirrel 安装不会自动卸载。
-
-## GitHub 构建与下载
-
-仓库：[loogg/modbus-debugger](https://github.com/loogg/modbus-debugger) · [Actions 构建](https://github.com/loogg/modbus-debugger/actions) · [版本下载](https://github.com/loogg/modbus-debugger/releases)。
-
-推送代码到 `master` / `main` 后，`Windows packages` 工作流自动构建并执行产物冒烟测试，ZIP、Portable EXE、Setup EXE 可从该次 Actions 运行的 Artifacts 下载（保留 14 天）。仅 Markdown/docs 变更不触发分支构建，也可在 Actions 手动运行。
-
-推送与 `package.json` 对应的 `v<version>` 标签时，同一工作流会把三种文件附加到 GitHub Releases，便于长期下载；标签版本不符时立即失败，不覆盖既有发布文件。分支构建不会自动创建版本发布，也不默认执行业务全量测试。
-
-## 存储与依赖
-
-- 历史库使用 **sql.js**（SQLite 的 WASM 构建，MIT）：零原生二进制、跨机器免编译；
-  `history.db` 落盘仍是标准 SQLite 文件，外部工具可直接打开。
-  `sql.js` 在 Main 中为 external（其 UMD 产物被 Vite 打包后会失败），`sql-wasm.wasm` 通过
-  `createRequire(...).resolve('sql.js')` 的同目录解析定位，开发 / 打包 / Vitest 三种布局都可用。
-- 串口使用 **serialport**（N-API prebuilds，Node / Electron 通用）。
-- 项目**不含 ABI 敏感原生模块**，因此不需要 `electron-rebuild` 或 prebuild 切换流程。
-- 默认运行文件跟随程序所在位置：`data/prefs.json`、`data/history.db`、`data/workspaces/`、`cache/`、`logs/main.log`、`temp/`。Portable 以外层 EXE 为基准，解压到其 `temp/` 下独立目录，正常退出清理本次解压文件。开发模式以项目目录为基准。
-- 数据根目录可通过 `modbus-debugger.exe --data-dir="D:\ModbusData"` 或 `MODBUS_DATA_DIR` 指定，命令行优先；用户显式选择的工作区/数据库路径继续生效。目录不可写时提示并退出，不静默回退 AppData。程序本身放在 C 盘时，跟随程序的目录也会在 C 盘。
-- 新版不自动读取、覆盖或删除旧 AppData 文件；首次使用新数据目录时偏好为默认值，需要的旧工作区可手动打开。Setup 的注册表、快捷方式和安装器自身临时机制仍遵循 Windows 规则。
-- 自动化测试根目录统一为 `out/test-temp/`，WDIO/Smoke 使用独立偏好、缓存、数据库与临时工作区；结束时清理自己的会话目录，并检查日常 AppData 偏好未被改写。
+最新分支构建位于 Actions 对应成功运行的 **Artifacts** 中，下载通常需要登录 GitHub，保留 14 天。版本标签发布的附件位于 Releases。
 
 ## 目录
 
-- `src/domain` 纯 TypeScript 领域层：协议编解码、流式分帧、映射、缩放、重叠校验
-- `src/main` Electron 主进程：Connection Runtime / Scheduler / Block Cache / Recorder / 历史库 / Workspace I/O / IPC
-- `src/preload` 最小 typed API（contextBridge）
-- `src/renderer` React 界面（App Rail + Context Sidebar + Main）
-- `src/shared` Snapshot / Delta / Command 契约（zod）
-- `tests/unit`、`tests/integration`、`tests/e2e`
-- `tests/fixtures/protocol` Golden 向量（expected bytes 由 `tools/gen_protocol_fixtures.py` 独立生成）
-- `tools/simulator` 独立 PyModbus 模拟器；`tools/smoke-installer.mjs` 安装包冒烟
-- `docs/` 设计来源、规范、架构、验收清单；`docs/protocol/` 协议实现参考
+- [一、从源码构建与运行](#一从源码构建与运行)
+- [二、工具使用说明](#二工具使用说明)
+
+## 一、从源码构建与运行
+
+### 1. 准备环境
+
+本文以 Windows x64 为例，使用 PowerShell 执行命令。
+
+| 软件 | 用途 |
+| --- | --- |
+| Git | 获取源码 |
+| Node.js 24.x（包含 npm） | 安装依赖、启动和打包；与 GitHub 构建环境一致 |
+| Python 3.10+、PyModbus 3.15.0 | 可选，仅在使用本地模拟器或相关自动化测试时需要 |
+
+### 2. 获取源码并启动
+
+```powershell
+git clone https://github.com/loogg/modbus-debugger.git
+cd modbus-debugger
+npm ci
+npm start
+```
+
+`npm ci` 按锁文件安装依赖；首次安装需要联网下载依赖和 Electron。`npm start` 启动桌面窗口和开发服务器，修改前端代码时支持热更新。
+
+### 3. 没有设备时，用模拟器体验
+
+在一个终端中启动模拟器：
+
+```powershell
+python -m pip install pymodbus==3.15.0
+npm run simulator -- --port 50535
+```
+
+保持该终端运行。模拟器提供 `127.0.0.1:50535` 上的 Unit 1、2、3，以及会变化的电压、电流、温度等数据。
+
+本仓库提供可以直接打开的[示例工作区](docs/examples/demo.workspace.json)，其中已配置连接、从站、模板和趋势组。先复制一份，避免自动保存修改仓库中的示例：
+
+```powershell
+New-Item -ItemType Directory -Force data/workspaces | Out-Null
+Copy-Item docs/examples/demo.workspace.json data/workspaces/demo.workspace.json
+npm start
+```
+
+在软件中进入 **设置 → 导入工作区**，选择刚复制的 `data/workspaces/demo.workspace.json`。连接成功后进入 **实时**，再在左侧点击 **伺服驱动器 A**，即可看到持续变化的值。
+
+> 模拟器只用于学习、截图和验证。连接真实设备时，请使用设备手册中的通信参数、Unit ID 和寄存器定义。
+
+### 4. 打包为可分发的软件
+
+```powershell
+npm run make -- --platform=win32 --arch=x64
+```
+
+该命令已经包含程序构建，无需先执行 `npm run package`。完成后，`release/` 根目录直接包含：
+
+```text
+release/
+├── modbus-debugger-<version>-win-x64/
+├── modbus-debugger-<version>-win-x64.zip
+├── modbus-debugger-<version>-win-x64-Portable.exe
+└── modbus-debugger-<version>-win-x64-Setup.exe
+```
+
+版本号来自 `package.json`。新产物全部生成成功后才替换和清理旧版本；旧目录中的非程序文件会保留到 `release/data/backups/`。
+
+只需要目录版进行本地验证时，可使用 `npm run package`，输出在 `out/`。测试、构建实现、目录结构和 GitHub 工作流见[开发说明](docs/development.md)。
+
+## 二、工具使用说明
+
+建议按下面的顺序开始：
+
+**建立连接 → 扫描/临时读取 → 配置模板并绑定从站 → 实时读写 → 趋势与记录 → 历史回放**。
+
+### 1. 建立 RTU 或 TCP 连接
+
+1. 进入 **设备**，点击左侧 **添加连接**。
+2. 输入名称，选择 RTU 或 TCP，并填写通信参数。
+3. 创建后，在设备树中选择连接，查看连接状态；需要修改已连接的参数时，先点击 **断开连接**，修改并保存，再点击 **连接**。
+
+| 类型 | 需要与设备一致的参数 |
+| --- | --- |
+| RTU | 串口、波特率、数据位、校验、停止位；串口下拉支持枚举，也可手工输入 |
+| TCP | 设备/网关 IP 地址、端口；本地示例为 `127.0.0.1:50535` |
+
+![添加连接并设置 RTU 通信参数](docs/images/connection.png)
+
+**“已连接”不等于从站已响应。** RTU 已连接表示串口已打开，TCP 已连接表示 Socket 已建立；具体从站和地址是否可用，还需要扫描或读取确认。
+
+### 2. 扫描从站
+
+在连接下点击 **扫描**，填写起始和结束 Unit，点击 **开始扫描**。
+
+- 范围为 1–247，按 Unit ID 顺序探测。
+- **高级扫描配置**默认折叠，可设置读取功能码、起始地址、超时和重试。
+- 默认使用 FC03，从地址 0 读取 1 个寄存器，单次超时 150 ms，重试沿用连接设置。
+- 功能码可选 FC01/02/03/04；读取数量固定为 1（位或寄存器）。
+- 扫描期间当前连接的周期轮询暂停；点击 **停止扫描**后，当前请求收尾，不再探测后续地址，并恢复轮询。
+
+进度中的“已检查 4/247、当前 Unit 5”表示前四个从站地址已检查完，**不是发现了四台设备**。发现数量单独显示，结果会陆续加入表格。正常响应和合法异常响应都算发现从站；可再用临时读取核对实际数据。
+
+停止扫描会保留本次结果；重新开始会清空上次扫描结果。扫描不会自动把设备加入左侧列表，需要点击结果中的 **添加从站** 或使用左侧 **＋ 添加从站**。已添加的从站不受重新扫描影响。
+
+### 3. 临时读取与失败排查
+
+在连接下点击 **临时读取**，填写地址区、起始地址、数量和 Unit ID，确认请求预览后点击 **读取**。默认读取 FC03、地址 0、10 个寄存器。
+
+![一次临时读取返回数据的示例，读取数量可自行调整](docs/images/temporary-read.png)
+
+临时读取是手工请求，不会自动建立周期轮询。读取成功后可以查看原始数值，并点击 **保存为数据块**，选择已有模板或新建模板继续配置。
+
+失败时页面会显示原因、请求参数及可用的 Trace ID，点击 **查看通信诊断**可进一步核对报文：
+
+| 提示 | 建议检查 |
+| --- | --- |
+| 超时 | Unit ID、串口参数/IP/端口、接线、设备是否支持本次功能码和地址；超时只表示未收到有效匹配的响应 |
+| 异常 `0x01` | 设备是否支持该读取功能码 |
+| 异常 `0x02` | 起始地址和读取范围是否存在，是否误用了 PLC 编号 |
+| 异常 `0x03` | 请求参数是否符合设备要求 |
+| 连接或传输失败 | 串口是否被占用/拔出、网络是否断开 |
+| CRC、格式或响应不匹配 | 在通信诊断中检查原始帧、Unit ID、功能码及通信参数 |
+
+读取期间会锁定输入和按钮。当前连接正在扫描时，请先停止扫描再临时读取；失败后不会把上次成功的数据当作本次结果展示。
+
+### 4. 配置模板、数据块和点位
+
+工具将通信连接与设备寄存器定义分开管理：
+
+| 对象 | 表达的内容 |
+| --- | --- |
+| 连接 | 一条串口或 TCP 链路 |
+| 从站 | 连接下的 Unit ID，以及绑定哪个设备模板 |
+| 设备模板 | 可被多个从站复用的寄存器定义 |
+| 数据块 | 地址区、起始地址、长度、轮询周期 |
+| 点位 | 如何把数据块中的寄存器/位解释为电压、状态、转速等值 |
+
+1. 进入 **模板**，新建设备模板，或选择已有模板点击 **编辑模板**。
+2. 添加数据块，设置地址区、起始地址、长度和周期。同一模板、同一地址区的数据块不能重叠。
+3. 添加点位，设置偏移、数据类型、寄存器数量、字节/字序、位宽、缩放和访问权限等。
+4. 回到 **设备**添加或编辑从站，填写 Unit ID 并绑定模板。
+
+![模板库中的数据块与从站绑定概览](docs/images/template.png)
+
+点位允许共享寄存器，例如用一个完整状态字和多个 Bool/BitField 解释同一寄存器。模板修改会影响所有绑定的从站；设备定义不同时，应先复制模板再修改。
+
+**核心地址统一为 0-based。** 例如 Holding Register 起始地址 0 表示 FC03 的协议地址 0，不能直接填 40001。PLC 风格地址只在导入寄存器表时转换。XLSX、CSV、JSON 或剪贴板导入应先完成字段映射与预览，再应用到模板。
+
+### 5. 实时查看与写入
+
+进入 **实时** 后，在左侧选择从站查看全部点位，或选择某个数据块聚焦查看。主界面预览中的表格会显示偏移、类型、当前值、单位及访问权限。
+
+- 每个数据块按自己的周期刷新，切换页面不会停止后台轮询。
+- 双击可写点位的当前值进入编辑，按 **Enter** 提交、**Esc** 取消。
+- 输入值和写入中的待确认值不会冒充设备值；写入后读取确认，界面才更新为设备确认值。
+- 写超时表示结果未知，不能直接认定失败或再次盲写，应观察回读及通信记录。
+- 输入寄存器和离散输入只读；保持寄存器、线圈还要看点位的访问权限。
+
+较窄窗口会在表格内横向滚动，不会隐藏关键工程列。点位配置了高风险写入确认时，提交前还会出现确认提示。
+
+### 6. 观察趋势与开始记录
+
+1. 在实时表选择关心的点位，点击 **加入趋势组**；也可以进入 **趋势**创建趋势组并添加信号。
+2. 在趋势组的 **信号**页管理信号，在 **图表**页观察曲线和状态变化。
+3. 需要保存过程时，点击 **开始记录**；采集结束后点击 **停止记录**。
+
+![趋势图表与记录入口](docs/images/trend.png)
+
+数值信号用折线，Bool 用数字波形，Enum 用状态段，String 用变化事件。图表显示/隐藏只影响展示，记录范围仍是趋势组的全部信号。趋势复用后台读取的数据，不会额外建立一套设备轮询。
+
+> 不点击“开始记录”，实时数据不会默认长期保存。两次轮询之间发生并恢复的瞬态，也不保证被采集到。
+
+### 7. 历史回放与通信诊断
+
+**历史：**进入 **历史**，在左侧选择记录会话，查看趋势、数据及信号定义；点击 **回放**可离线查看变化过程。历史会话保留记录时的点位定义，后续修改模板不会改变旧会话的解释。
+
+![已结束记录会话的历史趋势](docs/images/history.png)
+
+当前 **导出 CSV** 会把 CSV 文本复制到剪贴板，可粘贴到表格或文本文件中保存。
+
+**通信：**进入 **通信**并选择连接，查看请求/响应事务，点击一行展开详细信息和原始报文。通过 **连接健康**查看请求率、耗时和错误统计；通过点位追踪检查事务来源。
+
+![通信事务、原始报文及诊断入口](docs/images/communication.png)
+
+### 8. 保存工作区和管理文件
+
+在 **设置 → 另存为** 保存 `.workspace.json`；确定文件位置后，配置修改会自动保存。**导入工作区**用于打开已有文件，**导出工作区**将 JSON 文本复制到剪贴板。
+
+默认存储根目录是程序所在目录；Portable 使用外层 EXE 所在目录，源码开发模式使用项目目录：
+
+```text
+程序目录/
+├── data/
+│   ├── prefs.json        # 窗口、语言、时区等偏好
+│   ├── history.db        # 历史数据库
+│   └── workspaces/       # 保存对话框的默认位置
+├── cache/                # 浏览器缓存
+├── logs/main.log         # 运行日志
+└── temp/                 # 临时文件与 Portable 解压目录
+```
+
+也可指定另一处可写目录：
+
+```powershell
+.\modbus-debugger.exe --data-dir="D:\ModbusData"
+```
+
+或设置 `MODBUS_DATA_DIR` 环境变量，命令行参数优先。目录不可写时会提示并退出，不会悄悄改写到 AppData。程序或所选目录在 C 盘时，相关文件自然仍在 C 盘；Windows 安装器的注册表、快捷方式等系统机制不受这一约定限制。
+
+0.8.0 起使用新的目录布局，不自动覆盖或删除旧 AppData 文件。需要的旧工作区可手动打开；设置页可查看当前历史数据库路径。
+
+### 9. 常见问题
+
+| 问题 | 处理方式 |
+| --- | --- |
+| 已连接，但没有从站数据 | 先用扫描或临时读取验证 Unit ID；再确认从站已启用并绑定包含数据块/点位的模板 |
+| 进入实时页面后是空的 | 在左侧选择从站或数据块 |
+| 读到数值但明显不对 | 核对数据类型、字节/字序、偏移、寄存器数量及缩放参数 |
+| 修改模板影响了另一台设备 | 两个从站可能绑定了同一模板；设备定义不同请复制模板 |
+| 历史列表为空 | 先在趋势组开始并停止一次记录，确认设置页显示的是预期数据库 |
+| 下载的版本与截图不同 | README 与主分支同步；查看下载版本号，需要新功能时获取最新成功 Actions 构建 |
+
+提交问题时，请附上版本号、RTU/TCP 类型、复现步骤、异常提示和必要的通信记录；可先移除设备地址、名称等不希望公开的信息。
+
+开发实现与验证命令：[开发说明](docs/development.md) · [架构](docs/architecture.md) · [协议说明](docs/protocol/01-application-protocol.md)。
