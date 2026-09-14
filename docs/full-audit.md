@@ -80,4 +80,14 @@
 - 时区用同一traceId在UTC和Asia/Shanghai之间切换，显示相差8小时，原始UTC不变。历史/回放的 `00:00:00` 是相对时长，应当不随时区改变。
 - 多信号：组件验证12条数值信号/4种单位全部保留，以及隐藏单位组后回到双轴；打包UI验证9个混合信号（6条数值曲线、5种单位）和动态显隐。按单位而不是信号数量分轴：同单位共享轴，2种单位双轴，超过2种单位分图；Bool/Enum/String使用状态轨道。
 - 定向结果：5个文件20个单元/组件测试、3个打包E2E通过，相关lint/typecheck通过。日志为 `out/audit/followup-unit.log`、`followup-typecheck.log`、`followup-e2e.log`；没有运行无关全量回归。
-- 本轮只构建测试所需0.9.1目录版：`out/Modbus Debugger-win32-x64/modbus-debugger.exe`。`release/`中的0.9.0四种文件没有重打，不能将旧文件当作本轮修复产物。
+- 该次定向补验只构建测试所需0.9.1目录版：`out/Modbus Debugger-win32-x64/modbus-debugger.exe`。当时`release/`中的0.9.0文件尚未重打；后续0.9.1正式产物验证见下文。
+
+
+## 0.9.1：打包与发布验证
+
+用户要求补齐应用测试、打包及推送发布后，再次复核：
+
+- lint、typecheck通过；20个定向单元/组件用例和3个打包E2E通过，见 `out/audit/publish-lint.log`、`publish-typecheck.log`、`publish-unit.log`、`publish-e2e.log`。未机械重跑无关业务全量用例。
+- `npm run make -- --platform=win32 --arch=x64`成功生成同一版本、同次构建的目录、ZIP、Portable、Setup，直接放在 `release/`，见 `out/audit/publish-make.log`。
+- `npm run smoke:release`通过四种产物启动、Portable重启/数据保留/解压目录清理、自定义数据目录、Setup自选目录安装/重装/卸载。卸载保留用户数据，日常AppData偏好未变化，见 `out/audit/publish-smoke.log`。
+- 发布标签固定为与 `package.json` 一致的 `v0.9.1`；GitHub Actions另外构建并验证云端产物，成功后自动附加ZIP、Portable和Setup到对应Release。
