@@ -20,3 +20,15 @@ describe('numeric chart unit axes', () => {
     expect(mocks.setOption.mock.calls.every(call => call[0].yAxis.length === 1)).toBe(true);
   });
 });
+
+it('preserves all 12 signals across four units and switches back to shared dual axes after hiding groups', () => {
+  const many = Array.from({length: 12}, (_, i) => ({...series(['V','A','rpm','°C'][i % 4]!, i), name:`signal-${i}`}));
+  const {rerender} = render(<NumericChart series={many} />);
+  expect(mocks.setOption.mock.calls.flatMap(call => call[0].series).map((s: {name:string})=>s.name).sort()).toEqual(many.map(s=>s.name).sort());
+  expect(mocks.setOption.mock.calls.every(call => call[0].series.length === 3 && call[0].yAxis.length === 1)).toBe(true);
+  mocks.setOption.mockClear();
+  rerender(<NumericChart series={many.filter(s=>s.unit === 'V' || s.unit === 'A')} />);
+  const option = mocks.setOption.mock.calls.at(-1)![0];
+  expect(option.series).toHaveLength(6);
+  expect(option.yAxis.map((a:{name:string})=>a.name)).toEqual(['V','A']);
+});

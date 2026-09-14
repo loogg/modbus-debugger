@@ -55,7 +55,7 @@ export function CommScreen() {
     return list
       .filter(tx => {
         const slave = workspace?.slaves.find(s => s.connectionId === tx.connectionId && s.unitId === tx.unitId);
-        return (!slave || slaveFilter[slave.id] !== false) && resultFilter[tx.result === 'ok' ? 'ok' : tx.result === 'timeout' ? 'timeout' : 'exception'];
+        return (!slave || slaveFilter[slave.id] !== false) && resultFilter[tx.result === 'ok' ? 'ok' : tx.result === 'timeout' ? 'timeout' : tx.result === 'exception' ? 'exception' : 'other'];
       })
       .filter((t) => !onlyErrors || t.result !== 'ok')
       .filter((t) => !search || t.summary.includes(search) || String(t.functionCode).includes(search) || t.traceId.includes(search))

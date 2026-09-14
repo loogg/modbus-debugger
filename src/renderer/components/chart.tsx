@@ -117,5 +117,5 @@ function UnitChart(props: NumericChartProps) {
     };
   }, [props.series, props.startMs, props.endMs, props.xMode]);
 
-  return <div ref={ref} style={{ width: '100%', height: props.height ?? 300 }} />;
+  return <div ref={ref} data-chart-units={JSON.stringify([...new Set(props.series.map(s => s.unit ?? ''))])} data-series-count={props.series.length} style={{ width: '100%', height: props.height ?? 300 }} />;
 }

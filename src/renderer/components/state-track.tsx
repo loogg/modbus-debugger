@@ -48,6 +48,30 @@ export function StateTrack(props: {
   const span = Math.max(1, props.endMs - props.startMs);
   const x = (t: number) => padL + ((t - props.startMs) / span) * (width - padL - padR);
 
+  // One marker per actual string state change, including the state at the window start.
+  const markers: TrackEvent[] = props.initialValue === null ? [] : [{ tMs: props.startMs, value: props.initialValue }];
+  for (const event of [...props.events].sort((a, b) => a.tMs - b.tMs)) {
+    if (event.tMs < props.startMs || event.tMs > props.endMs) continue;
+    if (markers.at(-1)?.value !== event.value) markers.push(event);
+  }
+  const plotWidth = Math.max(0, width - padL - padR);
+  const labelWidth = Math.min(120, plotWidth);
+  const labels = new Map<number, { center: number; text: string }>();
+  let occupiedLeft = width;
+  // Prefer the most recent change when labels would collide; all markers retain their full tooltip.
+  for (let i = markers.length - 1; i >= 0 && labelWidth >= 64; i--) {
+    const marker = markers[i]!;
+    const center = Math.max(padL + labelWidth / 2, Math.min(width - padR - labelWidth / 2, x(marker.tMs)));
+    if (center + labelWidth / 2 + 8 > occupiedLeft) continue;
+    let text = ''; let used = 0;
+    for (const char of marker.value) {
+      const charWidth = char.codePointAt(0)! > 255 ? 12 : 8;
+      if (used + charWidth > labelWidth - 16) { text += '…'; break; }
+      text += char; used += charWidth;
+    }
+    labels.set(i, { center, text }); occupiedLeft = center - labelWidth / 2;
+  }
+
   const segments: Array<{ from: number; to: number; value: string }> = [];
   let cur = props.initialValue;
   let curFrom = props.startMs;
@@ -59,7 +83,7 @@ export function StateTrack(props: {
   if (cur !== null) segments.push({ from: curFrom, to: props.endMs, value: cur });
 
   return (
-    <div ref={ref} className="w-full">
+    <div ref={ref} data-state-track={props.kind} aria-label={props.label} className="w-full">
       <svg width={width} height={height} className="block">
         <text x={8} y={18} fontSize={12} fill="#1A1C21" fontWeight={600}>
           {props.label}
@@ -122,22 +146,17 @@ export function StateTrack(props: {
         {props.kind === 'string' && (
           <g>
             <line x1={padL} x2={width - padR} y1={40} y2={40} stroke="#D9DEE5" strokeDasharray="3 3" />
-            {props.initialValue !== null ? (
-              <text x={padL + 4} y={30} fontSize={11} fill="#62666F">
-                {props.initialValue}
-              </text>
-            ) : null}
-            {props.events.map((ev, i) => (
-              <g key={i}>
-                <circle cx={x(ev.tMs)} cy={40} r={4} fill={props.color ?? '#7A5AF8'} />
-                <text x={x(ev.tMs)} y={26} fontSize={11} fill={props.color ?? '#7A5AF8'} textAnchor="middle" fontWeight={600}>
-                  {ev.value}
-                </text>
-                <text x={x(ev.tMs)} y={height - 2} fontSize={10} fill="#62666F" textAnchor="middle">
-                  {fmtTime(ev.tMs)}
-                </text>
-              </g>
-            ))}
+            {markers.map((event, i) => {
+              const label = labels.get(i);
+              return <g key={i} role="img" aria-label={`${event.value} · ${fmtTime(event.tMs)}`}>
+                <title>{event.value} · {fmtTime(event.tMs)}</title>
+                <circle cx={x(event.tMs)} cy={40} r={4} fill={props.color ?? '#7A5AF8'} />
+                {label ? <>
+                  <text data-string-label x={label.center} y={26} fontSize={11} fill={props.color ?? '#7A5AF8'} textAnchor="middle" fontWeight={600}>{label.text}</text>
+                  <text data-string-time x={label.center} y={height - 2} fontSize={10} fill="#62666F" textAnchor="middle">{fmtTime(event.tMs)}</text>
+                </> : null}
+              </g>;
+            })}
           </g>
         )}
       </svg>

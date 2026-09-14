@@ -63,7 +63,7 @@ export interface Toast {
 
 interface AppState {
   commSlaveFilter: Record<string, boolean>;
-  commResultFilter: { ok: boolean; timeout: boolean; exception: boolean };
+  commResultFilter: { ok: boolean; timeout: boolean; exception: boolean; other: boolean };
   api: ModbusApi | null;
   snapshot: AppSnapshot | null;
   module: ModuleId;
@@ -131,7 +131,7 @@ function appendLive(live: Record<string, LiveSeries>, points: AppSnapshot['point
 
 export const useApp = create<AppState>((set, get) => ({
   commSlaveFilter: {},
-  commResultFilter: { ok: true, timeout: true, exception: true },
+  commResultFilter: { ok: true, timeout: true, exception: true, other: true },
   api: null,
   snapshot: null,
   module: 'devices',

@@ -427,6 +427,7 @@ function CommSidebar() {
         <Checkbox checked={resultFilter.ok} onCheckedChange={(v) => setResultFilter({ ...resultFilter, ok: v })} label={t('shell.comm.resultOk')} />
         <Checkbox checked={resultFilter.timeout} onCheckedChange={(v) => setResultFilter({ ...resultFilter, timeout: v })} label={t('shell.comm.resultTimeout')} />
         <Checkbox checked={resultFilter.exception} onCheckedChange={(v) => setResultFilter({ ...resultFilter, exception: v })} label={t('shell.comm.resultException')} />
+        <Checkbox checked={resultFilter.other} onCheckedChange={(v) => setResultFilter({ ...resultFilter, other: v })} label="其他错误" />
       </div>
       <div className="mt-4 mb-2 text-xs text-ink2">{t('shell.comm.capture')}</div>
       <div className="flex flex-col gap-1.5 text-xs text-ink2">
