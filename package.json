@@ -13,9 +13,6 @@
     "lint": "eslint . --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration",
-    "test:watch": "vitest",
     "test:e2e": "wdio run wdio.conf.ts",
     "simulator": "python tools/simulator/modbus_sim.py",
     "smoke:release": "node tools/smoke-release.mjs"

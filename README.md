@@ -15,6 +15,14 @@ FC01 / 02 / 03 / 04 / 05 / 06 / 15 / 16。
     npm test                  # vitest：unit + integration + UI 组件
     npm start                 # Vite dev server + Electron（热重载）
 
+定向测试统一通过 `test` 传入目录或文件，不另设重复脚本：
+
+    npm test -- tests/unit                   # 单元 / 组件测试
+    npm test -- tests/integration            # 集成测试
+    npm test -- tests/unit/scan-options.test.ts  # 单个测试文件
+
+需要监听修改时运行 `npx vitest`。日常修复按影响范围选择测试，不默认运行全部测试。
+
 ## 构建方式（Vite）
 
 `@electron-forge/plugin-vite` 驱动三个 target，产物统一落在 `.vite/`：
@@ -49,6 +57,8 @@ FC01 / 02 / 03 / 04 / 05 / 06 / 15 / 16。
 - 截图输出到 `tests/e2e/screenshots/`（1440×960 与 1024×680 两种尺寸）。
 
 ## 生产构建 / 安装包
+
+**生成全部四种交付产物用 `npm run make`。** `make` 已包含 `package`，无需先运行一次 `package`；仅需目录版进行本地验证时才单独用 `package`。
 
     npm run package           # out/Modbus Debugger-win32-x64
     npm run make -- --platform=win32 --arch=x64   # 同次构建四种产物，平铺到 release/
