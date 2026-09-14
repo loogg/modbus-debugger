@@ -232,3 +232,11 @@
 - 测试发现并修复旧校验缺陷：FC01/02 的 1–8 位响应 PDU 仅 3 bytes，原校验错误要求至少 4 bytes。新增独立 TCP / RTU 短帧向量（RTU CRC 用 PyModbus 独立核对），保留 FC03/04 的原长度要求。
 - 定向测试均通过：协议/Runtime/RTU停止/PyModbus 6 个文件 67 项；扫描 IPC 参数校验 15 项；Manager delta 12 项；设备工具组件 7 项，共 101 个不同用例。组件覆盖默认折叠、展开修改下拉项、折叠后提交、非法输入、运行中参数与停止按钮锁定。真实 PyModbus 覆盖四种 FC 在非零地址的成功探测。
 - 相关文件 ESLint、typecheck 和 git diff --check 通过。未跑无关全量测试、打包版 E2E、生产打包或安装卸载；release/ 未更新。协议回归日志见 out/scan-protocol-tests.log，组件结果见 out/scan-ui-tests.log。
+
+## 本轮增量验证（GitHub 发布与旧产物清理，v0.7.1，2026-09-14）
+
+- make 成功后清理 release/ 中符合约定命名的旧版本产物；当前版本及其他非打包文件保留，失败时使用临时备份回滚。实际构建已从 0.5.0 / 0.7.0 八项旧产物更新为 0.7.1 的四项产物。
+- 本地验证：release 定向测试 5 项、相关 ESLint、typecheck、工作流 YAML 解析、make、四种产物 smoke 均通过；Portable 重启持久化、Setup 安装/运行/卸载通过，未执行无关业务全量回归。
+- 按用户确认新建公开仓库 https://github.com/loogg/modbus-debugger，master 与 v0.7.1 已推送。首次使用标签手动触发发布工作流，并取消重复分支构建，避免同一提交重复消耗构建资源。
+- GitHub 云端构建与 Smoke Test 成功：https://github.com/loogg/modbus-debugger/actions/runs/34837275782 。所有运行文件由云端 npm ci + Forge make 构建；没有上传本地 release 文件代替云端构建。
+- GitHub Release 已发布：https://github.com/loogg/modbus-debugger/releases/tag/v0.7.1 。三个附件均为 uploaded：modbus-debugger-0.7.1-win-x64.zip、modbus-debugger-0.7.1-win-x64-Portable.exe、modbus-debugger-0.7.1-win-x64-Setup.exe。
