@@ -91,3 +91,10 @@
 - `npm run make -- --platform=win32 --arch=x64`成功生成同一版本、同次构建的目录、ZIP、Portable、Setup，直接放在 `release/`，见 `out/audit/publish-make.log`。
 - `npm run smoke:release`通过四种产物启动、Portable重启/数据保留/解压目录清理、自定义数据目录、Setup自选目录安装/重装/卸载。卸载保留用户数据，日常AppData偏好未变化，见 `out/audit/publish-smoke.log`。
 - 发布标签固定为与 `package.json` 一致的 `v0.9.1`；GitHub Actions另外构建并验证云端产物，成功后自动附加ZIP、Portable和Setup到对应Release。
+
+### GitHub 发布结果
+
+- 已推送代码及不可变更的 `v0.9.1` 标签，发布源码提交为 `ea13603c6b8dac24323d01e2a694602f004fc8b5`。
+- [分支构建](https://github.com/loogg/modbus-debugger/actions/runs/34860885420)成功。
+- [标签构建](https://github.com/loogg/modbus-debugger/actions/runs/34860885646)第二次执行成功，build和publish均通过。首次执行的全部产物功能检查通过，但在卸载后删除测试临时目录时出现Windows `EPERM`，因此整次流程判失败、发布未执行；保留失败记录，未修改标签或跳过检查，完整重试后成功。没有将首次失败隐去，也没有把临时清理问题说成已通过代码修复。
+- [v0.9.1 Release](https://github.com/loogg/modbus-debugger/releases/tag/v0.9.1)已正式发布（非草稿、非预发布），已核对三个附件均为uploaded且大小非零：`modbus-debugger-0.9.1-win-x64.zip`、`modbus-debugger-0.9.1-win-x64-Portable.exe`、`modbus-debugger-0.9.1-win-x64-Setup.exe`。
