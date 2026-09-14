@@ -240,3 +240,10 @@
 - 按用户确认新建公开仓库 https://github.com/loogg/modbus-debugger，master 与 v0.7.1 已推送。首次使用标签手动触发发布工作流，并取消重复分支构建，避免同一提交重复消耗构建资源。
 - GitHub 云端构建与 Smoke Test 成功：https://github.com/loogg/modbus-debugger/actions/runs/34837275782 。所有运行文件由云端 npm ci + Forge make 构建；没有上传本地 release 文件代替云端构建。
 - GitHub Release 已发布：https://github.com/loogg/modbus-debugger/releases/tag/v0.7.1 。三个附件均为 uploaded：modbus-debugger-0.7.1-win-x64.zip、modbus-debugger-0.7.1-win-x64-Portable.exe、modbus-debugger-0.7.1-win-x64-Setup.exe。
+
+## 本轮增量验证（临时读取失败反馈，v0.7.2，2026-09-14）
+
+- 扫描进度明确显示“已检查从站地址 / 正在探测 Unit / 已发现从站”，例如已检查 4/247、当前 Unit 5、发现 0，并非错误提示或已发现 4 台设备。
+- 临时读取显示读取中、超时、合法设备异常码及含义、传输/CRC/格式/不匹配错误及 IPC 失败；失败提示保留请求参数、Trace ID 与通信诊断入口，成功重试清除提示。读取失败后清除旧成功数据，禁用重复提交；离线和扫描占用状态有说明。
+- 成功结果的地址与保存 Block 参数绑定提交时请求，后续编辑表单不会把旧数据错误绑定到新地址/Unit。Main 离线读取立即拒绝，停止/传输断开会结算尚未发送的排队操作，避免永久 pending。
+- 定向验证：相关 ESLint、typecheck；临时读取反馈、TCP Runtime、RTU 停止、Manager delta 55 项通过；随后新增“传输中断结算排队读取”和“已检查/发现数量区分”两个用例分别定向通过，合计 57 项。未运行无关全量 E2E、生产打包或发布，release/ 与 GitHub Release 未更新。

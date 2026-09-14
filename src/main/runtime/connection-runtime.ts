@@ -58,7 +58,7 @@ export class ConnectionRuntime {
 
   private targets: PollTarget[] = [];
   private due = new Map<string, number>();
-  private queue: Array<{ priority: number; seq: number; label: string; run: () => Promise<void> }> = [];
+  private queue: Array<{ priority: number; seq: number; label: string; run: () => Promise<void>; cancel: (error: Error) => void }> = [];
   private queueSeq = 0;
   private busy = false;
   private timer: NodeJS.Timeout | null = null;
@@ -132,7 +132,7 @@ export class ConnectionRuntime {
     this.failWaiter('transport', 'connection stopped');
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    this.queue = [];
+    for (const item of this.queue.splice(0)) item.cancel(new Error('Connection stopped before the queued request was sent'));
     await this.transport.close().catch(() => undefined);
     this.setState('offline');
   }
@@ -167,6 +167,7 @@ export class ConnectionRuntime {
 
   private handleTransportFailure(err: Error): void {
     if (this.stopped) return;
+    for (const item of this.queue.splice(0)) item.cancel(err);
     this.stopScan();
     this.failWaiter('transport', err.message);
     this.setState('error', err.message);
@@ -538,6 +539,7 @@ export class ConnectionRuntime {
         priority,
         seq: this.queueSeq++,
         label,
+        cancel: reject,
         run: async () => {
           try {
             await run();
@@ -554,18 +556,22 @@ export class ConnectionRuntime {
 
   /** Single request at manual/diagnostic priority; pauses nothing else but jumps the queue. */
   temporaryRead(unitId: number, area: 1 | 2 | 3 | 4, start: number, quantity: number): Promise<RequestOutcome> {
-    return new Promise((resolve) => {
+    if (this.stopped || this.state !== 'online') return Promise.reject(new Error('Connection is offline; connect before reading'));
+    return new Promise((resolve, reject) => {
       this.queue.push({
         priority: PRIORITY.manual,
         seq: this.queueSeq++,
         label: 'temporary-read',
+        cancel: reject,
         run: async () => {
-          const outcome = await this.executeRequest(
-            unitId,
-            { kind: 'read', fc: area as ReadFC, address: start, quantity },
-            { sourceKind: 'temporary-read', sourceId: null },
-          );
-          resolve(outcome);
+          try {
+            const outcome = await this.executeRequest(
+              unitId,
+              { kind: 'read', fc: area as ReadFC, address: start, quantity },
+              { sourceKind: 'temporary-read', sourceId: null },
+            );
+            resolve(outcome);
+          } catch (error) { reject(error); }
         },
       });
     });

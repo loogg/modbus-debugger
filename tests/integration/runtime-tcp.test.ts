@@ -246,6 +246,28 @@ describe('ConnectionRuntime over fake TCP transport', () => {
     await ctx.runtime.stop();
   });
 
+  it('rejects offline reads immediately and settles queued operations on disconnect', async () => {
+    await expect(ctx.runtime.temporaryRead(1, 3, 0, 1)).rejects.toThrow('offline');
+    await ctx.runtime.start();
+    const read = expect(ctx.runtime.temporaryRead(1, 3, 0, 1)).rejects.toThrow('stopped');
+    const queued = expect(ctx.runtime.enqueue(1, 'pending operation', async () => undefined)).rejects.toThrow('stopped');
+    await ctx.runtime.stop();
+    await read;
+    await queued;
+    expect(ctx.transport.sent).toHaveLength(0);
+  });
+
+  it('rejects a waiting temporary read when the transport drops', async () => {
+    await ctx.runtime.start();
+    try {
+      await waitFor(() => ctx.transport.sent.length === 1);
+      const read = expect(ctx.runtime.temporaryRead(1, 3, 0, 1)).rejects.toThrow('connection closed');
+      ctx.transport.drop();
+      await read;
+      expect(ctx.transport.sent).toHaveLength(1);
+    } finally { await ctx.runtime.stop(); }
+  });
+
   it('stops after the in-flight probe without retries, preserves results and resumes queued reads and polls', async () => {
     ctx = setup({ ...conn, retries: 3 });
     ctx.transport.onResponse(adu => unitOf(adu) === 2 ? null : [respRegs(new Array(qtyOf(adu)).fill(7), tidOf(adu), unitOf(adu))]);
