@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { emptyWorkspace, migrateWorkspace, workspaceSchema, type Workspace } from '../../domain/model';
 
@@ -188,7 +187,4 @@ export class WorkspaceService {
     return JSON.stringify(this.workspace, null, 2);
   }
 
-  static defaultWorkspaceDir(): string {
-    return path.join(os.homedir(), 'ModbusStudio');
-  }
 }

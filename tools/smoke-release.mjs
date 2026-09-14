@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { assertLegacyPreferencesUnchanged, createScratch, snapshotLegacyPreferences } from './test-paths.mjs';
 import { createRequire } from 'node:module';
 import initSqlJs from 'sql.js';
 import { base, release, root, run, smokeApp, removeScratch } from './smoke-app.mjs';
@@ -9,7 +9,8 @@ import { base, release, root, run, smokeApp, removeScratch } from './smoke-app.m
 const require = createRequire(import.meta.url);
 const { unzip } = require('cross-zip');
 const SQL = await initSqlJs({ locateFile: name => path.join(path.dirname(require.resolve('sql.js')), name) });
-const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'modbus-smoke-release-'));
+const scratch = createScratch('smoke-release-');
+const legacyPreferences = snapshotLegacyPreferences();
 try {
   for (const suffix of ['', '.zip', '-Portable.exe', '-Setup.exe']) await fs.access(path.join(release, base + suffix));
   const directory = path.join(scratch, 'directory');
@@ -36,20 +37,23 @@ try {
   await fs.mkdir(portableDir);
   const portable = path.join(portableDir, `${base}-Portable.exe`);
   await fs.copyFile(path.join(release, `${base}-Portable.exe`), portable);
-  await smokeApp(portable, 'Portable');
+  await smokeApp(portable, 'Portable', { portable: true });
   await fs.access(path.join(portableDir, 'logs', 'main.log'));
   const dbPath = path.join(portableDir, 'data', 'history.db');
   const db = new SQL.Database(await fs.readFile(dbPath));
   db.run("CREATE TABLE release_smoke (value TEXT); INSERT INTO release_smoke VALUES ('survives restart')");
   await fs.writeFile(dbPath, db.export());
   db.close();
-  await smokeApp(portable, 'Portable restart');
+  await smokeApp(portable, 'Portable restart', { portable: true });
   const reopened = new SQL.Database(await fs.readFile(dbPath));
   assert.equal(reopened.exec('SELECT value FROM release_smoke')[0].values[0][0], 'survives restart');
   reopened.close();
   console.log('[smoke] Portable persistence survived extraction cleanup and restart');
+  const overrideRoot = path.join(scratch, 'Custom data 数据');
+  await smokeApp(path.join(directory, 'modbus-debugger.exe'), 'Explicit data directory', { dataRoot: overrideRoot });
   await run(process.execPath, [path.join(root, 'tools', 'smoke-installer.mjs')], 300000, 'inherit');
   console.log('[smoke] PASS: all four release formats, Portable restart, Setup install and uninstall');
 } finally {
+  assertLegacyPreferencesUnchanged(legacyPreferences);
   await removeScratch(scratch);
 }

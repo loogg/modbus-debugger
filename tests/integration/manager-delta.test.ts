@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import fs from 'node:fs';
-import os from 'node:os';
+import { createScratch } from '../../tools/test-paths.mjs';
 import path from 'node:path';
 import { RuntimeManager } from '../../src/main/runtime/manager';
 import { WorkspaceService } from '../../src/main/services/workspace';
@@ -12,7 +11,7 @@ import { commandSchema } from '../../src/shared/commands';
 import type { TransactionRecord } from '../../src/main/runtime/diagnostics';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'mbmgr-'));
+const tmpDir = () => createScratch('manager-');
 
 const conn: ConnectionDef = {
   id: 'c1',

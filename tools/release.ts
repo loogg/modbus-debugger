@@ -18,14 +18,14 @@ export function isOldReleaseArtifact(name: string, currentVersion: string): bool
 }
 
 /** Only use this invocation's maker results, never scan out/ for possibly stale installers. */
-export function makerArtifacts(results: ForgeMakeResult[], arch: string): { zip: string; setup: string } {
+export function makerArtifacts(results: ForgeMakeResult[], arch: string): { zip: string } {
   const artifacts = results.filter(r => r.platform === 'win32' && r.arch === arch).flatMap(r => r.artifacts);
   const one = (suffix: string): string => {
     const matches = artifacts.filter(p => p.toLowerCase().endsWith(suffix));
     if (matches.length !== 1) throw new Error(`Expected one ${suffix} for ${arch}, found ${matches.length}`);
     return matches[0] as string;
   };
-  return { zip: one('.zip'), setup: one('setup.exe') };
+  return { zip: one('.zip') };
 }
 
 export async function assembleRelease(root: string, results: ForgeMakeResult[]): Promise<void> {
@@ -51,23 +51,44 @@ export async function assembleRelease(root: string, results: ForgeMakeResult[]):
     if (path.dirname(path.resolve(staging)) !== output) throw new Error('Unsafe staging cleanup path');
     let keepStaging = false;
     try {
-      await build({
+      const builderResources = path.join(staging, 'resources');
+      await fs.mkdir(builderResources);
+      await fs.copyFile(path.join(root, 'build', 'icon.ico'), path.join(builderResources, 'icon.ico'));
+      await fs.copyFile(path.join(root, 'build', 'installer.nsh'), path.join(builderResources, 'installer.nsh'));
+      const escapeNsis = (value: string) => value.replaceAll('$', () => '$$').replaceAll('"', '$\\"');
+      const entries = await fs.readdir(packaged, { withFileTypes: true });
+      const removal = entries.map(entry => `${entry.isDirectory() ? 'RMDir /r' : 'Delete'} "$INSTDIR\\${escapeNsis(entry.name)}"`);
+      // Stock NSIS's APP_BUILD_DIR branch installs directly and skips the AppData updater cache.
+      await fs.writeFile(path.join(builderResources, 'app-files.nsh'), `!define APP_BUILD_DIR "${escapeNsis(packaged)}"\n!macro removePackagedFiles\n${removal.join('\n')}\n!macroend\n`);
+      const launcher = (await fs.readFile(path.join(root, 'build', 'portable-launcher.nsi'), 'utf8')).replace('@@APP_DIRECTORY@@', escapeNsis(packaged));
+      const launcherPath = path.join(staging, 'portable.nsi');
+      await fs.writeFile(launcherPath, launcher);
+      const buildOptions = {
         projectDir: root,
         prepackaged: packaged,
-        targets: Platform.WINDOWS.createTarget('portable', Arch[arch as 'x64' | 'arm64' | 'ia32']),
-        publish: 'never',
+        targets: Platform.WINDOWS.createTarget('nsis', Arch[arch as 'x64' | 'arm64' | 'ia32']),
+        publish: 'never' as const,
+      };
+      const sharedConfig = {
+        appId: 'com.modbus-debugger.desktop', productName: pkg.productName,
+        directories: { output: path.join(staging, 'builder'), buildResources: builderResources },
+        npmRebuild: false,
+        win: { executableName: 'modbus-debugger', icon: path.join(root, 'build', 'icon.ico'), signAndEditExecutable: false },
+      };
+      await build({
+        ...buildOptions,
         config: {
-          appId: 'com.modbus-debugger.desktop',
-          productName: pkg.productName,
-          directories: { output: path.join(staging, 'builder'), buildResources: path.join(root, 'build') },
-          npmRebuild: false,
-          win: { executableName: 'modbus-debugger', icon: path.join(root, 'build', 'icon.ico'), signAndEditExecutable: false },
-          portable: { artifactName: `${base}-Portable.exe`, requestExecutionLevel: 'user', unpackDirName: false, useZip: true },
+          ...sharedConfig,
+          nsis: { artifactName: `${base}-Setup.exe`, oneClick: false, allowToChangeInstallationDirectory: true,
+            allowElevation: false, perMachine: false, runAfterFinish: false, deleteAppDataOnUninstall: false, useZip: true, differentialPackage: false, packElevateHelper: false },
         },
       });
+      await build({ ...buildOptions, config: { ...sharedConfig, nsis: {
+        artifactName: `${base}-Portable.exe`, script: launcherPath, useZip: true,
+      } } });
       await fs.cp(packaged, path.join(staging, base), { recursive: true });
       await fs.copyFile(artifacts.zip, path.join(staging, `${base}.zip`));
-      await fs.copyFile(artifacts.setup, path.join(staging, `${base}-Setup.exe`));
+      await fs.copyFile(path.join(staging, 'builder', `${base}-Setup.exe`), path.join(staging, `${base}-Setup.exe`));
       await fs.copyFile(path.join(staging, 'builder', `${base}-Portable.exe`), path.join(staging, `${base}-Portable.exe`));
       const names = [base, `${base}.zip`, `${base}-Portable.exe`, `${base}-Setup.exe`];
       for (const name of names.slice(1)) {
@@ -99,6 +120,18 @@ export async function assembleRelease(root: string, results: ForgeMakeResult[]):
           if (path.dirname(source) !== release) throw new Error('Cleanup path escapes release/');
           await fs.rename(source, path.join(backup, name));
           saved.push(name);
+        }
+        // Preserve runtime/user files before removing an older generated program directory.
+        // These backups are outside versioned artifact directories and survive future make runs.
+        const shippedNames = new Set(entries.map(entry => entry.name));
+        for (const name of saved) {
+          const previous = path.join(backup, name);
+          if (!(await fs.lstat(previous)).isDirectory()) continue;
+          for (const entry of await fs.readdir(previous)) {
+            if (shippedNames.has(entry)) continue;
+            const destination = path.join(release, 'data', 'backups', `${name}-${Date.now()}`, entry);
+            await fs.cp(path.join(previous, entry), destination, { recursive: true });
+          }
         }
       } catch (error) {
         // If restoring itself fails (for example a file becomes locked), preserve the backup for recovery.

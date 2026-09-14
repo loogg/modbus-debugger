@@ -22,12 +22,12 @@ describe('release inputs', () => {
     expect(() => releaseBase('../../other', 'x64')).toThrow();
     expect(() => releaseBase('0.5.0', '../other')).toThrow();
   });
-  it('requires both current Windows maker outputs for the selected architecture', () => {
+  it('requires the current Windows ZIP maker output for the selected architecture', () => {
     const results: ForgeMakeResult[] = [
       { platform: 'win32', arch: 'x64', packageJSON: {}, artifacts: ['current.zip', 'current-Setup.exe'] },
       { platform: 'win32', arch: 'arm64', packageJSON: {}, artifacts: ['arm.zip', 'arm-Setup.exe'] },
     ];
-    expect(makerArtifacts(results, 'x64')).toEqual({ zip: 'current.zip', setup: 'current-Setup.exe' });
+    expect(makerArtifacts(results, 'x64')).toEqual({ zip: 'current.zip' });
     expect(() => makerArtifacts(results, 'ia32')).toThrow();
     expect(() => makerArtifacts([{ ...results[0]!, artifacts: ['current-Setup.exe'] }], 'x64')).toThrow();
     expect(() => makerArtifacts([...results, results[0]!], 'x64')).toThrow();

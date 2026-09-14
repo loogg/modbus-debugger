@@ -86,7 +86,7 @@
 
 ### Final DoD（正式发布验收）
 
-- [x] Windows 正式打包同时生成目录版、ZIP 解压版、单文件 Portable 和 Squirrel Setup，按 `modbus-debugger-<version>-win-<arch>` 命名，四项直接平铺在 `release/`，不套版本/平台目录。
+- [x] Windows 正式打包同时生成目录版、ZIP 解压版、单文件 Portable 和 NSIS Setup，按 `modbus-debugger-<version>-win-<arch>` 命名，四项直接平铺在 `release/`，不套版本/平台目录；Setup 支持自选安装目录，重装/卸载保留用户数据。
 - [x] 四种交付产物分别通过真实启动、版本、Renderer / IPC / serialport 检查；Portable 仅复制单个 EXE 到含空格与中文的独立目录也能运行，退出重启后默认历史库仍保留；Setup 安装与卸载通过。
 - [x]  无关键 TODO / FIXME / placeholder / 最终 mock。
 - [x]  lint / typecheck / unit / integration / E2E 全通过。
@@ -247,3 +247,13 @@
 - 临时读取显示读取中、超时、合法设备异常码及含义、传输/CRC/格式/不匹配错误及 IPC 失败；失败提示保留请求参数、Trace ID 与通信诊断入口，成功重试清除提示。读取失败后清除旧成功数据，禁用重复提交；离线和扫描占用状态有说明。
 - 成功结果的地址与保存 Block 参数绑定提交时请求，后续编辑表单不会把旧数据错误绑定到新地址/Unit。Main 离线读取立即拒绝，停止/传输断开会结算尚未发送的排队操作，避免永久 pending。
 - 定向验证：相关 ESLint、typecheck；临时读取反馈、TCP Runtime、RTU 停止、Manager delta 55 项通过；随后新增“传输中断结算排队读取”和“已检查/发现数量区分”两个用例分别定向通过，合计 57 项。未运行无关全量 E2E、生产打包或发布，release/ 与 GitHub Release 未更新。
+
+## 本轮增量验证（存储路径 / NSIS 安装向导 / 测试隔离，v0.8.0，2026-09-14）
+
+- 应用在 Electron ready 前配置 data（prefs/history/workspaces）、cache（sessionData）、logs、temp/crashes；默认跟随执行目录，Portable 使用外层启动器目录。支持 --data-dir / MODBUS_DATA_DIR 绝对路径覆盖；不可写明确提示退出，不回退 AppData。旧 AppData 文件保留且不自动采用旧测试路径。
+- Setup 改为 NSIS 向导，首次默认在安装包旁，支持自选目录；从程序文件清单生成卸载宏，保留 data、工作区等用户文件。Portable 为无插件的 NSIS 单文件启动器，使用外层 temp 下唯一目录解压并直接启动应用，正常退出清理。移除 Squirrel maker / startup 直接依赖，不替换 Forge/Vite。
+- make 仍输出四种产物；清理旧程序目录前将非程序文件保存到 release/data/backups。此次旧 0.7.1 目录里的运行数据已按此规则保留。
+- 单元/集成定向验证 26 项通过：存储布局与不可写路径、release 参数、工作区/数据库持久化、Manager delta。相关 ESLint、typecheck、脚本语法检查通过。
+- 打包版定向 E2E 1 项通过：只运行 launches with 用例，读取测试工作区与真实 PyModbus 连接；驱动缓存和测试 profile 均位于 out/test-temp，旧 Roaming 偏好内容未变化，截图见 out/storage-e2e-screen.png。没有运行无关业务全量 E2E。
+- npm run smoke:release 对最终四种产物通过：Renderer / IPC / serialport / history、真实 userData/sessionData/temp 路径、Portable 实际解压位置与退出清理、数据库跨重启保留、--data-dir 覆盖、NSIS 安装到中文+空格路径、重装及卸载后数据保留；测试会话目录清理，日常 AppData prefs 未被修改。结果见 out/storage-smoke.log。
+- 本地 release/ 已生成 0.8.0；未推送或更新 GitHub Release。安装器自身 Windows 临时机制/注册表/快捷方式和开发依赖缓存不属于应用运行数据零系统盘写入承诺；程序或显式数据根目录选在 C 盘时仍尊重所选路径。

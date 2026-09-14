@@ -3,6 +3,10 @@ node_modules/
 .webpack/
 out/
 release/
+/data/
+/cache/
+/logs/
+/temp/
 dist/
 coverage/
 tools/natives-electron/

@@ -64,10 +64,11 @@ flowchart LR
 
 ### 构建与打包（Vite）
 
-- Windows 发布由 Forge 完成目录版、ZIP 与 Squirrel Setup，再在 `postMake` 中使用 electron-builder 的 `prepackaged` + `portable` 目标封装同一份目录版；不替换 Forge/Vite，不重新编译应用，不引入第二套运行时依赖。
-- Portable 工具选型评审：electron-builder 为 MIT，仅作为 devDependency；Forge 现有 maker 不提供单文件 Portable，因此新增此构建依赖。NSIS 主体为 zlib/libpng；配置 `portable.useZip=true` 使用内置 zlib 解压，不把额外的 7z 解压插件嵌入启动器。NSIS 工具包中 LZMA 模块为 CPL-1.0，官方附有链接例外；本项目不修改工具，保留上游许可证。`@electron/asar`（MIT）和 `cross-zip`（MIT）复用 Forge 已有库，并显式声明为构建依赖，分别用于校验包内版本及解压验收。参考：[electron-builder](https://github.com/electron-userland/electron-builder/blob/master/LICENSE)、[NSIS License 与 LZMA 例外](https://nsis.sourceforge.io/License)。
+- Windows 发布由 Forge 完成目录版与 ZIP，再在 `postMake` 中使用 electron-builder 的 `prepackaged` + NSIS 封装 Setup 与 Portable。Setup 使用上游安装向导并启用目录选择；Portable 使用 `build/portable-launcher.nsi` 自定义无安装脚本。同一份 Forge/Vite 目录用于全部产物，不重新编译应用。
+- Portable 工具选型评审：electron-builder 为 MIT，仅作为 devDependency；NSIS 主体为 zlib/libpng。自定义启动器使用 NSIS 内置 zlib 压缩与文件/进程指令，不加载 7z 或 System 等插件；Setup 复用上游向导及 NSIS 插件。工具包中 LZMA 模块为 CPL-1.0，官方附有链接例外；本项目不修改工具二进制，保留上游许可证。`@electron/asar`（MIT）和 `cross-zip`（MIT）复用 Forge 已有库，用于校验包内版本及解压验收。参考：[electron-builder](https://github.com/electron-userland/electron-builder/blob/master/LICENSE)、[NSIS License 与 LZMA 例外](https://nsis.sourceforge.io/License)。
 - `out/` 保存 Forge 产物与 Portable 构建中间文件；`release/` 根目录直接存放四种交付产物，不增加版本/平台子目录。命名统一为 `modbus-debugger-<package.json version>-win-<arch>`，目录版本体不加后缀，另三项分别追加 `.zip`、`-Portable.exe`、`-Setup.exe`。全部构建成功并校验版本后才整理到 release；成功后清理命名匹配的旧版本产物，只保留当前版本，同版本其他架构可并存。替换与旧产物清理共用临时备份，失败回滚；其他文件不清理。
-- Portable 启动器会解压运行文件到临时目录；日志和默认历史数据路径使用启动器传入的 `PORTABLE_EXECUTABLE_DIR`（外层 Portable.exe 所在目录），避免保存在退出后删除的临时目录。用户偏好继续沿用 app userData。
+- Portable 启动器只使用 NSIS 内建文件/进程指令，创建外层 EXE 下 `temp/<独立目录>/app`，通过 `--portable-dir` 把外层目录传给 Main，正常退出后删除本次解压目录；不加载会落到系统 TEMP 的 NSIS 插件。Main 仍兼容旧启动器的 `PORTABLE_EXECUTABLE_DIR`。
+- Override（用户要求自选安装路径及应用数据不默认进系统盘）：移除 Squirrel maker 与 runtime 启动处理，复用已有 electron-builder/NSIS。Setup 为 current-user assisted installer（oneClick=false、allowToChangeInstallationDirectory=true），不强制管理员权限；`APP_BUILD_DIR` 直接嵌入已打包文件，跳过 AppData 自动更新缓存。`customRemoveFiles` 按打包清单删除程序，保留用户数据；旧 Squirrel 安装不会自动卸载或迁移。
 
 - 构建插件：`@electron-forge/plugin-vite`（forge 7.x）。三份配置分别对应三个 target：
   - `vite.main.config.ts`：Main 进程，CJS 输出到 `.vite/build/index.js`；`sql.js` / `serialport` / `@serialport/*` 声明为 external（原生或 UMD 模块不能进 bundle）。
@@ -77,7 +78,7 @@ flowchart LR
 - 生产渲染层通过特权自定义 scheme 提供：`protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])` + `protocol.handle('app', ...)` → `net.fetch(pathToFileURL(...))`，窗口 `loadURL('app://./index.html')`。这样既避开 `file://` 下 ES module 的 CORS 限制，又不需要关闭 webSecurity；handler 只注册一次（macOS `activate` 会再次调用 `createWindow`）。
 - 开发模式使用 forge 注入的 `MAIN_WINDOW_VITE_DEV_SERVER_URL`；类型声明见 `src/main/vite-env.d.ts`。
 - 打包：plugin-vite 会让 packager 跳过 `node_modules`，因此 `packageAfterCopy` 钩子显式复制 external 依赖（`sql.js`、`serialport`、`@serialport`、`debug`、`ms`、`node-gyp-build`、`node-addon-api`）进 asar；`AutoUnpackNativesPlugin` 负责把 `.node` 二进制 unpack。
-- Main 中禁止对被 bundle 的依赖使用裸 `require()`（rollup 会原样保留成运行时 require，而包里没有对应 `node_modules`）；只有 external 依赖（`serialport`、`sql.js`）可以保留运行时 require。`electron-squirrel-startup` 必须以 ESM import 引入，让它进 bundle。
+- Main 中禁止对被 bundle 的依赖使用裸 `require()`（rollup 会原样保留成运行时 require，而包里没有对应 `node_modules`）；只有 external 依赖（`serialport`、`sql.js`）可以保留运行时 require。
 
 ### Snapshot / Delta 与渲染性能
 
@@ -143,11 +144,13 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
   - debug：额外将每次 TX/RX 原始 ADU hex、Validator 判决、重试决策写入 electron-log（落盘位置见下节：执行目录 `logs/main.log`）。
 
 
-### 日志与数据落盘位置（不使用系统盘）
+### 日志、数据与临时目录（跟随选定的可写根目录）
 
-- 运行日志：<执行目录>/logs/main.log（打包版为 exe 所在目录；开发模式为项目目录）。执行目录不可写时禁用文件日志并告警，不回退到 %APPDATA%。
-- 历史数据库：默认 <执行目录>/data/history.db，可在设置中改到任意路径（prefs.historyDbPath）；设置页显示真实生效路径。
+- 默认根目录是执行目录（Portable 外层 EXE、目录版 EXE、开发项目目录）；可用 --data-dir 或 MODBUS_DATA_DIR 选择其他绝对路径。storage-paths.ts 验证各目录可写，失败提示并退出，不静默回退 AppData。
+- data/prefs.json、data/history.db、data/workspaces；cache 为 Electron sessionData 和浏览器缓存；logs/main.log；temp（含 crashes）。Main 在 app ready 前设置这些 Electron 路径。历史数据库仍可在设置中显式指定。
 - 工作区文件：用户显式选择的路径；自动保存为临时文件 + 原子替换。
+- 保存对话框默认 data/workspaces；工作区和数据库原子保存的 .tmp 文件仍在原文件旁。旧 AppData 文件保留原样，不迁移旧 E2E 最近工作区。
+- 自动化测试在 out/test-temp 下创建独立根目录，WDIO 使用该根目录 data/prefs.json，不再写真实 Roaming 目录；Smoke 验证运行路径、Portable 解压路径与清理、NSIS 指定目录安装/重装/卸载后数据保留，测试前后断言旧日常偏好未改变。
 
 ### 退出资源释放
 

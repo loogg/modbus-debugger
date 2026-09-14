@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
+import { createScratch } from '../../tools/test-paths.mjs';
 import path from 'node:path';
 import { WorkspaceService } from '../../src/main/services/workspace';
 import { HistoryStore } from '../../src/main/services/history';
 import { emptyWorkspace } from '../../src/domain/model';
 
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'mbtest-'));
+  return createScratch('persistence-');
 }
 
 describe('Workspace persistence', () => {

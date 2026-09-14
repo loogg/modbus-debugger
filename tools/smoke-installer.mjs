@@ -1,42 +1,45 @@
-/** Validate this version's actual release Setup without uninstalling an existing user installation. */
+/** Exercise NSIS custom directory install, reinstall, data preservation and uninstall. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { base, pkg, release, run, smokeApp, waitFor } from './smoke-app.mjs';
+import { base, release, run, smokeApp, waitFor } from './smoke-app.mjs';
+import { createScratch, removeScratch } from './test-paths.mjs';
+
+const existing = spawnSync('powershell.exe', ['-NoProfile', '-Command',
+  "Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Modbus Debugger*' } | Select-Object -ExpandProperty UninstallString"],
+{ encoding: 'utf8', windowsHide: true });
+if (existing.error) throw existing.error;
+assert(!existing.stdout.trim(), 'Existing user installation found; refusing to replace it');
 
 const setup = path.join(release, `${base}-Setup.exe`);
-const install = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'modbus-debugger');
-const exists = async file => fs.access(file).then(() => true, () => false);
 await fs.access(setup);
-assert(!await exists(path.join(install, 'modbus-debugger.exe')), 'Existing user installation found; refusing to replace or uninstall it');
-assert(!await exists(path.join(install, `app-${pkg.version}`, 'modbus-debugger.exe')), 'Existing version installation found');
-
-function stopInstalledProcesses() {
-  const literal = install.replaceAll("'", "''");
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command',
-    `$ErrorActionPreference='Stop'; Get-Process -Name 'modbus-debugger' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith('${literal}\\', [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force`],
-  { encoding: 'utf8', windowsHide: true });
-  if (result.error) throw result.error;
-}
-
-let attempted = false;
+const scratch = createScratch('installer-');
+const install = path.join(scratch, '自选路径 Custom install');
+const executable = path.join(install, 'modbus-debugger.exe');
+const uninstaller = path.join(install, 'Uninstall modbus-debugger.exe');
+const exists = async file => fs.access(file).then(() => true, () => false);
+let dataWritten = false;
 try {
-  attempted = true;
-  console.log(`[smoke] Installing ${setup}`);
-  await run(setup, ['--silent'], 240000);
-  const executable = path.join(install, `app-${pkg.version}`, 'modbus-debugger.exe');
+  await run(setup, ['/S', `/D=${install}`], 240000);
   await waitFor(() => exists(executable));
-  stopInstalledProcesses();
-  await smokeApp(executable, 'Setup installed');
+  await fs.access(uninstaller);
+  await smokeApp(executable, 'NSIS custom directory');
+  const sentinel = path.join(install, 'data', 'keep-on-upgrade.json');
+  await fs.writeFile(sentinel, 'user data must survive');
+  dataWritten = true;
+  await run(setup, ['/S', `/D=${install}`], 240000);
+  assert.equal(await fs.readFile(sentinel, 'utf8'), 'user data must survive');
+  await smokeApp(executable, 'NSIS reinstall');
 } finally {
-  if (attempted && await exists(path.join(install, 'Update.exe'))) {
-    stopInstalledProcesses();
-    await run(path.join(install, 'Update.exe'), ['--uninstall', '-s']);
-    await waitFor(async () => !await exists(path.join(install, 'modbus-debugger.exe')) &&
-      !await exists(path.join(install, `app-${pkg.version}`, 'modbus-debugger.exe')), 30000);
-    console.log('[smoke] Setup uninstall verified');
+  if (await exists(uninstaller)) {
+    // Run the test uninstaller in place so run() waits for the actual uninstall, not its detached copy.
+    await run(uninstaller, ['/S', `_?=${install}`]);
+    await waitFor(async () => !await exists(executable), 30000);
+    const sentinel = path.join(install, 'data', 'keep-on-upgrade.json');
+    if (dataWritten) assert.equal(await fs.readFile(sentinel, 'utf8'), 'user data must survive');
+    console.log('[smoke] NSIS uninstall removed application files and retained user data');
   }
+  removeScratch(scratch);
 }
-console.log('[smoke] PASS: current release Setup install -> render -> IPC -> uninstall');
+console.log('[smoke] PASS: chosen directory -> launch -> reinstall -> preserved data -> uninstall');

@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import puppeteer from 'puppeteer-core';
+import { createScratch, removeScratch, setupTestEnvironment } from './test-paths.mjs';
+export { removeScratch } from './test-paths.mjs';
+
+setupTestEnvironment();
 
 export const root = path.resolve(import.meta.dirname, '..');
 export const pkg = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
@@ -40,16 +43,8 @@ export async function run(executable, args, timeout = 180000, stdio = 'ignore') 
   });
 }
 
-export async function removeScratch(scratch) {
-  const resolved = path.resolve(scratch);
-  assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
-  assert(path.basename(resolved).startsWith('modbus-smoke-'));
-  await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-}
-
 export async function smokeApp(executable, label, options = {}) {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'modbus-smoke-profile-'));
-  const userData = path.join(scratch, 'profile');
+  const scratch = createScratch('smoke-profile-');
   const fixture = JSON.parse(await fs.readFile(path.join(root, 'tools', 'e2e', 'demo.workspace.json'), 'utf8'));
   const workspace = path.join(scratch, 'smoke.workspace.json');
   await fs.writeFile(workspace, JSON.stringify({
@@ -60,9 +55,9 @@ export async function smokeApp(executable, label, options = {}) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   await new Promise(resolve => server.close(resolve));
-  const child = spawn(executable, [`--remote-debugging-port=${port}`, `--user-data-dir=${userData}`], {
+  const child = spawn(executable, [`--remote-debugging-port=${port}`, ...(options.dataRoot ? [`--data-dir=${options.dataRoot}`] : [])], {
     cwd: path.dirname(executable), stdio: 'ignore', windowsHide: true,
-    env: { ...process.env, MODBUS_E2E: '0', MODBUS_E2E_WORKSPACE: workspace },
+    env: { ...process.env, MODBUS_DATA_DIR: '', MODBUS_E2E: '0', MODBUS_E2E_WORKSPACE: workspace },
   });
   let spawnError;
   child.once('error', error => { spawnError = error; });
@@ -90,6 +85,15 @@ export async function smokeApp(executable, label, options = {}) {
     assert.equal(state.serial.ok, true, `${label}: serialport native module failed`);
     for (const navigation of ['设备', '实时', '趋势', '历史', '通信', '模板', '设置']) assert(state.text.includes(navigation));
     assert.deepEqual(errors, [], `${label}: renderer errors`);
+    const dataRoot = options.dataRoot || path.dirname(executable);
+    assert.equal(path.normalize(state.snapshot.historyDbPath), path.join(dataRoot, 'data', 'history.db'));
+    const log = await fs.readFile(path.join(dataRoot, 'logs', 'main.log'), 'utf8');
+    const lines = log.split('\n').filter(line => line.includes('runtime-paths '));
+    const actualPaths = JSON.parse(lines.at(-1).slice(lines.at(-1).indexOf('runtime-paths ') + 'runtime-paths '.length));
+    assert.equal(actualPaths.userData, path.join(dataRoot, 'data'));
+    assert.equal(actualPaths.sessionData, path.join(dataRoot, 'cache'));
+    assert.equal(actualPaths.electronTemp, path.join(dataRoot, 'temp'));
+    if (options.portable) assert(actualPaths.executable.startsWith(path.join(dataRoot, 'temp') + path.sep), 'Portable extracted outside its own temp directory');
     if (options.screenshot) await page.screenshot({ path: options.screenshot });
     if (options.screenshotDir) {
       await fs.mkdir(options.screenshotDir, { recursive: true });
@@ -107,6 +111,9 @@ export async function smokeApp(executable, label, options = {}) {
     browser = null;
     await waitFor(() => child.exitCode !== null, 30000);
     assert.equal(child.exitCode, 0, `${label}: nonzero exit`);
+    if (options.portable) {
+      await waitFor(async () => fs.access(actualPaths.executable).then(() => false, () => true), 10000);
+    }
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (child.exitCode === null && child.pid) {

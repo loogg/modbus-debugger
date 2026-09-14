@@ -1,21 +1,37 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { app, BrowserWindow, nativeImage, net, protocol, screen } from 'electron';
+import { app, BrowserWindow, dialog, nativeImage, net, protocol, screen } from 'electron';
 import { pathToFileURL } from 'node:url';
 import log from 'electron-log';
-import squirrelStartup from 'electron-squirrel-startup';
 import { RuntimeManager } from './runtime/manager';
 import { WorkspaceService } from './services/workspace';
 import { HistoryStore } from './services/history';
 import { registerIpc } from './ipc';
 import { executionDirectory } from './services/execution-directory';
+import { prepareStorage } from './services/storage-paths';
 
 let mainWindow: BrowserWindow | null = null;
 let manager: RuntimeManager | null = null;
 
-// Squirrel.Windows relaunches the app once during install/update with a --squirrel-*
-// flag; the handler fixes up shortcuts and the process must exit right after.
-if (squirrelStartup) app.quit();
+// Configure Electron/Chromium BEFORE ready, logging or creating any BrowserWindow.
+const executionDir = executionDirectory(app.isPackaged, app.getPath('exe'), process.cwd(), app.commandLine.getSwitchValue('portable-dir') || process.env.PORTABLE_EXECUTABLE_DIR);
+const storage = (() => {
+  try {
+    return prepareStorage(executionDir, app.commandLine.getSwitchValue('data-dir') || process.env.MODBUS_DATA_DIR);
+  } catch (error) {
+    dialog.showErrorBox('数据目录不可写', `${String(error)}\n\n请将程序放到可写目录，或使用 --data-dir="D:\\ModbusData" 指定可写的数据目录。程序不会回退到 AppData 或系统临时目录。`);
+    app.exit(1);
+    throw error;
+  }
+})();
+app.setPath('userData', storage.data);
+app.setPath('sessionData', storage.cache);
+app.setPath('logs', storage.logs);
+app.setPath('temp', storage.temp);
+app.setPath('crashDumps', storage.crashes);
+app.commandLine.appendSwitch('disk-cache-dir', path.join(storage.cache, 'http'));
+process.env.TEMP = storage.temp;
+process.env.TMP = storage.temp;
 
 // E2E harness: expose a fixed Chrome DevTools port so WebdriverIO can attach.
 if (process.env.MODBUS_E2E === '1') {
@@ -36,25 +52,15 @@ function registerAppProtocol(): void {
   });
 }
 
-function execDir(): string {
-  return executionDirectory(app.isPackaged, app.getPath('exe'), process.cwd(), process.env.PORTABLE_EXECUTABLE_DIR);
-}
-
 // Serve the packaged renderer over a privileged standard scheme: ES-module scripts
 // cannot load from file:// (CORS), and a custom scheme keeps webSecurity enabled.
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
 
-// Logs live in the execution directory (never the system profile drive).
-const logDir = path.join(execDir(), 'logs');
-try {
-  fs.mkdirSync(logDir, { recursive: true });
-  log.transports.file.resolvePathFn = () => path.join(logDir, 'main.log');
-} catch {
-  log.transports.file.level = false;
-}
+log.transports.file.resolvePathFn = () => path.join(storage.logs, 'main.log');
 log.initialize();
+log.info('runtime-paths', JSON.stringify({ ...storage, executable: app.getPath('exe'), userData: app.getPath('userData'), sessionData: app.getPath('sessionData'), electronTemp: app.getPath('temp') }));
 log.info('app starting, userData =', app.getPath('userData'));
 
 function clampToBounds(x: number, y: number, width: number, height: number): Electron.Rectangle {
@@ -77,7 +83,7 @@ function clampToBounds(x: number, y: number, width: number, height: number): Ele
 
 async function createWindow(): Promise<void> {
   const wsSvc = new WorkspaceService(app.getPath('userData'));
-  const historyPath = wsSvc.getPrefs().historyDbPath ?? path.join(execDir(), 'data', 'history.db');
+  const historyPath = wsSvc.getPrefs().historyDbPath ?? path.join(storage.data, 'history.db');
   const history = await HistoryStore.open(historyPath);
   manager = new RuntimeManager(wsSvc, history);
   const loaded = wsSvc.loadFrom(process.env.MODBUS_E2E_WORKSPACE || null);

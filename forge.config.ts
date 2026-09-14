@@ -1,7 +1,6 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { VitePlugin } from '@electron-forge/plugin-vite';
@@ -35,10 +34,6 @@ const config: ForgeConfig = {
     },
   },
   makers: [
-    new MakerSquirrel({
-      setupIcon: path.resolve(__dirname, 'build', 'icon.ico'),
-      name: 'modbus-debugger',
-    }),
     new MakerZIP({}, ['darwin', 'win32']),
   ],
   plugins: [

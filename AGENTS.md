@@ -51,7 +51,7 @@ Main / Preload 打包为 CJS；生产渲染层通过特权 `app://` scheme 提�
 - 打包后的目录版：包含完整运行文件，可直接启动。
 - ZIP 解压版：解压后即可运行，无需安装。
 - 单文件 Portable 版：以单个可执行文件交付，无需安装即可启动。
-- Setup 安装版：提供 Squirrel Setup 安装程序，支持安装、启动和卸载。
+- Setup 安装版：提供 NSIS 安装向导（替代 Squirrel），用户可选择安装目录，支持安装、重装/升级、启动和卸载；卸载只移除程序文件，保留用户数据。
 
 `out/` 用于构建中间产物；最终交付产物必须直接平铺到 `release/` 根目录，禁止再套版本号、平台或 `unpacked` 子目录。命名如下（`<version>` 自动读取 `package.json`，`<arch>` 为实际目标架构，如 `x64`）：
 
@@ -64,6 +64,17 @@ release/
 ```
 
 四种产物必须来自同一版本、同一次构建；全部生成成功后才整理到 `release/`。`release/` 加入 `.gitignore`；成功打包后替换同名产物并清理符合上述命名的旧版本产物，只保留当前版本（同版本其他架构可并存）。构建失败保留原有产物；不得在构建开始时直接清空目录，不删除日志、数据或其他非打包文件。Portable 的持久化日志与默认数据库以外层 EXE 所在目录为基准，不得写入退出后会被清理的临时解压目录。
+
+### 数据、缓存与临时目录
+
+- 默认存储根目录：目录版/ZIP 为程序 EXE 所在目录，Portable 为外层 Portable EXE 所在目录，开发模式为项目目录；支持 `--data-dir="绝对路径"` 或 `MODBUS_DATA_DIR` 显式指定另一处可写根目录（命令行优先）。程序/自选目录在 C 盘时仍使用该位置，不硬编码 D 盘，也不承诺 Windows 自身零写入系统盘。
+- 根目录下统一使用 `data/`（`prefs.json`、默认 `history.db`、`workspaces/`）、`cache/`（Electron sessionData、浏览器缓存）、`logs/`、`temp/`（含 crash dumps）。必须在 Electron ready、日志初始化和创建窗口之前设置 userData/sessionData/logs/temp/crashDumps，避免默认落到 AppData。用户显式选择的工作区和数据库路径仍按其选择保存。
+- 项目根目录的 data/cache/logs/temp 为运行数据，必须加入 .gitignore，禁止上传用户配置、历史库、工作区及缓存。
+- 启动前验证目录可写；失败时明确提示移动程序或通过 `--data-dir` 选择数据目录并退出，禁止静默回退到 AppData/系统临时目录。既有 AppData 偏好和历史文件不自动删除或覆盖，也不自动采用被旧测试污染的最近工作区路径。
+- Portable 使用项目维护的无插件 NSIS 启动脚本，每次解压到外层 EXE 的 `temp/` 下独立目录，直接启动 Electron 并传入外层目录；不依赖系统插件临时目录，不通过 shell 转发参数。正常退出只清理本次解压目录，不清理 data/logs 等持久目录。
+- Setup 使用 NSIS 安装向导，首次默认目录在安装包旁（用户可改）；重装/升级保留所选路径与数据，不再维护 AppData 下的自动更新安装包缓存。安装/卸载仍可使用 Windows 的注册表、快捷方式及安装器自身系统临时机制，不把它们与应用运行数据混为一谈。
+- make 清理旧版本目录前，若发现目录内含非程序文件（如 data、logs、工作区），先保留到 `release/data/backups/`，不得连同旧二进制一并删除。NSIS 按构建时生成的程序文件清单卸载，禁止递归删除整个安装根目录。
+- 测试临时目录统一为项目 `out/test-temp/`，由 `tools/test-paths.mjs` 管理、按测试会话隔离并清理。WDIO、Smoke、持久化测试不得改日常 AppData 偏好/数据库/最近工作区；测试子进程的临时环境变量也指向该目录。测试必须验证日常偏好文件未变化。
 
 ### GitHub 提交与构建
 

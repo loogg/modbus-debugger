@@ -1,4 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, app } from 'electron';
+import path from 'node:path';
 import { IPC_CHANNELS } from '../shared/preload-api';
 import type { Command, CommandResult } from '../shared/commands';
 import { commandSchema } from '../shared/commands';
@@ -44,7 +45,8 @@ export function registerIpc(manager: RuntimeManager, getWindow: () => BrowserWin
     }
     if (cmd.type === 'dialog.saveFile') {
       const win = getWindow();
-      const res = win ? await dialog.showSaveDialog(win, { defaultPath: cmd.defaultName }) : await dialog.showSaveDialog({ defaultPath: cmd.defaultName });
+      const defaultPath = path.isAbsolute(cmd.defaultName) ? cmd.defaultName : path.join(app.getPath('userData'), 'workspaces', path.basename(cmd.defaultName));
+      const res = win ? await dialog.showSaveDialog(win, { defaultPath }) : await dialog.showSaveDialog({ defaultPath });
       if (res.canceled || !res.filePath) return { ok: false, error: 'cancelled' };
       return { ok: true, value: res.filePath };
     }

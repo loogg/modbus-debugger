@@ -64,6 +64,7 @@
 
 ### Workspace / Persistence
 
+- 默认配置、数据库、缓存、日志、临时文件跟随程序的可写存储根目录，支持 --data-dir / MODBUS_DATA_DIR 覆盖；不默认使用 AppData，失败不得静默回退系统盘。Portable 在外层 EXE 的 temp 下解压。Setup 为可选择目录的 NSIS 向导，重装/卸载保留用户数据。具体布局与测试隔离约束见 AGENTS.md。
 - Workspace 使用带 `schemaVersion` 的 `.workspace.json`，自动保存并支持另存为、导入、导出。
 - Workspace 保存 Connection、Slave、共享 Template 定义/绑定、Trend Group 和可移植布局；本机 Window/Sidebar 偏好放 app `userData`。
 - 自动保存使用临时文件 + 原子替换；导入失败不破坏当前 Workspace。

@@ -38,7 +38,7 @@ FC01 / 02 / 03 / 04 / 05 / 06 / 15 / 16。
   这样既避开 `file://` 下 ES module 的 CORS 限制，又不需要关闭 `webSecurity`；`nodeIntegration=false`、`contextIsolation=true`、renderer `sandbox=true` 全程保持。
 - 开发模式使用 forge 注入的 `MAIN_WINDOW_VITE_DEV_SERVER_URL`（类型声明见 `src/main/vite-env.d.ts`）。
 - plugin-vite 会让 packager 跳过 `node_modules`，因此 `forge.config.ts` 的 `packageAfterCopy` 钩子显式把 external 依赖复制进 asar；`AutoUnpackNativesPlugin` 负责 unpack `.node` 二进制。
-- Main 中只有 external 依赖（`serialport` / `sql.js`）可以保留运行时 `require()`；被 bundle 的依赖必须用 ESM import（例如 `electron-squirrel-startup`），否则打包后会变成找不到模块的裸 `require`。
+- Main 中只有 external 依赖（`serialport` / `sql.js`）可以保留运行时 `require()`；被 bundle 的依赖必须用 ESM import，否则打包后会变成找不到模块的裸 `require`。
 
 ## 独立模拟器（PyModbus，与 TS 客户端实现独立）
 
@@ -75,7 +75,7 @@ release/
 └── modbus-debugger-0.5.0-win-x64-Setup.exe
 ```
 
-版本号自动读取 `package.json`，架构来自 Forge 目标。无版本或平台父目录；四种产物全部成功构建后替换同名产物并清理旧版本产物，失败时保留原有文件，日志/数据等非打包文件不清理。ZIP 解压后运行其中的 `modbus-debugger.exe`；Portable 为无需安装的单个 EXE；Setup 使用 Squirrel 安装/卸载。Portable 的日志和默认历史数据库保存在外层 EXE 同级的 `logs/`、`data/`，退出后仍保留，偏好设置沿用 app userData。不要把实际业务数据保存在会被下一次构建替换的交付目录中。
+版本号自动读取 `package.json`，架构来自 Forge 目标。四种产物全部成功构建后替换同名产物并清理旧版本，失败保留原文件。旧目录中若有数据/日志等非程序文件，保留到 `release/data/backups/`。ZIP 解压后运行 `modbus-debugger.exe`；Portable 是免安装 EXE；Setup 使用 NSIS 向导，可选择安装目录，重装/卸载保留用户数据。旧 Squirrel 安装不会自动卸载。
 
 ## GitHub 构建与下载
 
@@ -93,8 +93,10 @@ release/
   `createRequire(...).resolve('sql.js')` 的同目录解析定位，开发 / 打包 / Vitest 三种布局都可用。
 - 串口使用 **serialport**（N-API prebuilds，Node / Electron 通用）。
 - 项目**不含 ABI 敏感原生模块**，因此不需要 `electron-rebuild` 或 prebuild 切换流程。
-- 日志与数据不写系统盘：运行日志 `<执行目录>/logs/main.log`，历史库默认 `<执行目录>/data/history.db`
-  （可在设置页改到任意路径，设置页显示真实生效路径）。
+- 默认运行文件跟随程序所在位置：`data/prefs.json`、`data/history.db`、`data/workspaces/`、`cache/`、`logs/main.log`、`temp/`。Portable 以外层 EXE 为基准，解压到其 `temp/` 下独立目录，正常退出清理本次解压文件。开发模式以项目目录为基准。
+- 数据根目录可通过 `modbus-debugger.exe --data-dir="D:\ModbusData"` 或 `MODBUS_DATA_DIR` 指定，命令行优先；用户显式选择的工作区/数据库路径继续生效。目录不可写时提示并退出，不静默回退 AppData。程序本身放在 C 盘时，跟随程序的目录也会在 C 盘。
+- 新版不自动读取、覆盖或删除旧 AppData 文件；首次使用新数据目录时偏好为默认值，需要的旧工作区可手动打开。Setup 的注册表、快捷方式和安装器自身临时机制仍遵循 Windows 规则。
+- 自动化测试根目录统一为 `out/test-temp/`，WDIO/Smoke 使用独立偏好、缓存、数据库与临时工作区；结束时清理自己的会话目录，并检查日常 AppData 偏好未被改写。
 
 ## 目录
 

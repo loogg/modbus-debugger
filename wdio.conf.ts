@@ -1,8 +1,14 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
 import net from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { assertLegacyPreferencesUnchanged, createScratch, removeScratch, setupTestEnvironment, snapshotLegacyPreferences } from './tools/test-paths.mjs';
+
+setupTestEnvironment();
+const testRunDir = process.env.MODBUS_TEST_RUN_DIR || createScratch('e2e-');
+process.env.MODBUS_TEST_RUN_DIR = testRunDir;
+process.env.MODBUS_DATA_DIR = testRunDir;
+const legacyPreferences = snapshotLegacyPreferences();
 
 let sim: ChildProcess | null = null;
 let workspaceCopyDir: string | null = null;
@@ -16,7 +22,7 @@ const FIXTURE = path.resolve('tools', 'e2e', 'demo.workspace.json');
  * different world.
  */
 function stageWorkspace(): string {
-  workspaceCopyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbe2e-'));
+  workspaceCopyDir = testRunDir;
   const dest = path.join(workspaceCopyDir, 'demo.workspace.json');
   fs.copyFileSync(FIXTURE, dest);
   return dest;
@@ -42,18 +48,16 @@ function waitForPort(port: number, ms = 30000): Promise<void> {
 }
 
 function seedPrefs(workspacePath: string): void {
-  for (const dirName of ['modbus-debugger', 'Modbus Debugger']) {
-    const prefsDir = path.join(os.homedir(), 'AppData', 'Roaming', dirName);
-    fs.mkdirSync(prefsDir, { recursive: true });
-    const prefs = {
-      window: { x: 60, y: 60, width: 1440, height: 960 },
-      sidebarWidth: 244,
-      historyDbPath: null,
-      persistRawComm: false,
-      lastWorkspacePath: workspacePath,
-    };
-    fs.writeFileSync(path.join(prefsDir, 'prefs.json'), JSON.stringify(prefs, null, 2));
-  }
+  const prefsDir = path.join(testRunDir, 'data');
+  fs.mkdirSync(prefsDir, { recursive: true });
+  const prefs = {
+    window: { x: 60, y: 60, width: 1440, height: 960 },
+    sidebarWidth: 244,
+    historyDbPath: null,
+    persistRawComm: false,
+    lastWorkspacePath: workspacePath,
+  };
+  fs.writeFileSync(path.join(prefsDir, 'prefs.json'), JSON.stringify(prefs, null, 2));
 }
 
 export const config = {
@@ -67,6 +71,8 @@ export const config = {
       browserName: 'electron',
       'wdio:electronServiceOptions': {
         appBinaryPath: path.resolve('out', 'Modbus Debugger-win32-x64', 'modbus-debugger.exe'),
+        // ChromeDriver's DevToolsActivePort lives in Electron sessionData, not our app prefs directory.
+        appArgs: [`--user-data-dir=${path.join(testRunDir, 'cache')}`],
       },
     },
   ],
@@ -86,6 +92,7 @@ export const config = {
   },
   onComplete: () => {
     sim?.kill();
-    if (workspaceCopyDir) fs.rmSync(workspaceCopyDir, { recursive: true, force: true });
+    assertLegacyPreferencesUnchanged(legacyPreferences);
+    if (workspaceCopyDir) removeScratch(workspaceCopyDir);
   },
 };
