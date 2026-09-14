@@ -288,6 +288,7 @@ export class RuntimeManager {
         state: rt?.state ?? 'offline',
         detail: rt?.state === 'error' ? '连接异常' : null,
         lastResponseUtc: this.diagnostics.lastOkUtcFor(conn.id),
+        scan: rt?.scan ?? null,
       };
     }
     return out;
@@ -402,7 +403,7 @@ export class RuntimeManager {
     const connViews = this.connectionViews();
     const connChanged = Object.entries(connViews).some(([id, v]) => {
       const prev = this.lastConnStates.get(id);
-      return !prev || prev.state !== v.state || prev.lastResponseUtc !== v.lastResponseUtc;
+      return !prev || prev.state !== v.state || prev.lastResponseUtc !== v.lastResponseUtc || prev.scan !== v.scan;
     });
     if (connChanged || this.lastConnStates.size !== Object.keys(connViews).length) {
       delta.connections = connViews;
@@ -723,6 +724,12 @@ export class RuntimeManager {
         if (!rt) return { ok: false, error: 'connection runtime missing' };
         const outcome = await rt.temporaryRead(cmd.unitId, cmd.area, cmd.start, cmd.quantity);
         return { ok: true, value: outcome };
+      }
+      case 'device.stopScan': {
+        const rt = this.runtimes.get(cmd.connectionId);
+        if (!rt) return { ok: false, error: 'connection runtime missing' };
+        rt.stopScan();
+        return { ok: true, value: null };
       }
       case 'trend.startRecording':
         return this.startRecording(cmd.groupId);

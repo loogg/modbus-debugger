@@ -26,6 +26,7 @@
 
 ### Trend / History / Diagnosis / Import
 
+- [x] 临时读取默认 10 个寄存器；从站扫描支持停止、保留部分结果、恢复排队请求与轮询。扫描等待当前写确认原子组结束，不并发占用连接；重复扫描/非法范围拒绝，切换页面后进度和停止操作仍可用，合法异常响应显示实际异常码。
 - [x]  Numeric / Bool / Enum / String 四类 Trend Renderer 与记录语义完整。
 - [x]  Record Session Schema Snapshot 能抵抗后续 Template 修改。
 - [x]  Scanner、Temporary Read、Raw Inspector、Connection Health、Point Trace、Offline Replay 全部真实接线。
@@ -214,3 +215,11 @@
 - [x] Production Build：`npm run make -- --platform=win32 --arch=x64` 完成 Forge package + ZIP + Squirrel + Portable，最终配置再次构建通过。日志：`out/release-build.log`；单元/集成日志：`out/release-tests.log`。
 - [x] `npm run smoke:release` 对最终 release 产物全部通过：目录 / ZIP / Portable / Setup 的真实渲染、typed IPC、serialport、版本；Portable 独立 EXE 在含中文和空格路径运行，外层 data/history.db 写入测试记录后重启仍可读取；Setup 静默安装、实际运行和卸载成功。日志：`out/release-smoke.log`。
 - [x] 16 张 E2E 页面截图已复核，副本留在 `out/release-visual-review/`；新增 1440×960、1280×960、1279×960、1024×680 实际渲染截图及页面无横向溢出断言，见 `out/release-smoke-screenshots/`。本轮不改 UI 布局，不更新既有截图基线。
+
+## 本轮增量验证（临时读取默认值 / 停止扫描，v0.6.0，2026-09-14）
+
+- 临时读取默认 Qty=10；扫描新增 device.stopScan，Main 权威进度/结果通过连接 delta 下发。停止不再重试或探测后续 Unit，当前请求正常收尾；已发现结果保留，扫描释放互斥槽后恢复排队请求与 Poll。
+- 修正扫描直接发送请求绕过 busy 的问题：等待现有 Write/RMW→Read Back 原子组完成，并阻止扫描期间手工请求插入。RTU 停止后的迟到响应仍受 drain 隔离。
+- UI 显示停止/正在停止/已停止、实际进度和连接配置的重试次数；异常响应保留异常码。组件测试覆盖默认数量、IPC 参数、切换页面后停止、部分结果、非法范围及 IPC 失败恢复。
+- 本次定向验证：相关文件 ESLint、typecheck；5 个相关测试文件共 39 项通过，另新增写入→回读→扫描互斥用例单独通过（合计 40 项）。包括 TCP Runtime、RTU 停止/迟到帧、Manager delta、PyModbus 互操作和设备工具组件测试。
+- 未运行无关全量测试、打包版 E2E、生产打包或安装卸载；现有 release 产物未更新。

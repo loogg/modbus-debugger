@@ -65,11 +65,11 @@ interface Ctx {
   diag: DiagnosticsStore;
 }
 
-function setup(): Ctx {
+function setup(config: ConnectionDef = conn): Ctx {
   const cache = new BlockCache();
   const diag = new DiagnosticsStore();
   const transport = new FakeTransport('tcp');
-  const runtime = new ConnectionRuntime({ config: conn, transport, cache, diagnostics: diag, hooks: { onChange: () => undefined, onState: () => undefined } });
+  const runtime = new ConnectionRuntime({ config, transport, cache, diagnostics: diag, hooks: { onChange: () => undefined, onState: () => undefined } });
   runtime.configure([{ slave, block }]);
   return { runtime, transport, cache, diag };
 }
@@ -213,6 +213,100 @@ describe('ConnectionRuntime over fake TCP transport', () => {
     expect(outcome.result).toBe('ok');
     if (outcome.response?.kind === 'registers') expect(outcome.response.registers.length).toBe(6);
     await ctx.runtime.stop();
+  });
+
+  it('stops after the in-flight probe without retries, preserves results and resumes queued reads and polls', async () => {
+    ctx = setup({ ...conn, retries: 3 });
+    ctx.transport.onResponse(adu => unitOf(adu) === 2 ? null : [respRegs(new Array(qtyOf(adu)).fill(7), tidOf(adu), unitOf(adu))]);
+    await ctx.runtime.start();
+    try {
+      const scan = ctx.runtime.scanUnits({ from: 1, to: 247 }, 35);
+      await waitFor(() => ctx.transport.sent.some(adu => unitOf(adu) === 2));
+      const queued = ctx.runtime.temporaryRead(1, 3, 0, 2);
+      expect(ctx.runtime.scan?.found.map(r => r.unitId)).toEqual([1]);
+      const oldState = ctx.runtime.scan;
+      ctx.runtime.stopScan();
+      ctx.runtime.stopScan();
+      expect(ctx.runtime.scan?.phase).toBe('stopping');
+      expect(oldState?.phase).toBe('running');
+      expect(ctx.transport.sent.some(adu => qtyOf(adu) === 2)).toBe(false);
+      expect((await scan).map(r => r.unitId)).toEqual([1]);
+      expect(ctx.runtime.scan?.phase).toBe('stopped');
+      expect(ctx.runtime.scan?.checked).toBe(2);
+      expect(ctx.transport.sent.filter(adu => unitOf(adu) === 2)).toHaveLength(1);
+      expect((await queued).result).toBe('ok');
+      await waitFor(() => ctx.diag.recentTransactions(20).some(tx => tx.sourceKind === 'poll'));
+      expect(ctx.transport.sent.some(adu => unitOf(adu) > 2)).toBe(false);
+      const again = await ctx.runtime.scanUnits({ from: 1, to: 1 });
+      expect(again.map(r => r.unitId)).toEqual([1]);
+      expect(ctx.runtime.scan?.phase).toBe('completed');
+    } finally { await ctx.runtime.stop(); }
+  });
+
+  it('waits for the current scheduler request and can cancel before sending the first probe', async () => {
+    await ctx.runtime.start();
+    try {
+      await waitFor(() => ctx.transport.sent.length === 1);
+      const current = ctx.transport.sent[0]!;
+      const scan = ctx.runtime.scanUnits({ from: 2, to: 4 });
+      ctx.runtime.stopScan();
+      expect(await scan).toEqual([]);
+      expect(ctx.runtime.scan?.checked).toBe(0);
+      expect(ctx.transport.sent).toHaveLength(1);
+      ctx.transport.inject(respRegs([1, 2, 3, 4], tidOf(current)));
+      await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
+    } finally { await ctx.runtime.stop(); }
+  });
+
+  it('blocks concurrent scans and rejects invalid ranges and offline scanning', async () => {
+    await expect(ctx.runtime.scanUnits({ from: 1, to: 3 })).rejects.toThrow('online');
+    await ctx.runtime.start();
+    try {
+      for (const range of [{ from: 0, to: 1 }, { from: 1, to: 248 }, { from: 4, to: 2 }, { from: 1.5, to: 2 }]) {
+        await expect(ctx.runtime.scanUnits(range)).rejects.toThrow('range');
+      }
+      const scan = ctx.runtime.scanUnits({ from: 1, to: 2 }, 30);
+      await expect(ctx.runtime.scanUnits({ from: 1, to: 2 })).rejects.toThrow('already running');
+      ctx.runtime.stopScan();
+      await scan;
+    } finally { await ctx.runtime.stop(); }
+  });
+
+  it('starts scanning only after an in-flight write and its read-back have both finished', async () => {
+    ctx.transport.onResponse(adu => fcOf(adu) === 6 ? null : [respRegs(new Array(qtyOf(adu)).fill(42), tidOf(adu), unitOf(adu))]);
+    await ctx.runtime.start();
+    try {
+      const write = ctx.runtime.writePoint({ slave, block, mapping: point.mapping, rawValue: 42, pointId: point.id, readBackRange: { start: 0, length: 4 } });
+      await waitFor(() => ctx.transport.sent.length === 1);
+      const scan = ctx.runtime.scanUnits({ from: 2, to: 2 });
+      expect(ctx.transport.sent).toHaveLength(1);
+      const writeAdu = ctx.transport.sent[0]!;
+      ctx.transport.inject(respWriteAck(0, 42, tidOf(writeAdu)));
+      expect((await write).result).toBe('ok');
+      await scan;
+      expect(ctx.transport.sent.slice(0, 3).map(adu => [fcOf(adu), unitOf(adu)])).toEqual([[6, 1], [3, 1], [3, 2]]);
+      expect(qtyOf(ctx.transport.sent[1]!)).toBe(4);
+    } finally { await ctx.runtime.stop(); }
+  });
+
+  it('records valid exception responders as discovered, with their actual exception code', async () => {
+    ctx.transport.onResponse(adu => [buildTcpAdu(tidOf(adu), unitOf(adu), encodeResponsePdu({ kind: 'exception', fc: 3, code: 2 }))]);
+    await ctx.runtime.start();
+    try {
+      const found = await ctx.runtime.scanUnits({ from: 2, to: 2 });
+      expect(found).toEqual([{ unitId: 2, responseMs: expect.any(Number), exceptionCode: 2 }]);
+      expect(ctx.transport.sent[0]?.slice(7)).toEqual(new Uint8Array([3, 0, 0, 0, 1]));
+    } finally { await ctx.runtime.stop(); }
+  });
+
+  it('disconnecting settles a running scan and does not leave it marked as active', async () => {
+    await ctx.runtime.start();
+    const scan = ctx.runtime.scanUnits({ from: 1, to: 247 });
+    await waitFor(() => ctx.transport.sent.length > 0);
+    await ctx.runtime.stop();
+    await scan;
+    expect(ctx.runtime.scan?.phase).toBe('stopped');
+    expect(ctx.transport.sent).toHaveLength(1);
   });
 
   it('truncated candidate followed by a good frame: good frame still parsed (resync)', async () => {

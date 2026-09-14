@@ -1,7 +1,7 @@
 {
   "name": "modbus-debugger",
   "productName": "Modbus Debugger",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Modbus RTU / TCP desktop debugging tool",
   "main": ".vite/build/index.js",
   "private": true,

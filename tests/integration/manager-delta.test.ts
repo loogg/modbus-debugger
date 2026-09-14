@@ -84,6 +84,26 @@ function txOf(i: number): TransactionRecord {
 }
 
 describe('RuntimeManager snapshot / delta pipeline', () => {
+  it('publishes scan progress and cancellation without successful polls and preserves it in fresh snapshots', async () => {
+    const { mgr, deltas } = await harness();
+    mgr.start();
+    try {
+      await sleep(20);
+      const scanning = mgr.handleCommand(commandSchema.parse({ type: 'device.scan', connectionId: 'c1', from: 1, to: 247 }));
+      await sleep(120);
+      expect(deltas.some(d => d.connections?.c1?.scan?.phase === 'running')).toBe(true);
+      const stop = await mgr.handleCommand(commandSchema.parse({ type: 'device.stopScan', connectionId: 'c1' }));
+      expect(stop.ok).toBe(true);
+      expect(mgr.buildSnapshot().connections.c1?.scan?.phase).toBe('stopping');
+      await scanning;
+      await sleep(120);
+      expect(deltas.some(d => d.connections?.c1?.scan?.phase === 'stopped')).toBe(true);
+      const state = mgr.buildSnapshot().connections.c1?.scan;
+      expect(state?.phase).toBe('stopped');
+      expect(state?.checked).toBeLessThan(247);
+    } finally { await mgr.stop(); }
+  });
+
   it('caches the point index against the workspace revision and invalidates it on edit', async () => {
     const { svc, mgr, history } = await harness();
     const first = mgr.pointIndex();

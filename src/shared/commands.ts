@@ -19,7 +19,8 @@ export const commandSchema = z.discriminatedUnion('type', [
     boolValue: z.boolean().nullable(),
     stringValue: z.string().nullable(),
   }),
-  z.object({ type: z.literal('device.scan'), connectionId: z.string(), from: z.number().int().min(1), to: z.number().int().max(247) }),
+  z.object({ type: z.literal('device.scan'), connectionId: z.string(), from: z.number().int().min(1).max(247), to: z.number().int().min(1).max(247) }),
+  z.object({ type: z.literal('device.stopScan'), connectionId: z.string() }),
   z.object({
     type: z.literal('device.temporaryRead'),
     connectionId: z.string(),

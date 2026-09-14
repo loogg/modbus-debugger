@@ -6,6 +6,7 @@ import { encodeRequestPdu, buildRtuAdu, buildTcpAdu, expectedResponseAduLength, 
 import type { ModbusRequest, ModbusResponse, ReadFC } from '../../domain/protocol';
 import type { BlockDef, ConnectionDef, SlaveDef } from '../../domain/model';
 import { encodeRaw, type PointMapping, type RawMemory } from '../../domain/mapping';
+import type { ScanRow, ScanStateView } from '../../shared/snapshot';
 
 export type ConnectionState = 'offline' | 'connecting' | 'online' | 'error';
 
@@ -63,6 +64,8 @@ export class ConnectionRuntime {
   private waiter: PendingWaiter | null = null;
   private tidCounter = 0;
   private scanning = false;
+  private scanController: AbortController | null = null;
+  private scanState: ScanStateView | null = null;
   private drainUntil = 0;
   private reconnectAt = 0;
   private reconnectDelay = 1000;
@@ -123,7 +126,9 @@ export class ConnectionRuntime {
   }
 
   async stop(): Promise<void> {
+    this.stopScan();
     this.stopped = true;
+    this.failWaiter('transport', 'connection stopped');
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.queue = [];
@@ -161,6 +166,7 @@ export class ConnectionRuntime {
 
   private handleTransportFailure(err: Error): void {
     if (this.stopped) return;
+    this.stopScan();
     this.failWaiter('transport', err.message);
     this.setState('error', err.message);
     this.scheduleReconnect();
@@ -425,7 +431,7 @@ export class ConnectionRuntime {
   async executeRequest(
     unitId: number,
     req: ModbusRequest,
-    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number },
+    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<RequestOutcome> {
     const isRead = req.kind === 'read';
     const maxAttempts = 1 + Math.max(0, this.config.retries ?? 0);
@@ -436,9 +442,10 @@ export class ConnectionRuntime {
         ? last.result === 'timeout' || last.result === 'transport'
         : last.result === 'transport';
       this.logTrace(`attempt ${attempt + 1}/${maxAttempts} ${summarizeRequest(req)} -> ${last.result}`);
-      if (!retryable || attempt === maxAttempts - 1) break;
+      if (!retryable || attempt === maxAttempts - 1 || opts.signal?.aborted || this.stopped) break;
       this.logTrace(`retrying ${summarizeRequest(req)} after ${last.result}`);
       await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS));
+      if (opts.signal?.aborted || this.stopped) break;
     }
     return last as RequestOutcome;
   }
@@ -473,10 +480,10 @@ export class ConnectionRuntime {
   }
 
   private takeNext(now: number) {
+    if (this.scanning || now < this.drainUntil) return null;
     this.queue.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
     const manual = this.queue.shift();
     if (manual) return manual;
-    if (this.scanning) return null;
     let best: PollTarget | null = null;
     let bestDue = Infinity;
     for (const t of this.targets) {
@@ -631,19 +638,60 @@ export class ConnectionRuntime {
     return { result: box.outcome?.result ?? 'transport', exceptionCode: box.outcome?.exceptionCode ?? null, readBack: box.outcome };
   }
 
-  async scanUnits(range: { from: number; to: number }, timeoutMs = 150): Promise<Array<{ unitId: number; responseMs: number }>> {
-    const found: Array<{ unitId: number; responseMs: number }> = [];
+  get scan(): ScanStateView | null {
+    return this.scanState;
+  }
+
+  stopScan(): void {
+    if (!this.scanController || this.scanController.signal.aborted) return;
+    this.scanController.abort();
+    if (this.scanState) this.scanState = { ...this.scanState, phase: 'stopping' };
+    this.hooks.onChange();
+  }
+
+  async scanUnits(range: { from: number; to: number }, timeoutMs = 150): Promise<ScanRow[]> {
+    if (!Number.isInteger(range.from) || !Number.isInteger(range.to) || range.from < 1 || range.to > 247 || range.from > range.to) {
+      throw new Error('Scan range must satisfy 1 <= from <= to <= 247');
+    }
+    if (this.scanning) throw new Error('Scan already running on this connection');
+    if (this.stopped || this.state !== 'online') throw new Error('Connection must be online to scan');
+    const found: ScanRow[] = [];
+    const controller = new AbortController();
+    this.scanController = controller;
     this.scanning = true;
+    const started = this.clock.now();
+    let checked = 0;
+    let ownsSlot = false;
+    const active = () => !controller.signal.aborted && !this.stopped && this.state === 'online';
+    const update = (phase: ScanStateView['phase'], currentUnit: number | null) => {
+      this.scanState = { phase, ...range, currentUnit, checked, found: [...found], elapsedMs: this.clock.now() - started };
+      this.hooks.onChange();
+    };
+    update('running', null);
     try {
+      // Block new scheduler work, but let the current poll or atomic write/read-back group finish.
+      while (active() && (this.busy || this.waiter || this.clock.now() < this.drainUntil)) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      if (!active()) return found;
+      this.busy = true;
+      ownsSlot = true;
       for (let unit = range.from; unit <= range.to; unit++) {
-        if (this.stopped || this.state !== 'online') break;
-        const outcome = await this.executeRequest(unit, { kind: 'read', fc: 0x03, address: 0, quantity: 1 }, { sourceKind: 'scanner', sourceId: null, timeoutMs });
+        while (active() && this.clock.now() < this.drainUntil) await new Promise((resolve) => setTimeout(resolve, 5));
+        if (!active()) break;
+        update('running', unit);
+        const outcome = await this.executeRequest(unit, { kind: 'read', fc: 0x03, address: 0, quantity: 1 }, { sourceKind: 'scanner', sourceId: null, timeoutMs, signal: controller.signal });
+        checked++;
         if (outcome.result === 'ok' || outcome.result === 'exception') {
-          found.push({ unitId: unit, responseMs: outcome.durationMs });
+          found.push({ unitId: unit, responseMs: outcome.durationMs, exceptionCode: outcome.exceptionCode });
         }
+        update(controller.signal.aborted ? 'stopping' : 'running', unit);
       }
     } finally {
+      if (ownsSlot) this.busy = false;
       this.scanning = false;
+      this.scanController = null;
+      update(active() && checked === range.to - range.from + 1 ? 'completed' : 'stopped', null);
     }
     return found;
   }

@@ -54,6 +54,7 @@
 ### Diagnosis / Import
 
 - RTU Scanner 扫描 Unit ID；Temporary Read 是单次请求，成功结果可保存为 Block。
+- Temporary Read 默认数量为 10 个寄存器（覆盖 Figma 初始示例中的 16）。Scanner 支持中途停止、保留部分结果并恢复当前连接轮询；正常/合法异常响应均可发现从站，界面显示实际重试次数与响应类型。
 - Raw Inspector 只解释当前 Block Cache，不额外请求设备。
 - Connection Health 至少统计 bus load、request rate、P50/P95、Timeout、CRC、Exception 和实际周期。
 - Point ↔ Transaction 通过稳定 `traceId` + source metadata 双向追踪。

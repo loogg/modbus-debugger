@@ -5,6 +5,7 @@ import { DataTable } from '../components/table';
 import { AREAS } from '../../domain/address';
 import { useTranslation } from '../i18n';
 import { fmtTime } from '../time';
+import type { ScanRow } from '../../shared/snapshot';
 
 /** Shared baud-rate presets for the add-connection dialog and the connection settings page. */
 export const BAUD_PRESETS = ['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600', '1000000'].map((b) => ({ value: b, label: b }));
@@ -29,8 +30,8 @@ export function DevicesScreen() {
   const activeConnection =
     workspace?.connections.find((c) => c.id === selection.connectionId) ?? connection ?? workspace?.connections[0];
 
-  if (selection.deviceView === 'scan' && activeConnection) return <ScanView connectionId={activeConnection.id} />;
-  if (selection.deviceView === 'temp' && activeConnection) return <TempReadView connectionId={activeConnection.id} />;
+  if (selection.deviceView === 'scan' && activeConnection) return <ScanView key={activeConnection.id} connectionId={activeConnection.id} />;
+  if (selection.deviceView === 'temp' && activeConnection) return <TempReadView key={activeConnection.id} connectionId={activeConnection.id} />;
   const template = workspace?.templates.find((t) => t.id === slave?.templateId);
   const connState = slave ? connStates[slave.connectionId] : undefined;
 
@@ -126,52 +127,73 @@ export function DevicesScreen() {
 }
 /* ------------------------------- 17 — 扫描 / 从站 ------------------------------- */
 
-interface ScanRow {
-  unitId: number;
-  responseMs: number;
-}
-
 export function ScanView(props: { connectionId: string }) {
   const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const openOverlay = useApp((s) => s.openOverlay);
-  const [from, setFrom] = useState('1');
-  const [to, setTo] = useState('247');
-  const [running, setRunning] = useState(false);
-  const [rows, setRows] = useState<ScanRow[]>([]);
-  const [summary, setSummary] = useState<string | null>(null);
+  const connectionState = useConnectionStates()[props.connectionId];
+  const scan = connectionState?.scan;
+  const [from, setFrom] = useState(String(scan?.from ?? 1));
+  const [to, setTo] = useState(String(scan?.to ?? 247));
+  const [starting, setStarting] = useState(false);
+  const [stopRequested, setStopRequested] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const running = starting || scan?.phase === 'running' || scan?.phase === 'stopping';
+  const stopping = running && (stopRequested || scan?.phase === 'stopping');
+  const rows = scan?.found ?? [];
+  const validRange = from.trim() !== '' && to.trim() !== '' && Number.isInteger(Number(from)) && Number.isInteger(Number(to)) && Number(from) >= 1 && Number(to) <= 247 && Number(from) <= Number(to);
+  const summary = scan && !running ? t('devices.scanSummary', { addresses: String(scan.checked), responded: String(rows.length), secs: (scan.elapsedMs / 1000).toFixed(1) }) : null;
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
 
   const run = async () => {
-    setRunning(true);
-    setRows([]);
-    const started = Date.now();
-    const res = await command<ScanRow[]>({ type: 'device.scan', connectionId: props.connectionId, from: Number(from), to: Number(to) });
-    const secs = ((Date.now() - started) / 1000).toFixed(1);
-    setRunning(false);
-    if (res.ok) {
-      setRows(res.value);
-      setSummary(t('devices.scanSummary', { addresses: String(Number(to) - Number(from) + 1), responded: String(res.value.length), secs }));
+    setStarting(true);
+    setStopRequested(false);
+    setError(null);
+    try {
+      const res = await command<ScanRow[]>({ type: 'device.scan', connectionId: props.connectionId, from: Number(from), to: Number(to) });
+      if (!res.ok) setError(res.error);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const stop = async () => {
+    setStopRequested(true);
+    setError(null);
+    try {
+      const res = await command({ type: 'device.stopScan', connectionId: props.connectionId });
+      if (!res.ok) { setError(res.error); setStopRequested(false); }
+    } catch (err) {
+      setError(String(err));
+      setStopRequested(false);
     }
   };
 
   return (
     <>
-      <PageHeader title={t('devices.scanTitle')} subtitle={t('devices.scanSubtitle')} actions={<Button variant="primary" disabled={running} onClick={() => void run()}>{running ? t('devices.scanRunning') : t('devices.scanStart')}</Button>} />
+      <PageHeader title={t('devices.scanTitle')} subtitle={t('devices.scanSubtitle')} actions={running
+        ? <Button disabled={stopping} onClick={() => void stop()}>{stopping ? t('devices.scanStopping') : t('devices.scanStop')}</Button>
+        : <Button variant="primary" disabled={!validRange || connectionState?.state !== 'online'} onClick={() => void run()}>{t('devices.scanStart')}</Button>} />
       <InfoColumns
         items={[
-          { label: t('devices.scanRangeLabel'), value: <span className="mono">{from} – {to}</span> },
+          { label: t('devices.scanRangeLabel'), value: <span className="mono">{running ? scan?.from ?? from : from} – {running ? scan?.to ?? to : to}</span> },
           { label: t('devices.scanTimeoutLabel'), value: '150 ms' },
-          { label: t('devices.retries'), value: t('devices.retryOnce') },
+          { label: t('devices.retries'), value: t('devices.retryCount', { n: String(conn?.retries ?? 0) }) },
           { label: t('devices.scanConnLabel'), value: conn ? `${conn.name} · ${conn.transport === 'tcp' ? conn.tcp?.host : conn.rtu?.port}` : '—' },
         ]}
       />
       <InfoBand tone="blue" className="mt-4">{t('devices.scanPauseHint')}</InfoBand>
+      <div className="text-xs text-ink2 mt-3">{t('devices.scanProbeHint')}</div>
+      {error ? <div role="alert" className="text-sm text-err mt-3">{error}</div> : null}
+      {running ? <div role="status" className="text-sm text-accent mt-3">{stopping ? t('devices.scanStoppingHint') : t('devices.scanProgress', { current: String(scan?.currentUnit ?? '—'), checked: String(scan?.checked ?? 0), total: String((scan?.to ?? Number(to)) - (scan?.from ?? Number(from)) + 1) })}</div> : null}
       <div className="mt-4 flex gap-4">
-        <div className="w-32"><div className="text-xs text-ink2 mb-1.5">{t('devices.scanFromLabel')}</div><TextInput data-testid="scan-from" type="number" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-        <div className="w-32"><div className="text-xs text-ink2 mb-1.5">{t('devices.scanToLabel')}</div><TextInput data-testid="scan-to" type="number" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+        <div className="w-32"><div className="text-xs text-ink2 mb-1.5">{t('devices.scanFromLabel')}</div><TextInput aria-label={t('devices.scanFromLabel')} data-testid="scan-from" type="number" min={1} max={247} disabled={running} value={running ? scan?.from ?? from : from} onChange={(e) => setFrom(e.target.value)} /></div>
+        <div className="w-32"><div className="text-xs text-ink2 mb-1.5">{t('devices.scanToLabel')}</div><TextInput aria-label={t('devices.scanToLabel')} data-testid="scan-to" type="number" min={1} max={247} disabled={running} value={running ? scan?.to ?? to : to} onChange={(e) => setTo(e.target.value)} /></div>
       </div>
+      {!validRange && !running ? <div role="alert" className="text-xs text-err mt-2">{t('devices.scanInvalidRange')}</div> : null}
       <SectionTitle>{t('devices.scanResults')}</SectionTitle>
       <div className="text-xs text-ink2 -mt-1 mb-3">{t('devices.scanFound', { n: String(rows.length) })}</div>
       <DataTable<ScanRow>
@@ -179,7 +201,7 @@ export function ScanView(props: { connectionId: string }) {
           { id: 'unit', header: 'Unit ID', width: 120, render: (r: ScanRow) => <span className="font-medium">{r.unitId}</span> },
           { id: 'st', header: t('devices.colStatus'), width: 120, render: () => <StatusDot tone="ok" label={t('devices.online')} /> },
           { id: 'ms', header: t('devices.colResponseTime'), width: 140, render: (r: ScanRow) => <span className="text-xs">{r.responseMs.toFixed(1)} ms</span> },
-          { id: 'resp', header: t('devices.colLastResponse'), width: 160, render: () => <span className="text-xs">{t('devices.normalResponse')}</span> },
+          { id: 'resp', header: t('devices.colLastResponse'), width: 160, render: (r: ScanRow) => <span className="text-xs">{r.exceptionCode === null ? t('devices.normalResponse') : t('devices.scanException', { code: `0x${r.exceptionCode.toString(16).padStart(2, '0')}` })}</span> },
           {
             id: 'op',
             header: t('devices.colActions'),
@@ -200,7 +222,7 @@ export function ScanView(props: { connectionId: string }) {
       />
       {summary ? (
         <InfoBand className="mt-6">
-          <div className="text-sm font-bold mb-1">{t('devices.scanSummaryTitle')}</div>
+          <div className="text-sm font-bold mb-1">{scan?.phase === 'stopped' ? t('devices.scanStopped') : t('devices.scanSummaryTitle')}</div>
           <div className="text-sm">{summary}</div>
           <div className="text-xs text-ink2 mt-1">{t('devices.scanNextStep')}</div>
         </InfoBand>
@@ -219,7 +241,7 @@ export function TempReadView(props: { connectionId: string }) {
   const [unit, setUnit] = useState('1');
   const [area, setArea] = useState('3');
   const [start, setStart] = useState('0');
-  const [qty, setQty] = useState('16');
+  const [qty, setQty] = useState('10');
   const [result, setResult] = useState<{ registers: number[]; bits?: boolean[]; ms: number; at: string } | null>(null);
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
   const slave = workspace?.slaves.find((s) => s.connectionId === props.connectionId && s.unitId === Number(unit));
@@ -247,7 +269,7 @@ export function TempReadView(props: { connectionId: string }) {
       <InfoBand className="flex flex-wrap items-end gap-4">
         <div className="w-44"><div className="text-xs text-ink2 mb-1.5">{t('devices.tempAreaLabel')}</div><Select value={area} onChange={setArea} options={[1, 2, 3, 4].map((a) => ({ value: String(a), label: AREAS[a as 1 | 2 | 3 | 4] }))} /></div>
         <div className="w-28"><div className="text-xs text-ink2 mb-1.5">{t('devices.tempStartLabel')}</div><TextInput type="number" value={start} onChange={(e) => setStart(e.target.value)} /></div>
-        <div className="w-28"><div className="text-xs text-ink2 mb-1.5">{t('devices.tempQtyLabel')}</div><TextInput type="number" value={qty} onChange={(e) => setQty(e.target.value)} /></div>
+        <div className="w-28"><div className="text-xs text-ink2 mb-1.5">{t('devices.tempQtyLabel')}</div><TextInput aria-label={t('devices.tempQtyLabel')} type="number" value={qty} onChange={(e) => setQty(e.target.value)} /></div>
         <div className="w-40"><div className="text-xs text-ink2 mb-1.5">{t('devices.slaveLabel')}</div><TextInput type="number" value={unit} onChange={(e) => setUnit(e.target.value)} /></div>
         <div className="text-xs text-ink2 pb-2">{t('devices.requestPreview')} <span className="mono text-ink">FC0{area} · Start {start} · Qty {qty}</span></div>
         <div className="flex-1" />

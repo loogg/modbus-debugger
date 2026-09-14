@@ -36,10 +36,27 @@ export interface PointViewState {
   hasValue: boolean;
 }
 
+export interface ScanRow {
+  unitId: number;
+  responseMs: number;
+  exceptionCode: number | null;
+}
+
+export interface ScanStateView {
+  phase: 'running' | 'stopping' | 'completed' | 'stopped';
+  from: number;
+  to: number;
+  currentUnit: number | null;
+  checked: number;
+  found: ScanRow[];
+  elapsedMs: number;
+}
+
 export interface ConnectionStateView {
   state: 'offline' | 'connecting' | 'online' | 'error';
   detail: string | null;
   lastResponseUtc: string | null;
+  scan?: ScanStateView | null;
 }
 
 export interface RecordingView {
