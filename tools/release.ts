@@ -11,6 +11,12 @@ export function releaseBase(version: string, arch: string): string {
   return `modbus-debugger-${version}-win-${arch}`;
 }
 
+/** Recognize only our four generated formats, never user files such as logs or workspaces. */
+export function isOldReleaseArtifact(name: string, currentVersion: string): boolean {
+  const match = /^modbus-debugger-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)-win-(?:x64|arm64|ia32)(?:\.zip|-Portable\.exe|-Setup\.exe)?$/.exec(name);
+  return Boolean(match && match[1] !== currentVersion);
+}
+
 /** Only use this invocation's maker results, never scan out/ for possibly stale installers. */
 export function makerArtifacts(results: ForgeMakeResult[], arch: string): { zip: string; setup: string } {
   const artifacts = results.filter(r => r.platform === 'win32' && r.arch === arch).flatMap(r => r.artifacts);
@@ -84,6 +90,15 @@ export async function assembleRelease(root: string, results: ForgeMakeResult[]):
           }
           await fs.rename(path.join(staging, name), destination);
           promoted.push(name);
+        }
+        // Retire older generated versions only after the new four outputs are in place.
+        // Moving them into the same backup keeps rollback possible if promotion fails.
+        for (const name of await fs.readdir(release)) {
+          if (!isOldReleaseArtifact(name, pkg.version)) continue;
+          const source = path.resolve(release, name);
+          if (path.dirname(source) !== release) throw new Error('Cleanup path escapes release/');
+          await fs.rename(source, path.join(backup, name));
+          saved.push(name);
         }
       } catch (error) {
         // If restoring itself fails (for example a file becomes locked), preserve the backup for recovery.

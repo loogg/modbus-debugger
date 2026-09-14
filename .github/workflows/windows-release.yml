@@ -1,0 +1,104 @@
+name: Windows packages
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+    paths-ignore: ['docs/**', '**/*.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Read package version and validate tag
+        id: package
+        env:
+          BUILD_REF_TYPE: ${{ github.ref_type }}
+          BUILD_REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if ($env:BUILD_REF_TYPE -eq 'tag' -and $env:BUILD_REF_NAME -ne "v$version") {
+            throw "Tag must match package.json: v$version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build all Windows x64 formats
+        run: npm run make -- --platform=win32 --arch=x64
+      - name: Smoke test release packages
+        run: npm run smoke:release
+      - name: Verify the three downloadable files
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          $base = "modbus-debugger-$env:PACKAGE_VERSION-win-x64"
+          foreach ($suffix in @('.zip', '-Portable.exe', '-Setup.exe')) {
+            $file = Get-Item -LiteralPath (Join-Path release "$base$suffix") -ErrorAction Stop
+            if ($file.Length -eq 0) { throw "Empty artifact: $($file.Name)" }
+          }
+      - name: Upload downloadable packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: modbus-debugger-${{ steps.package.outputs.version }}-win-x64
+          path: |
+            release/*.zip
+            release/*-Portable.exe
+            release/*-Setup.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-build-diagnostics-${{ github.run_id }}
+          path: |
+            out/release-smoke-screenshots/
+            out/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish versioned GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/*.zip release/*-Portable.exe release/*-Setup.exe
+          else
+            prerelease=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then prerelease=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes "${prerelease[@]}" release/*.zip release/*-Portable.exe release/*-Setup.exe
+          fi

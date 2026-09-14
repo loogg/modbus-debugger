@@ -1,10 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import type { ForgeMakeResult } from '@electron-forge/shared-types';
-import { makerArtifacts, releaseBase } from '../../tools/release';
+import { isOldReleaseArtifact, makerArtifacts, releaseBase } from '../../tools/release';
 import { executionDirectory } from '../../src/main/services/execution-directory';
 
 describe('release inputs', () => {
+  it('retires only older generated release artifacts and preserves the current version and user files', () => {
+    for (const suffix of ['', '.zip', '-Portable.exe', '-Setup.exe']) {
+      expect(isOldReleaseArtifact(`modbus-debugger-0.5.0-win-x64${suffix}`, '0.7.1')).toBe(true);
+      expect(isOldReleaseArtifact(`modbus-debugger-0.7.1-win-x64${suffix}`, '0.7.1')).toBe(false);
+      expect(isOldReleaseArtifact(`modbus-debugger-0.7.1-win-arm64${suffix}`, '0.7.1')).toBe(false);
+    }
+    for (const name of ['logs', 'data', 'notes.zip', 'project.workspace.json', 'modbus-debugger-0.5.0-win-x64.zip.backup', '../modbus-debugger-0.5.0-win-x64']) {
+      expect(isOldReleaseArtifact(name, '0.7.1')).toBe(false);
+    }
+    expect(isOldReleaseArtifact('modbus-debugger-0.7.1-beta.1-win-x64.zip', '0.7.1')).toBe(true);
+  });
   it('uses version and target architecture and rejects escaping paths', () => {
     expect(releaseBase('0.5.0', 'x64')).toBe('modbus-debugger-0.5.0-win-x64');
     expect(releaseBase('1.0.0-beta.1', 'arm64')).toBe('modbus-debugger-1.0.0-beta.1-win-arm64');

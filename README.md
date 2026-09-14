@@ -75,7 +75,15 @@ release/
 └── modbus-debugger-0.5.0-win-x64-Setup.exe
 ```
 
-版本号自动读取 `package.json`，架构来自 Forge 目标。无版本或平台父目录；其他版本保留，同名产物在四种产物全部成功构建后替换。ZIP 解压后运行其中的 `modbus-debugger.exe`；Portable 为无需安装的单个 EXE；Setup 使用 Squirrel 安装/卸载。Portable 的日志和默认历史数据库保存在外层 EXE 同级的 `logs/`、`data/`，退出后仍保留，偏好设置沿用 app userData。不要把实际业务数据保存在会被下一次构建替换的交付目录中。
+版本号自动读取 `package.json`，架构来自 Forge 目标。无版本或平台父目录；四种产物全部成功构建后替换同名产物并清理旧版本产物，失败时保留原有文件，日志/数据等非打包文件不清理。ZIP 解压后运行其中的 `modbus-debugger.exe`；Portable 为无需安装的单个 EXE；Setup 使用 Squirrel 安装/卸载。Portable 的日志和默认历史数据库保存在外层 EXE 同级的 `logs/`、`data/`，退出后仍保留，偏好设置沿用 app userData。不要把实际业务数据保存在会被下一次构建替换的交付目录中。
+
+## GitHub 构建与下载
+
+仓库：[loogg/modbus-debugger](https://github.com/loogg/modbus-debugger) · [Actions 构建](https://github.com/loogg/modbus-debugger/actions) · [版本下载](https://github.com/loogg/modbus-debugger/releases)。
+
+推送代码到 `master` / `main` 后，`Windows packages` 工作流自动构建并执行产物冒烟测试，ZIP、Portable EXE、Setup EXE 可从该次 Actions 运行的 Artifacts 下载（保留 14 天）。仅 Markdown/docs 变更不触发分支构建，也可在 Actions 手动运行。
+
+推送与 `package.json` 对应的 `v<version>` 标签时，同一工作流会把三种文件附加到 GitHub Releases，便于长期下载；标签版本不符时立即失败，不覆盖既有发布文件。分支构建不会自动创建版本发布，也不默认执行业务全量测试。
 
 ## 存储与依赖
 

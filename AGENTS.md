@@ -63,7 +63,14 @@ release/
 └── modbus-debugger-<version>-win-<arch>-Setup.exe
 ```
 
-四种产物必须来自同一版本、同一次构建；全部生成成功后才整理到 `release/`。`release/` 加入 `.gitignore`；重复构建仅替换同名产物，不清空其他版本。Portable 的持久化日志与默认数据库以外层 EXE 所在目录为基准，不得写入退出后会被清理的临时解压目录。
+四种产物必须来自同一版本、同一次构建；全部生成成功后才整理到 `release/`。`release/` 加入 `.gitignore`；成功打包后替换同名产物并清理符合上述命名的旧版本产物，只保留当前版本（同版本其他架构可并存）。构建失败保留原有产物；不得在构建开始时直接清空目录，不删除日志、数据或其他非打包文件。Portable 的持久化日志与默认数据库以外层 EXE 所在目录为基准，不得写入退出后会被清理的临时解压目录。
+
+### GitHub 提交与构建
+
+- 独立阶段完成后提交；用户要求推送/发布时，推送到已确认的 GitHub 仓库并检查对应 Actions 结果，不把仅配置工作流说成云端构建成功。未配置远程时先确认目标仓库，新建仓库须明确可见性；禁止擅自公开项目或 force push。
+- `.github/workflows/windows-release.yml` 在推送 `master` / `main` 的代码变更、推送 `v*` 标签或手动触发时使用 Windows x64 构建；纯 Markdown / docs 变更不触发分支构建。沿用 `npm ci` + `npm run make -- --platform=win32 --arch=x64`，不得另造一套打包流程。
+- GitHub 必须提供当前版本的 `modbus-debugger-<version>-win-x64.zip`、`modbus-debugger-<version>-win-x64-Portable.exe`、`modbus-debugger-<version>-win-x64-Setup.exe`。分支构建存为 Actions Artifacts；版本标签必须严格对应 `package.json` 的 `v<version>`，标签构建成功后自动附加到 GitHub Releases。
+- 云端构建执行四种产物 Smoke Test 后才上传下载文件；不因推送就启动无关业务全量回归。不得覆盖已有发布资产或移动已有版本标签；发布冲突应先核对版本。`out/`、`release/`、依赖与构建缓存不得提交进 Git。
 
 可自行解决的问题直接修复；公共组件、Domain、Scheduler 或 IPC 修改后先确认影响范围，再按下述策略验证相关路径，不因涉及公共代码就自动启动全量回归。
 

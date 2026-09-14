@@ -65,7 +65,7 @@ flowchart LR
 
 - Windows 发布由 Forge 完成目录版、ZIP 与 Squirrel Setup，再在 `postMake` 中使用 electron-builder 的 `prepackaged` + `portable` 目标封装同一份目录版；不替换 Forge/Vite，不重新编译应用，不引入第二套运行时依赖。
 - Portable 工具选型评审：electron-builder 为 MIT，仅作为 devDependency；Forge 现有 maker 不提供单文件 Portable，因此新增此构建依赖。NSIS 主体为 zlib/libpng；配置 `portable.useZip=true` 使用内置 zlib 解压，不把额外的 7z 解压插件嵌入启动器。NSIS 工具包中 LZMA 模块为 CPL-1.0，官方附有链接例外；本项目不修改工具，保留上游许可证。`@electron/asar`（MIT）和 `cross-zip`（MIT）复用 Forge 已有库，并显式声明为构建依赖，分别用于校验包内版本及解压验收。参考：[electron-builder](https://github.com/electron-userland/electron-builder/blob/master/LICENSE)、[NSIS License 与 LZMA 例外](https://nsis.sourceforge.io/License)。
-- `out/` 保存 Forge 产物与 Portable 构建中间文件；`release/` 根目录直接存放四种交付产物，不增加版本/平台子目录。命名统一为 `modbus-debugger-<package.json version>-win-<arch>`，目录版本体不加后缀，另三项分别追加 `.zip`、`-Portable.exe`、`-Setup.exe`。全部构建成功并校验版本后才整理到 release；仅替换同名产物，保留其他版本。
+- `out/` 保存 Forge 产物与 Portable 构建中间文件；`release/` 根目录直接存放四种交付产物，不增加版本/平台子目录。命名统一为 `modbus-debugger-<package.json version>-win-<arch>`，目录版本体不加后缀，另三项分别追加 `.zip`、`-Portable.exe`、`-Setup.exe`。全部构建成功并校验版本后才整理到 release；成功后清理命名匹配的旧版本产物，只保留当前版本，同版本其他架构可并存。替换与旧产物清理共用临时备份，失败回滚；其他文件不清理。
 - Portable 启动器会解压运行文件到临时目录；日志和默认历史数据路径使用启动器传入的 `PORTABLE_EXECUTABLE_DIR`（外层 Portable.exe 所在目录），避免保存在退出后删除的临时目录。用户偏好继续沿用 app userData。
 
 - 构建插件：`@electron-forge/plugin-vite`（forge 7.x）。三份配置分别对应三个 target：
