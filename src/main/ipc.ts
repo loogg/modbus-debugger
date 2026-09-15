@@ -22,10 +22,13 @@ export function registerIpc(manager: RuntimeManager, getWindow: () => BrowserWin
       return { ok: false, error: `invalid command: ${parsed.error.message}` };
     }
     const cmd = parsed.data;
+    if (['preparing','installing'].includes(updater.snapshot().phase) && !cmd.type.startsWith('update.')) return {ok:false,error:'正在准备或安装更新，请稍候。'};
     if (cmd.type.startsWith('update.')) {
       try {
         switch (cmd.type) {
           case 'update.status': return { ok: true, value: updater.snapshot() };
+          case 'update.install': return { ok: true, value: await updater.install() };
+          case 'update.confirmBoot': await updater.confirmBoot(); return { ok: true, value: null };
           case 'update.check': return { ok: true, value: await updater.check() };
           case 'update.download': return { ok: true, value: await updater.download() };
           case 'update.cancel': updater.cancel(); return { ok: true, value: null };

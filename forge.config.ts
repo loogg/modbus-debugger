@@ -1,3 +1,4 @@
+import { writeUpdateManifest } from './tools/update-manifest.mjs';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,10 +13,14 @@ const config: ForgeConfig = {
     name: 'Modbus Debugger',
     executableName: 'modbus-debugger',
     icon: path.resolve(__dirname, 'build', 'icon.ico'),
-    extraResource: [path.resolve(__dirname, 'build', 'icon.png')],
+    extraResource: [path.resolve(__dirname, 'build', 'icon.png'), path.resolve(__dirname, 'build', 'update-helper.ps1')],
   },
   rebuildConfig: {},
   hooks: {
+    postPackage: async (_config, result) => {
+      const version = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version as string;
+      for (const directory of result.outputPaths) await writeUpdateManifest(directory, version);
+    },
     postMake: async (_config, results) => {
       await assembleRelease(__dirname, results);
       return results;

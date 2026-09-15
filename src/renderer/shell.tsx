@@ -595,6 +595,9 @@ export function App() {
   // Subscribing to the whole snapshot here would re-render the entire tree on every delta
   // (up to 10/s while polling) and defeat every narrow selector below.
   const ready = useSnapshotReady();
+  const bootPending = useApp(s => s.snapshot?.update?.bootPending);
+  const command = useApp(s => s.command);
+  useEffect(() => { if (ready && bootPending) void command({type:'update.confirmBoot'}); }, [ready,bootPending,command]);
   if (!ready) return <div className="flex h-full items-center justify-center text-ink2">{t('shell.loading')}</div>;
   return (
     <div className="flex h-full flex-col">

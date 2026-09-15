@@ -43,10 +43,16 @@ export function parseRelease(raw: unknown, arch: string, kind: UpdatePackageKind
   const asset = matches.length === 1 ? matches[0]! : null;
   if (asset && (asset.browser_download_url !== expectedUrl || asset.size <= 0 || asset.size > MAX_PACKAGE_SIZE)) throw new Error('发布附件的地址或大小无效');
   if (asset && !/^sha256:[a-f\d]{64}$/i.test(asset.digest ?? '')) throw new Error('发布附件缺少 SHA-256 校验信息，请在 GitHub 发布页确认');
+  const manifestName = `modbus-debugger-${version}-win-${arch}-manifest.json`;
+  const manifests = release.assets.filter(item => item.name === manifestName && item.state === 'uploaded');
+  const manifest = manifests.length === 1 ? manifests[0]! : null;
+  const manifestUrl = `${UPDATE_RELEASES}/download/${encodeURIComponent(release.tag_name)}/${manifestName}`;
+  if (manifest && (manifest.browser_download_url !== manifestUrl || manifest.size <= 0 || manifest.size > 2 * 1024 * 1024 || !/^sha256:[a-f\d]{64}$/i.test(manifest.digest ?? ''))) throw new Error('升级文件清单无效');
   return {
     version, url: `${UPDATE_RELEASES}/tag/${encodeURIComponent(release.tag_name)}`,
     notes: (release.body ?? '').slice(0, 100000), publishedAt: release.published_at ?? null,
     asset: asset ? { name, url: expectedUrl, size: asset.size, sha256: asset.digest!.slice(7).toLowerCase() } : null,
+    manifest: manifest ? { name: manifestName, url: manifestUrl, size: manifest.size, sha256: manifest.digest!.slice(7).toLowerCase() } : null,
   };
 }
 interface UpdateOptions {
@@ -56,6 +62,9 @@ interface UpdateOptions {
   reveal: (file: string) => void;
   openExternal: (url: string) => Promise<void>;
   requestTimeoutMs?: number; downloadTimeoutMs?: number;
+  canInstall?: boolean; bootPending?: boolean; installMessage?: string | null;
+  install?: (release: UpdateRelease, file: string, manifest: {path:string;sha256:string}|null, signal: AbortSignal, installing: () => void) => Promise<void>;
+  confirmBoot?: () => Promise<string | null>;
 }
 
 /** Main owns update discovery, download bytes, verification and file paths. No background checks. */
@@ -70,7 +79,8 @@ export class UpdateService {
     this.directory = path.join(options.dataDirectory, 'updates');
     this.partialDirectory = path.join(options.tempDirectory, 'updates');
     this.value = { currentVersion: options.currentVersion, packageKind: options.packageKind, platform: options.platform, arch: options.arch,
-      phase: 'idle', latest: null, available: false, checkedAt: null, receivedBytes: 0, totalBytes: 0, downloadPath: null, error: null };
+      phase: 'idle', latest: null, available: false, checkedAt: null, receivedBytes: 0, totalBytes: 0, downloadPath: null, error: null,
+      canInstall: options.canInstall ?? false, bootPending: options.bootPending ?? false, installMessage: options.installMessage ?? null };
   }
   snapshot(): UpdateState { return structuredClone(this.value); }
   private set(patch: Partial<UpdateState>) { this.value = { ...this.value, ...patch }; this.onChange?.(this.snapshot()); }
@@ -177,7 +187,36 @@ export class UpdateService {
       } finally { await fsp.rm(partial, { force: true }); }
     }, this.options.downloadTimeoutMs ?? 15 * 60 * 1000);
   }
-  cancel(): void { this.active?.abort(); }
+  async install(): Promise<UpdateState> {
+    if (!this.value.canInstall || !this.options.install) throw new Error('请在 Windows 打包版中安装更新。');
+    const release = this.value.latest; const file = this.value.downloadPath;
+    if (!release?.asset || !file || !this.value.available) throw new Error('请先下载更新包。');
+    return this.run(async signal => {
+      this.set({phase:'preparing',error:null});
+      if (!await this.verify(file, release.asset!, signal)) throw new Error('更新包已被修改，请重新下载。');
+      let manifest: {path:string;sha256:string}|null = null;
+      if (this.options.packageKind === 'setup') {
+        const asset = release.manifest;
+        if (!asset) throw new Error('此 Release 缺少升级文件清单，请等待发布完成后重试。');
+        const response = await this.assetResponse(asset, signal);
+        const reader = response.body!.getReader(); const chunks: Uint8Array[] = []; let size = 0;
+        try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; if (size > asset.size) throw new Error('升级清单大小不匹配'); chunks.push(chunk.value); } }
+        finally { await reader.cancel().catch(() => {}); }
+        const bytes = Buffer.concat(chunks);
+        if (size !== asset.size || createHash('sha256').update(bytes).digest('hex') !== asset.sha256) throw new Error('升级清单校验失败');
+        const manifestPath = path.join(this.directory, asset.name);
+        await fsp.writeFile(manifestPath, bytes); manifest = {path:manifestPath,sha256:asset.sha256};
+      }
+      await this.options.install!(release, file, manifest, signal, () => this.set({phase:'installing'}));
+    }, 5 * 60 * 1000);
+  }
+  async confirmBoot(): Promise<void> {
+    if (!this.value.bootPending) return;
+    this.set({bootPending:false});
+    const message = await this.options.confirmBoot?.();
+    if (message) this.set({installMessage:message});
+  }
+  cancel(): void { if (this.value.phase !== 'installing') this.active?.abort(); }
   async dispose(): Promise<void> { this.cancel(); await this.task; }
   async revealDownload(): Promise<void> {
     if (this.active) throw new Error('请等待当前更新操作结束');

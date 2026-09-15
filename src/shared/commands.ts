@@ -4,6 +4,8 @@ import { scanOptionsSchema } from './scan-options';
 
 export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('update.status') }),
+  z.object({ type: z.literal('update.install') }),
+  z.object({ type: z.literal('update.confirmBoot') }),
   z.object({ type: z.literal('update.check') }),
   z.object({ type: z.literal('update.download') }),
   z.object({ type: z.literal('update.cancel') }),

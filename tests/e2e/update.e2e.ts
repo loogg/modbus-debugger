@@ -26,8 +26,8 @@ async function fixture(mode:Fixture['mode']='ok') {
       return Promise.resolve(new Response(new Uint8Array(f.mode==='corrupt'?f.bytes.map(()=>0):f.bytes)));
     };
   });
-  const reveal=await browser.electron.mock('shell','showItemInFolder'); await reveal.mockImplementation((file)=>{(globalThis as unknown as {updateFixture:Fixture}).updateFixture.revealed=file;});
-  const external=await browser.electron.mock('shell','openExternal'); await external.mockImplementation(async(url)=>{(globalThis as unknown as {updateFixture:Fixture}).updateFixture.opened=url;});
+  const reveal=await browser.electron.mock('shell','showItemInFolder'); await reveal.mockImplementation((file)=>{const fixture=(globalThis as unknown as {updateFixture?:Fixture}).updateFixture; if(fixture)fixture.revealed=file;});
+  const external=await browser.electron.mock('shell','openExternal'); await external.mockImplementation(async(url)=>{const fixture=(globalThis as unknown as {updateFixture?:Fixture}).updateFixture; if(fixture)fixture.opened=url;});
 }
 async function check() {
   await browser.waitUntil(async()=>await $('//button[normalize-space(.)="重新检查"]').isExisting() || await $('//button[normalize-space(.)="检查更新"]').isExisting());

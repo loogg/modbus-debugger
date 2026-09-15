@@ -1,4 +1,5 @@
 import { UpdateService, detectPackageKind } from './services/updater';
+import { prepareInstall, confirmUpdatedBoot, readInstallOutcome } from './services/self-update';
 import path from 'node:path';
 import fs from 'node:fs';
 import { app, BrowserWindow, dialog, nativeImage, net, protocol, screen, shell } from 'electron';
@@ -140,6 +141,37 @@ async function createWindow(): Promise<void> {
     currentVersion: app.getVersion(), packageKind: detectPackageKind(executionDir, Boolean(app.commandLine.getSwitchValue('portable-dir') || process.env.PORTABLE_EXECUTABLE_DIR)),
     platform: process.platform, arch: process.arch, dataDirectory: storage.data, tempDirectory: storage.temp,
     fetch: (url, init) => net.fetch(url, init), reveal: file => shell.showItemInFolder(file), openExternal: url => shell.openExternal(url),
+    canInstall: app.isPackaged && process.platform === 'win32',
+    bootPending: loaded.ok && Boolean(app.commandLine.getSwitchValue('update-session')),
+    installMessage: (await readInstallOutcome(storage.root))?.message ?? null,
+    confirmBoot: async () => {
+      const confirmed = await confirmUpdatedBoot(storage.root, app.commandLine.getSwitchValue('update-session'), app.commandLine.getSwitchValue('update-token'), app.getVersion());
+      return confirmed ? `已升级到 v${app.getVersion()}，工作区已恢复。` : null;
+    },
+    install: async (release, file, manifest, signal, installing) => {
+      const protectedPaths = [historyPath, ...(wsSvc.currentPath ? [wsSvc.currentPath] : [])];
+      if (storage.root.toLowerCase() !== executionDir.toLowerCase()) protectedPaths.push(storage.root);
+      const restartArgs = [`--data-dir=${storage.root}`];
+      const debugPort = app.commandLine.getSwitchValue('remote-debugging-port');
+      if (debugPort) restartArgs.push(`--remote-debugging-port=${debugPort}`);
+      const prepared = await prepareInstall({packaged:app.isPackaged,kind:updater!.snapshot().packageKind,currentVersion:app.getVersion(),executionDir,
+        currentExe:app.getPath('exe'),portableExe:app.commandLine.getSwitchValue('portable-exe'),dataRoot:storage.root,
+        helperSource:path.join(process.resourcesPath,'update-helper.ps1'),protectedPaths,restartArgs}, release.asset!, file, release.version, manifest, signal);
+      let stopping = false;
+      try {
+        signal.throwIfAborted();
+        const saved = wsSvc.saveTo(wsSvc.currentPath ?? path.join(storage.workspaces, `before-update-${Date.now()}.workspace.json`));
+        if (!saved.ok) throw new Error(`保存工作区失败，未安装更新：${saved.error}`);
+        installing(); stopping = true;
+        await manager!.stop();
+        await prepared.commit();
+        app.exit(0);
+      } catch (error) {
+        await prepared.abort();
+        if (stopping) { log.error('update handoff failed', error); app.relaunch({execPath:prepared.targetExe,args:restartArgs}); app.exit(1); }
+        throw error;
+      }
+    },
   });
   registerIpc(manager, () => mainWindow, updater);
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {

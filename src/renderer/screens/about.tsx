@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ArrowDownload20Regular, Info24Regular } from '@fluentui/react-icons';
 import { useApp } from '../store/app';
 import { Button, InfoBand, PageHeader } from '../components/ui';
@@ -9,15 +9,16 @@ export function AboutScreen() {
   const {t} = useTranslation();
   const update = useApp(s => s.snapshot?.update);
   const command = useApp(s => s.command);
+  const [confirmInstall, setConfirmInstall] = useState(false);
   if (!update) return <InfoBand>{t('about.loading')}</InfoBand>;
-  const busy = ['checking','downloading','verifying'].includes(update.phase);
+  const busy = ['checking','downloading','verifying','preparing','installing'].includes(update.phase);
   const downloaded = update.phase === 'downloaded';
   const canDownload = update.available && Boolean(update.latest?.asset);
   const percent = update.totalBytes ? Math.min(100, Math.floor(update.receivedBytes / update.totalBytes * 100)) : 0;
   const systemName = update.platform === 'win32' ? 'Windows' : update.platform === 'darwin' ? 'macOS' : update.platform === 'linux' ? 'Linux' : update.platform;
   const packageLabels = { zip: t('about.zip'), portable: t('about.portable'), setup: t('about.setup') };
   const instructions = { zip: t('about.zipHelp'), portable: t('about.portableHelp'), setup: t('about.setupHelp') };
-  const primaryText = update.phase === 'checking' ? t('about.checking') : update.phase === 'downloading' ? t('about.downloading') : update.phase === 'verifying' ? t('about.verifying') : downloaded ? t('about.reveal') : canDownload ? t('about.download',{version:update.latest!.version}) : t('about.check');
+  const primaryText = update.phase === 'preparing' ? t('about.preparing') : update.phase === 'installing' ? t('about.installing') : update.phase === 'checking' ? t('about.checking') : update.phase === 'downloading' ? t('about.downloading') : update.phase === 'verifying' ? t('about.verifying') : downloaded ? update.canInstall ? t('about.install') : t('about.reveal') : canDownload ? t('about.download',{version:update.latest!.version}) : t('about.check');
   const status = update.phase === 'error' ? t('about.failed') : downloaded ? t('about.downloaded') : update.phase === 'checking' ? t('about.checking') : update.available ? t('about.available',{version:update.latest!.version}) : update.phase === 'current' ? update.latest ? t('about.current') : t('about.noRelease') : t('about.idle');
   return <div className="mx-auto max-w-[1160px]" data-testid="about-screen">
     <PageHeader title={t('about.title')} subtitle={t('about.subtitle')} />
@@ -31,14 +32,17 @@ export function AboutScreen() {
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => void command({type:'update.openLink',target:'repository'})}>{t('about.repository')}</Button>
           <Button onClick={() => void command({type:'update.openLink',target:'releases'})}>{t('about.releases')}</Button>
-          <Button variant="primary" disabled={busy} onClick={() => void command({type:downloaded ? 'update.reveal' : canDownload ? 'update.download' : 'update.check'})}>
+          <Button variant="primary" disabled={busy || confirmInstall} onClick={() => { if (downloaded && update.canInstall) setConfirmInstall(true); else void command({type:downloaded ? 'update.reveal' : canDownload ? 'update.download' : 'update.check'}); }}>
             {canDownload && !downloaded ? <ArrowDownload20Regular /> : null}{primaryText}
           </Button>
-          {busy ? <Button onClick={() => void command({type:'update.cancel'})}>{t('about.cancel')}</Button> : (canDownload || downloaded) ? <Button onClick={() => void command({type:'update.check'})}>{t('about.checkAgain')}</Button> : null}
+          {busy ? update.phase !== 'installing' ? <Button onClick={() => void command({type:'update.cancel'})}>{t('about.cancel')}</Button> : null : (canDownload || downloaded) ? <Button disabled={confirmInstall} onClick={() => void command({type:'update.check'})}>{t('about.checkAgain')}</Button> : null}
+          {downloaded && update.canInstall ? <Button onClick={() => void command({type:'update.reveal'})}>{t('about.reveal')}</Button> : null}
         </div>
       </div>
+      {confirmInstall && !busy ? <div role="alertdialog" aria-label={t('about.install')} className="mt-5 rounded-ctl border border-line p-4"><p className="text-sm">{t('about.confirmHint')}</p><div className="mt-3 flex gap-3"><Button variant="primary" onClick={() => {setConfirmInstall(false); void command({type:'update.install'});}}>{t('about.confirmInstall')}</Button><Button onClick={() => setConfirmInstall(false)}>{t('about.cancel')}</Button></div></div> : null}
+      {update.installMessage ? <p role="status" className="mt-4 text-sm text-accent">{update.installMessage}</p> : null}
       <InfoBand tone="blue" className="mt-6">
-        <div role={update.phase === 'error' ? 'alert' : 'status'} aria-live="polite" className={update.phase === 'error' ? 'text-err' : 'text-accent'}>{status}</div>
+        <div role={update.phase === 'error' ? 'alert' : 'status'} aria-live="polite" className={update.phase === 'error' ? 'text-err' : 'text-accent'}>{update.phase === 'preparing' || update.phase === 'installing' ? primaryText : status}</div>
         {update.error ? <div className="mt-2 break-words text-sm text-err">{update.error}</div> : null}
         {update.available && !update.latest?.asset ? <p className="mt-2 text-sm">{t('about.unavailable')}</p> : null}
         {update.phase === 'downloading' || update.phase === 'verifying' ? <div className="mt-3">

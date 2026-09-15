@@ -13,7 +13,7 @@ export function releaseBase(version: string, arch: string): string {
 
 /** Recognize only our four generated formats, never user files such as logs or workspaces. */
 export function isOldReleaseArtifact(name: string, currentVersion: string): boolean {
-  const match = /^modbus-debugger-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)-win-(?:x64|arm64|ia32)(?:\.zip|-Portable\.exe|-Setup\.exe)?$/.exec(name);
+  const match = /^modbus-debugger-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)-win-(?:x64|arm64|ia32)(?:\.zip|-Portable\.exe|-Setup\.exe|-manifest\.json)?$/.exec(name);
   return Boolean(match && match[1] !== currentVersion);
 }
 
@@ -57,7 +57,12 @@ export async function assembleRelease(root: string, results: ForgeMakeResult[]):
       await fs.copyFile(path.join(root, 'build', 'installer.nsh'), path.join(builderResources, 'installer.nsh'));
       const escapeNsis = (value: string) => value.replaceAll('$', () => '$$').replaceAll('"', '$\\"');
       const entries = await fs.readdir(packaged, { withFileTypes: true });
-      const removal = entries.map(entry => `${entry.isDirectory() ? 'RMDir /r' : 'Delete'} "$INSTDIR\\${escapeNsis(entry.name)}"`);
+      const manifest = JSON.parse(await fs.readFile(path.join(packaged, 'resources', 'app-files.json'), 'utf8')) as { files: Array<{ path: string }> };
+      const shippedFiles = [...manifest.files.map(file => file.path), 'resources/app-files.json'];
+      const shippedDirs = new Set<string>();
+      for (const file of shippedFiles) { let parent = path.posix.dirname(file); while (parent !== '.') { shippedDirs.add(parent); parent = path.posix.dirname(parent); } }
+      const removal = [...shippedFiles.map(file => `Delete "$INSTDIR\\${escapeNsis(file.replaceAll('/', '\\'))}"`),
+        ...[...shippedDirs].sort((a,b) => b.length-a.length).map(dir => `RMDir "$INSTDIR\\${escapeNsis(dir.replaceAll('/', '\\'))}"`)];
       // Stock NSIS's APP_BUILD_DIR branch installs directly and skips the AppData updater cache.
       await fs.writeFile(path.join(builderResources, 'app-files.nsh'), `!define APP_BUILD_DIR "${escapeNsis(packaged)}"\n!macro removePackagedFiles\n${removal.join('\n')}\n!macroend\n`);
       const launcher = (await fs.readFile(path.join(root, 'build', 'portable-launcher.nsi'), 'utf8')).replace('@@APP_DIRECTORY@@', escapeNsis(packaged));
@@ -84,13 +89,14 @@ export async function assembleRelease(root: string, results: ForgeMakeResult[]):
         },
       });
       await build({ ...buildOptions, config: { ...sharedConfig, nsis: {
-        artifactName: `${base}-Portable.exe`, script: launcherPath, useZip: true,
+        artifactName: `${base}-Portable.exe`, script: launcherPath, useZip: true, packElevateHelper: false,
       } } });
       await fs.cp(packaged, path.join(staging, base), { recursive: true });
       await fs.copyFile(artifacts.zip, path.join(staging, `${base}.zip`));
       await fs.copyFile(path.join(staging, 'builder', `${base}-Setup.exe`), path.join(staging, `${base}-Setup.exe`));
       await fs.copyFile(path.join(staging, 'builder', `${base}-Portable.exe`), path.join(staging, `${base}-Portable.exe`));
-      const names = [base, `${base}.zip`, `${base}-Portable.exe`, `${base}-Setup.exe`];
+      await fs.copyFile(path.join(packaged, 'resources', 'app-files.json'), path.join(staging, `${base}-manifest.json`));
+      const names = [base, `${base}.zip`, `${base}-Portable.exe`, `${base}-Setup.exe`, `${base}-manifest.json`];
       for (const name of names.slice(1)) {
         if ((await fs.stat(path.join(staging, name))).size === 0) throw new Error(`Empty release artifact: ${name}`);
       }

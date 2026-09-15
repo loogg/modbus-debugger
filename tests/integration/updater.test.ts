@@ -46,6 +46,24 @@ describe('GitHub Release selection',()=>{
 });
 
 describe('Main update workflow',()=>{
+  it('revalidates bytes before installing and does not hand corrupted files to the helper',async()=>{
+    const install=vi.fn(async()=>{});const h=harness(undefined,{canInstall:true,install});await h.service.check();const downloaded=await h.service.download();
+    await fsp.writeFile(downloaded.downloadPath!,Buffer.alloc(bytes.length));
+    expect((await h.service.install()).phase).toBe('error');expect(install).not.toHaveBeenCalled();
+  });
+  it('hands the verified release to the installer and blocks duplicate installation',async()=>{
+    let done!:()=>void; const install=vi.fn(async (_release:unknown,_file:string,_manifest:unknown,_signal:AbortSignal,installing:()=>void)=>{installing();await new Promise<void>(r=>{done=r})});
+    const h=harness(undefined,{canInstall:true,install});await h.service.check();await h.service.download();const pending=h.service.install();
+    await vi.waitFor(()=>expect(install).toHaveBeenCalledOnce());h.service.cancel();expect(h.service.snapshot().phase).toBe('installing');
+    await expect(h.service.install()).rejects.toThrow('尚未结束');done();await pending;
+  });
+  it('refuses Setup installation without the matching verified manifest',async()=>{
+    const install=vi.fn(async()=>{});const h=harness(undefined,{canInstall:true,packageKind:'setup',install});await h.service.check();await h.service.download();
+    expect((await h.service.install()).error).toContain('缺少升级文件清单');expect(install).not.toHaveBeenCalled();
+  });
+  it('acknowledges boot only once when requested by Main',async()=>{
+    const confirmBoot=vi.fn(async()=> '已升级');const h=harness(undefined,{bootPending:true,confirmBoot});await h.service.confirmBoot();await h.service.confirmBoot();expect(confirmBoot).toHaveBeenCalledOnce();expect(h.service.snapshot().installMessage).toBe('已升级');
+  });
   it('starts without network activity and checks only the fixed public Releases endpoint',async()=>{
     const h=harness(); expect(h.fetch).not.toHaveBeenCalled();
     expect((await h.service.check()).phase).toBe('available');

@@ -109,3 +109,15 @@
 - 打包版5个E2E通过：真实GitHub版本查询、真实GitHub附件跳转与首段ZIP数据读取；通过受控HTTP响应验证完整下载、真实落盘与校验、打开目录目标、跨页面下载与取消、限流/校验失败、1024×680布局。下载期间继续产生真实模拟器TCP事务。受控响应的测试版本v99.0.0仅为fixture，没有发布到GitHub，也没有把fixture当作真实的新版本安装包。
 - 本轮验证的是“检查→下载→校验→打开目录按提示升级”，不包含自动安装/自动重启或替换正在运行的EXE。首次使用需要手动获取带“关于”的版本，之后可由该入口检查和下载新包。
 - 日志：out/audit/update-validation.log（51 passed）、update-e2e.log（5 passed）、update-lint.log、update-typecheck.log、update-package.log；截图在out/audit/update-shots/。只为E2E构建了0.10.0目录版，未在本轮运行make、安装卸载或创建GitHub Release。
+
+## 0.10.1：自动安装更新与重启
+
+- 下载校验后提供“安装更新并重启”及确认提示。Main 先准备更新、保存工作区、结束记录和通信，再将安装交给独立助手。目录/ZIP 自动解压，Portable 替换外层 EXE 并保留原文件名，Setup 沿用原目录静默安装。新版本完成工作区加载和 Renderer 挂载后确认启动，失败时恢复旧程序。
+- 按 SHA-256 程序文件清单安装和卸载，拒绝 ZIP 越界、链接和用户文件冲突，保留未知文件及自选数据目录。Setup 同时备份/恢复安装注册表项。Release 新增 `*-manifest.json` 辅助附件，四种交付形式不变。
+- Windows x64 实际自升级通过：目录、Portable、Setup 从 0.10.1 升到本机 0.10.2 测试包，通过真实按钮下载、确认安装、退出和重启；核对新进程版本、原工作区路径与内容、UTC 偏好、SQLite 自定义表数据、额外用户文件及程序备份。覆盖中文/空格目录、Portable 外层 EXE 改名、目录版 `--data-dir`。日志：`self-update-zip-verified.log`、`self-update-portable-final.log`、`self-update-setup-final.log`（均在 `out/audit/`）。
+- 失败回滚通过：可执行故障注入安装器真实改坏 `app.asar` 和安装版本登记后退出 23；助手恢复原文件摘要和注册表版本，重新启动 0.10.1，工作区/数据库/用户文件仍在。见 `out/audit/self-update-rollback-complete.log` 和 `self-update-setup-rollback-result.json`。故障安装器是受控测试附件，未将其当作正常 NSIS 安装器；正常 Setup 升级另有上述实际测试。
+- 47 项相关 Unit / Integration / 组件检查通过（30 更新服务、5 关于 UI、5 打包规则、7 原生助手/清单/启动令牌/中文父进程）；原生失败用例含不可启动 EXE、用户文件冲突及 ZIP 越界。相关 lint、typecheck 通过。结果分布于 `self-update-service.log`、`self-update-helper-3.log`、`self-update-parent.log`、`self-update-release-tests.log`。
+- 关于页 5 项打包版 E2E 完成：真实 GitHub 查询与附件首段、完整下载/校验/打开路径、跨页面取消、失败恢复、1024×680。首次运行 4 通过/1 失败，失败源于 WDIO 在测试进程重放 mock 时没有 Main fixture；修正测试边界后只重跑该用例并通过，未自动重试掩盖失败。见 `self-update-e2e.log`、`self-update-e2e-download.log`。
+- 实际应用测试发现并修复了普通子进程随 Electron 退出、detached PowerShell 空执行、Windows 控制台中文编码、NSIS 缺少 InstallLocation、打包器添加清单外 elevate.exe 等问题。单独脚本通过没有被当成跨进程更新通过。测试脚本也修正了异步按钮状态与重启后的 DevTools 端点等待。
+- 自升级用例只在 GitHub HTTP 边界提供本机测试附件；应用、文件替换、安装、回滚、重启及版本快照均真实执行。测试版没有发布到 GitHub。未运行无关业务全量回归，未推送或发布此版本。
+- 最终 `release/` 已生成 0.10.1 的目录、ZIP、Portable、Setup 和辅助清单。目录/ZIP 逐文件清单与摘要一致，外部清单与包内清单一致。四种产物启动、Portable 重启/数据保留、自选数据目录、Setup 安装/重装/卸载功能检查通过。初次完整 Smoke 在清理安装测试空目录时遇到 Windows `EPERM`，没有将该命令标作成功；目录随后可删除，清理改为对暂时占用进行有上限等待，再单独补跑安装器并通过（实际触发了等待分支）。见 `self-update-smoke-release.log` 和 `self-update-installer-final.log`，没有重跑无关业务回归。

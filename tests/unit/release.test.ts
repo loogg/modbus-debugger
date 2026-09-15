@@ -6,7 +6,7 @@ import { executionDirectory } from '../../src/main/services/execution-directory'
 
 describe('release inputs', () => {
   it('retires only older generated release artifacts and preserves the current version and user files', () => {
-    for (const suffix of ['', '.zip', '-Portable.exe', '-Setup.exe']) {
+    for (const suffix of ['', '.zip', '-Portable.exe', '-Setup.exe', '-manifest.json']) {
       expect(isOldReleaseArtifact(`modbus-debugger-0.5.0-win-x64${suffix}`, '0.7.1')).toBe(true);
       expect(isOldReleaseArtifact(`modbus-debugger-0.7.1-win-x64${suffix}`, '0.7.1')).toBe(false);
       expect(isOldReleaseArtifact(`modbus-debugger-0.7.1-win-arm64${suffix}`, '0.7.1')).toBe(false);

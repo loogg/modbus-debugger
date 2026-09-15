@@ -281,11 +281,11 @@ String 轨道显示初始状态及后续变化。0.9.1 起，相同初始值与�
 1. 点击 **检查更新**，获取本项目 GitHub Releases 的最新正式版本，不会使用 Actions 构建或自动降级。
 2. 发现新版本后，可阅读版本说明，点击 **下载 v…**。安装版下载 Setup、Portable 下载 Portable、目录版/ZIP 下载 ZIP，均匹配当前架构。
 3. 下载进度实时显示，可取消；切换页面不会中断下载。网络失败、GitHub 限流、缺少匹配附件或校验失败会显示原因，可重新检查或下载。
-4. 提示 SHA-256 校验通过后，点击 **打开下载目录**。先保存工作区、结束记录并关闭软件，再运行 Setup 或替换/解压新程序；保留原有 `data/`、`cache/`、`logs/`、`temp/` 用户目录。
+4. 提示 SHA-256 校验通过后，点击 **安装更新并重启**并确认。软件保存工作区、结束记录和通信，然后自动安装并重新启动。目录/ZIP 自动解压，Portable 自动替换外层 EXE，Setup 沿用原安装目录，无需手动解压。
 
-完整更新包保存在当前数据根目录的 `data/updates/`，未完成文件在 `temp/updates/`。此功能手动触发检查和下载；下载完成后仍需按提示完成升级。
+升级保留用户文件；新版本未确认正常启动时自动恢复旧程序。完整更新包保存在当前数据根目录的 `data/updates/`，程序备份在 `data/updates/backups/`，准备文件在 `temp/self-update/`。下载、安装都由用户主动触发。开发模式请通过源码更新。
 
-0.9.x 及更早版本没有“关于”入口，需要先从[GitHub Releases](https://github.com/loogg/modbus-debugger/releases)手动获取包含此功能的版本。
+0.10.1 起支持自升级。更早版本需要先从[GitHub Releases](https://github.com/loogg/modbus-debugger/releases)手动获取带自升级能力的版本；Release 中的 `*-manifest.json` 是更新用的文件清单，无需手动打开。
 
 ### 10. 常见问题
 

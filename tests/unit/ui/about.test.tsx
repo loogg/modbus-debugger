@@ -28,5 +28,11 @@ it('renders errors and treats release text as plain text',()=>{
 });
 it('exposes the verified download location and format-specific upgrade guidance',()=>{
   render(<AboutScreen />); publish({phase:'downloaded',packageKind:'portable',downloadPath:'D:/tool/data/updates/new-Portable.exe'});
-  expect(screen.getByText(/替换外层旧 EXE/)).toBeTruthy(); fireEvent.click(screen.getByRole('button',{name:'打开下载目录'})); expect(command).toHaveBeenCalledWith({type:'update.reveal'});
+  expect(screen.getByText(/替换外层 Portable/)).toBeTruthy(); fireEvent.click(screen.getByRole('button',{name:'打开下载目录'})); expect(command).toHaveBeenCalledWith({type:'update.reveal'});
+});
+it('requires an explicit install confirmation and permits cancelling it',()=>{
+  render(<AboutScreen />);publish({phase:'downloaded',canInstall:true});
+  fireEvent.click(screen.getByRole('button',{name:'安装更新并重启'}));expect(command).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(screen.queryByRole('alertdialog')).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'安装更新并重启'}));fireEvent.click(screen.getByRole('button',{name:'确认安装并重启'}));expect(command).toHaveBeenCalledWith({type:'update.install'});
 });

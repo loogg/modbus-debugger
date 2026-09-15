@@ -29,7 +29,7 @@ Section
   SetOutPath "$AppDirectory"
   File /r "@@APP_DIRECTORY@@\*.*"
   ${GetParameters} $0
-  ExecWait '"$AppDirectory\modbus-debugger.exe" --portable-dir="$EXEDIR" $0' $1
+  ExecWait '"$AppDirectory\modbus-debugger.exe" --portable-dir="$EXEDIR" --portable-exe="$EXEPATH" $0' $1
   SetOutPath "$EXEDIR"
   ; RunDirectory is exclusively this invocation's GetTempFileName path, never the user's data tree.
   ; GPU/utility processes and scanners may briefly keep extracted files open after the main process exits.

@@ -44,12 +44,12 @@ jobs:
         run: npm run make -- --platform=win32 --arch=x64
       - name: Smoke test release packages
         run: npm run smoke:release
-      - name: Verify the three downloadable files
+      - name: Verify downloadable packages and update manifest
         env:
           PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         run: |
           $base = "modbus-debugger-$env:PACKAGE_VERSION-win-x64"
-          foreach ($suffix in @('.zip', '-Portable.exe', '-Setup.exe')) {
+          foreach ($suffix in @('.zip', '-Portable.exe', '-Setup.exe', '-manifest.json')) {
             $file = Get-Item -LiteralPath (Join-Path release "$base$suffix") -ErrorAction Stop
             if ($file.Length -eq 0) { throw "Empty artifact: $($file.Name)" }
           }
@@ -61,6 +61,7 @@ jobs:
             release/*.zip
             release/*-Portable.exe
             release/*-Setup.exe
+            release/*-manifest.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -96,9 +97,9 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release/*.zip release/*-Portable.exe release/*-Setup.exe
+            gh release upload "$RELEASE_TAG" release/*.zip release/*-Portable.exe release/*-Setup.exe release/*-manifest.json
           else
             prerelease=()
             if [[ "$RELEASE_TAG" == *-* ]]; then prerelease=(--prerelease); fi
-            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes "${prerelease[@]}" release/*.zip release/*-Portable.exe release/*-Setup.exe
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes "${prerelease[@]}" release/*.zip release/*-Portable.exe release/*-Setup.exe release/*-manifest.json
           fi

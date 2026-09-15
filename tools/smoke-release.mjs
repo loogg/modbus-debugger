@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { assertLegacyPreferencesUnchanged, createScratch, snapshotLegacyPreferences } from './test-paths.mjs';
 import { createRequire } from 'node:module';
 import initSqlJs from 'sql.js';
@@ -11,10 +12,20 @@ const { unzip } = require('cross-zip');
 const SQL = await initSqlJs({ locateFile: name => path.join(path.dirname(require.resolve('sql.js')), name) });
 const scratch = createScratch('smoke-release-');
 const legacyPreferences = snapshotLegacyPreferences();
+async function verifyManifest(directory) {
+  const manifest=JSON.parse(await fs.readFile(path.join(directory,'resources','app-files.json'),'utf8'));
+  const actual=[];
+  const walk=async(relative='')=>{for(const entry of await fs.readdir(path.join(directory,relative),{withFileTypes:true})){const name=relative?`${relative}/${entry.name}`:entry.name;if(entry.isDirectory())await walk(name);else actual.push(name)}};
+  await walk();
+  assert.deepEqual(actual.sort(),[...manifest.files.map(file=>file.path),'resources/app-files.json'].sort(),'Packager changed program files after generating the update manifest');
+  for(const file of manifest.files)assert.equal(createHash('sha256').update(await fs.readFile(path.join(directory,file.path))).digest('hex'),file.sha256,`Manifest checksum: ${file.path}`);
+}
 try {
   for (const suffix of ['', '.zip', '-Portable.exe', '-Setup.exe']) await fs.access(path.join(release, base + suffix));
   const directory = path.join(scratch, 'directory');
   await fs.cp(path.join(release, base), directory, { recursive: true });
+  await verifyManifest(directory);
+  assert.deepEqual(await fs.readFile(path.join(release,`${base}-manifest.json`)),await fs.readFile(path.join(directory,'resources','app-files.json')));
   await smokeApp(path.join(directory, 'modbus-debugger.exe'), 'directory', { screenshotDir: path.join(root, 'out', 'release-smoke-screenshots') });
 
   const extracted = path.join(scratch, 'zip');
@@ -29,6 +40,7 @@ try {
   };
   const zipExe = await findExe(extracted);
   assert(zipExe, 'ZIP has no executable');
+  await verifyManifest(path.dirname(zipExe));
   await smokeApp(zipExe, 'ZIP extracted');
   assert.deepEqual(await fs.readFile(path.join(directory, 'resources', 'app.asar')),
     await fs.readFile(path.join(path.dirname(zipExe), 'resources', 'app.asar')), 'ZIP and directory application differ');

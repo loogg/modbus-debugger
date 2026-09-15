@@ -40,6 +40,14 @@ try {
     if (dataWritten) assert.equal(await fs.readFile(sentinel, 'utf8'), 'user data must survive');
     console.log('[smoke] NSIS uninstall removed application files and retained user data');
   }
-  removeScratch(scratch);
+  let cleanupWarning = false;
+  await waitFor(() => {
+    try { removeScratch(scratch); return true; }
+    catch (error) {
+      if (!['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) throw error;
+      if (!cleanupWarning) { console.warn('[smoke] Windows still holds the verified test directory; waiting for cleanup (bounded).'); cleanupWarning = true; }
+      return false;
+    }
+  }, 60000);
 }
 console.log('[smoke] PASS: chosen directory -> launch -> reinstall -> preserved data -> uninstall');

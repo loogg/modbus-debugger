@@ -139,4 +139,6 @@ release/
 - 更新来源固定为 `loogg/modbus-debugger` 的 GitHub Releases；只接受正式 Release，版本按 SemVer 数值比较，禁止自动降级，不从 Actions Artifacts、源码压缩包或任意用户 URL 下载。
 - Setup、Portable、目录版/ZIP 分别匹配同架构的 Setup、Portable、ZIP 附件。下载在 Main 中执行并通过 Snapshot/delta 推送进度，Renderer 不直接联网或操作文件。
 - 完整文件存入当前数据根目录 `data/updates/`，未完成文件在 `temp/updates/`；取消或正常退出清理本次临时文件，不能删除其他实例或用户文件。使用附件大小和 GitHub 的 SHA-256 digest 校验，失败不开放文件位置；打开下载位置前再次验证文件。
-- 默认手动检查、手动下载，下载完成后打开文件夹并按运行形式升级。不能将“下载完成”说成“安装完成”，也不自动覆盖正在运行的程序或用户数据。
+- 默认手动检查、手动下载；校验完成后提供“安装更新并重启”。用户确认后先准备更新、保存工作区、结束记录和通信，再退出并由独立 Windows 更新助手安装和重启。目录/ZIP 自动解压替换程序文件，Portable 替换外层 EXE（保留原文件名），Setup 静默沿用原安装目录；不能把“下载完成”说成“安装完成”。
+- 打包时生成 `resources/app-files.json`（版本、逐文件 SHA-256），同时向 release/ 与 GitHub Releases 提供 `modbus-debugger-<version>-win-<arch>-manifest.json` 辅助元数据，用于 Setup 安装前验证文件范围；四种交付形式不变。安装/卸载只处理清单中的程序文件，不递归删除程序子目录，未知用户文件和显式数据路径不得覆盖。
+- 更新助手在当前数据根目录 `temp/self-update/install-<UUID>/` 工作；只有主进程提交安装令牌并退出后才替换文件。备份保留在 `data/updates/backups/`，新版本须在工作区加载和 Renderer 就绪后确认启动，否则恢复旧程序；结果写入 `data/updates/last-install.json`。测试必须覆盖真实版本切换、数据保留和失败回滚，不得只验证下载按钮。
