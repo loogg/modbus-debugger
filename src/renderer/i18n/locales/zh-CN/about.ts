@@ -1,0 +1,15 @@
+export const about = {
+  title: '关于', subtitle: '查看软件版本与 GitHub 更新。', app: 'Modbus 调试工具', version: '当前版本', source: '更新来源：loogg/modbus-debugger · GitHub Releases',
+  repository: 'GitHub', releases: '更新日志', check: '检查更新', checking: '正在检查…', checkAgain: '重新检查',
+  download: '下载 v{{version}}', downloading: '下载中…', verifying: '正在校验更新包…', reveal: '打开下载目录', cancel: '取消',
+  idle: '点击“检查更新”获取最新正式版本。', current: '未发现可用的新版本。', noRelease: 'GitHub 暂无正式发布版本。',
+  available: '发现新版本：{{version}}', downloaded: '下载完成，SHA-256 校验通过。', failed: '更新操作未完成', unavailable: '此版本暂无适用于当前系统/架构的安装包，请打开更新日志查看或稍后重新检查。',
+  notes: '版本说明', noNotes: '此版本未填写更新说明。', lastChecked: '上次检查：{{time}}', progress: '更新下载进度',
+  packageLabel: '运行形式', zip: '目录版 / ZIP', portable: 'Portable', setup: 'Setup 安装版',
+  upgradeTitle: '如何完成升级',
+  zipHelp: '下载 ZIP 后，先关闭本程序，将新版本解压到可写目录。升级原目录时保留 data、cache、logs、temp 等用户目录，仅替换程序文件。',
+  portableHelp: '下载后先关闭本程序，再用新的 Portable.exe 替换外层旧 EXE，保留旁边的 data、cache、logs、temp 目录。',
+  setupHelp: '下载后先关闭本程序，再运行新的 Setup.exe 并选择原安装目录。安装向导保留用户数据。',
+  downloadHint: '检查与下载需手动触发，切换页面不会中断下载。完成的更新包保存在当前数据根目录的 data/updates/ 下。',
+  saveHint: '升级前请保存工作区，并结束需要保留的记录会话。', loading: '正在读取版本信息…',
+} as const;

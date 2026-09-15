@@ -17,7 +17,7 @@ import { setDisplayTimeZone } from '../time';
 import { applyLanguage } from '../i18n';
 import { pointKey } from '../../shared/point-key';
 
-export type ModuleId = 'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates' | 'settings';
+export type ModuleId = 'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates' | 'settings' | 'about';
 
 export interface Selection {
   connectionId: string | null;
@@ -173,6 +173,7 @@ export const useApp = create<AppState>((set, get) => ({
     const next: AppSnapshot = {
       ...prev,
       revision: d.revision,
+      update: d.update ?? prev.update,
       workspace: d.workspace ?? prev.workspace,
       workspacePath: d.workspacePath !== undefined ? d.workspacePath : prev.workspacePath,
       dirty: d.dirty !== undefined ? d.dirty : prev.dirty,

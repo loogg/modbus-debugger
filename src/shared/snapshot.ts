@@ -1,3 +1,4 @@
+import type { UpdateState } from './update';
 import type { Workspace } from '../domain/model';
 import type { ConnectionHealth, ParseEventRecord, TransactionRecord } from '../main/runtime/diagnostics';
 import type { Prefs } from '../main/services/workspace';
@@ -76,6 +77,7 @@ export interface RecordingView {
 }
 
 export interface AppSnapshot {
+  update?: UpdateState;
   revision: number;
   workspace: Workspace;
   workspacePath: string | null;
@@ -96,6 +98,7 @@ export interface AppSnapshot {
 }
 
 export interface AppDelta {
+  update?: UpdateState;
   revision: number;
   workspace?: Workspace;
   workspacePath?: string | null;

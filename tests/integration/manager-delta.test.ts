@@ -349,3 +349,18 @@ it('repeated snapshot reads cannot steal pending cache or transaction deltas', a
     expect(deltas.flatMap(d => d.transactions ?? []).some(tx => tx.traceId === 'pre999')).toBe(true);
   } finally { await mgr.stop(); history.close(); }
 });
+
+it('publishes update progress with other deltas and retains the update state in a fresh snapshot', async () => {
+  const {mgr,history,deltas}=await harness();
+  const progress:import('../../src/shared/update').UpdateState={currentVersion:'1.0.0',packageKind:'zip',platform:'win32',arch:'x64',phase:'downloading',latest:null,available:true,checkedAt:null,receivedBytes:1,totalBytes:10,downloadPath:null,error:null};
+  mgr.setUpdateState(progress); expect(mgr.buildSnapshot().update?.receivedBytes).toBe(1);
+  mgr.start();
+  try {
+    mgr.setUpdateState({...progress,phase:'downloaded',receivedBytes:10,downloadPath:'D:/example/data/updates/app.zip'});
+    mgr.diagnostics.recordTransaction(txOf(777));
+    await sleep(180);
+    expect(deltas.some(d=>d.update?.phase==='downloaded')).toBe(true);
+    expect(deltas.flatMap(d=>d.transactions??[]).some(tx=>tx.traceId==='pre777')).toBe(true);
+    expect(mgr.buildSnapshot().update?.phase).toBe('downloaded');
+  } finally {await mgr.stop();history.close();}
+});

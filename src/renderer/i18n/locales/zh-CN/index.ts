@@ -1,3 +1,4 @@
+import { about } from './about';
 import { shell } from './shell';
 import { devices } from './devices';
 import { overlays } from './overlays';
@@ -14,4 +15,4 @@ import { ui } from './ui';
  * with the same shape and registering it in src/renderer/i18n/index.ts; the TypeScript
  * resource typing makes missing keys a compile error.
  */
-export const zhCN = { shell, devices, overlays, realtime, trend, comm, history, templates, settings, ui };
+export const zhCN = { shell, devices, overlays, realtime, trend, comm, history, templates, settings, ui, about };

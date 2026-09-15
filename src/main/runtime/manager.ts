@@ -1,3 +1,4 @@
+import type { UpdateState } from '../../shared/update';
 import fs from 'node:fs';
 import { templateSchema, workspaceSchema } from '../../domain/model';
 import { copyTemplate } from '../../domain/template-copy';
@@ -42,6 +43,11 @@ export class RuntimeManager {
   readonly diagnostics = new DiagnosticsStore();
   private runtimes = new Map<string, ConnectionRuntime>();
   private clock: Clock;
+  private updateState: UpdateState | undefined;
+  private updateRevision = 0;
+  private sentUpdateRevision = 0;
+  setUpdateState(state: UpdateState): void { this.updateState = state; this.updateRevision++; }
+
   private revision = 0;
   private sentTxTotal = 0;
   private sentEventTotal = 0;
@@ -333,6 +339,7 @@ export class RuntimeManager {
     }
     const snapshot: AppSnapshot = {
       revision: this.revision,
+      update: this.updateState,
       workspace: ws,
       workspacePath: this.workspaceService.currentPath,
       dirty: this.workspaceService.isDirty(),
@@ -414,6 +421,9 @@ export class RuntimeManager {
   private collectDelta(): AppDelta | null {
     const delta: AppDelta = { revision: this.revision };
     let changed = false;
+    if (this.updateRevision !== this.sentUpdateRevision) {
+      delta.update = this.updateState; this.sentUpdateRevision = this.updateRevision; changed = true;
+    }
     const ws = this.workspaceService.current;
     if (this.workspaceRev !== this.sentWorkspaceRev) {
       delta.workspace = ws;

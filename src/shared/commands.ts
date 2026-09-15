@@ -3,6 +3,12 @@ import { workspaceSchema } from '../domain/model';
 import { scanOptionsSchema } from './scan-options';
 
 export const commandSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('update.status') }),
+  z.object({ type: z.literal('update.check') }),
+  z.object({ type: z.literal('update.download') }),
+  z.object({ type: z.literal('update.cancel') }),
+  z.object({ type: z.literal('update.reveal') }),
+  z.object({ type: z.literal('update.openLink'), target: z.enum(['repository', 'releases']) }),
   z.object({ type: z.literal('workspace.new') }),
   z.object({ type: z.literal('template.importFile'), path: z.string() }),
   z.object({ type: z.literal('history.addNote'), sessionId: z.string(), text: z.string().trim().min(1).max(2000), tMs: z.number().int().min(0) }),

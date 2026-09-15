@@ -11,6 +11,7 @@ export const shell = {
     comm: '通信',
     templates: '模板',
     settings: '设置',
+    about: '关于',
   },
   topbar: {
     appTitle: 'Modbus 调试工具',

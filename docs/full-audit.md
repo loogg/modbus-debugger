@@ -98,3 +98,14 @@
 - [分支构建](https://github.com/loogg/modbus-debugger/actions/runs/34860885420)成功。
 - [标签构建](https://github.com/loogg/modbus-debugger/actions/runs/34860885646)第二次执行成功，build和publish均通过。首次执行的全部产物功能检查通过，但在卸载后删除测试临时目录时出现Windows `EPERM`，因此整次流程判失败、发布未执行；保留失败记录，未修改标签或跳过检查，完整重试后成功。没有将首次失败隐去，也没有把临时清理问题说成已通过代码修复。
 - [v0.9.1 Release](https://github.com/loogg/modbus-debugger/releases/tag/v0.9.1)已正式发布（非草稿、非预发布），已核对三个附件均为uploaded且大小非零：`modbus-debugger-0.9.1-win-x64.zip`、`modbus-debugger-0.9.1-win-x64-Portable.exe`、`modbus-debugger-0.9.1-win-x64-Setup.exe`。
+
+## 0.10.0：关于与手动下载更新
+
+- 已增加左侧底部“关于”，当前版本来自Main的app.getVersion，支持GitHub、更新日志、手动检查、下载进度、取消/重试、验证后打开下载目录。
+- 只检查本项目GitHub Releases正式版本；按数值比较版本，禁止降级。Setup/Portable/目录版分别匹配Setup/Portable/ZIP同架构附件，缺少匹配附件不能下载。
+- 下载和SHA-256/大小校验在Main完成，完整文件位于data/updates，临时文件位于temp/updates；切换页面和下载不影响已有Modbus轮询。取消/退出等待任务收尾，不删除其他用户文件。
+- 实际GitHub附件测试发现Electron33的manual重定向模式会抛出Redirect was cancelled，已使用原生follow并校验返回地址（若提供）和文件摘要；没有仅以模拟响应通过作为实际网络可用的证据。
+- 定向验证：51个相关单元/集成/组件用例通过，含版本/包型匹配、未知架构、草稿与预发布拒绝、HTTP错误/限流、元信息限制、大小与摘要错误、取消清理、缓存复用、重新校验文件、重复请求、Snapshot/delta及关于页按钮；相关lint、typecheck通过。
+- 打包版5个E2E通过：真实GitHub版本查询、真实GitHub附件跳转与首段ZIP数据读取；通过受控HTTP响应验证完整下载、真实落盘与校验、打开目录目标、跨页面下载与取消、限流/校验失败、1024×680布局。下载期间继续产生真实模拟器TCP事务。受控响应的测试版本v99.0.0仅为fixture，没有发布到GitHub，也没有把fixture当作真实的新版本安装包。
+- 本轮验证的是“检查→下载→校验→打开目录按提示升级”，不包含自动安装/自动重启或替换正在运行的EXE。首次使用需要手动获取带“关于”的版本，之后可由该入口检查和下载新包。
+- 日志：out/audit/update-validation.log（51 passed）、update-e2e.log（5 passed）、update-lint.log、update-typecheck.log、update-package.log；截图在out/audit/update-shots/。只为E2E构建了0.10.0目录版，未在本轮运行make、安装卸载或创建GitHub Release。

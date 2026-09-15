@@ -259,3 +259,14 @@
 - 打包版定向 E2E 1 项通过：只运行 launches with 用例，读取测试工作区与真实 PyModbus 连接；驱动缓存和测试 profile 均位于 out/test-temp，旧 Roaming 偏好内容未变化，截图见 out/storage-e2e-screen.png。没有运行无关业务全量 E2E。
 - npm run smoke:release 对最终四种产物通过：Renderer / IPC / serialport / history、真实 userData/sessionData/temp 路径、Portable 实际解压位置与退出清理、数据库跨重启保留、--data-dir 覆盖、NSIS 安装到中文+空格路径、重装及卸载后数据保留；测试会话目录清理，日常 AppData prefs 未被修改。结果见 out/storage-smoke.log。
 - 本地 release/ 已生成 0.8.0；未推送或更新 GitHub Release。安装器自身 Windows 临时机制/注册表/快捷方式和开发依赖缓存不属于应用运行数据零系统盘写入承诺；程序或显式数据根目录选在 C 盘时仍尊重所选路径。
+
+### 关于 / 手动更新（0.10.0定向验收）
+
+- [x] 当前版本源于Main；左侧关于、GitHub、更新日志、检查/下载、取消和打开下载目录接线。
+- [x] 固定GitHub正式Release源，版本比较与对应格式/架构匹配，未知或无效附件拒绝。
+- [x] 大小/SHA-256校验、流式进度、取消清理、失败重试、已下载文件复用与打开前重新校验。
+- [x] 实际GitHub查询及附件CDN通路验证；完整下载的失败场景在HTTP边界使用fixture，后续Main文件I/O真实执行。
+- [x] 下载跨页面保留，既有Modbus轮询继续；标准/紧凑关于页面可用。
+- [x] README明确下载完成后需关闭应用、按格式升级并保留数据，不将下载成功表述为自动安装成功。
+
+详细证据与本轮未执行项见[功能审计记录](full-audit.md#0100关于与手动下载更新)。

@@ -1,6 +1,7 @@
+import { UpdateService, detectPackageKind } from './services/updater';
 import path from 'node:path';
 import fs from 'node:fs';
-import { app, BrowserWindow, dialog, nativeImage, net, protocol, screen } from 'electron';
+import { app, BrowserWindow, dialog, nativeImage, net, protocol, screen, shell } from 'electron';
 import { pathToFileURL } from 'node:url';
 import log from 'electron-log';
 import { RuntimeManager } from './runtime/manager';
@@ -12,6 +13,7 @@ import { prepareStorage } from './services/storage-paths';
 
 let mainWindow: BrowserWindow | null = null;
 let manager: RuntimeManager | null = null;
+let updater: UpdateService | null = null;
 
 // Configure Electron/Chromium BEFORE ready, logging or creating any BrowserWindow.
 const executionDir = executionDirectory(app.isPackaged, app.getPath('exe'), process.cwd(), app.commandLine.getSwitchValue('portable-dir') || process.env.PORTABLE_EXECUTABLE_DIR);
@@ -134,7 +136,12 @@ async function createWindow(): Promise<void> {
     mainWindow = null;
   });
 
-  registerIpc(manager, () => mainWindow);
+  updater ??= new UpdateService({
+    currentVersion: app.getVersion(), packageKind: detectPackageKind(executionDir, Boolean(app.commandLine.getSwitchValue('portable-dir') || process.env.PORTABLE_EXECUTABLE_DIR)),
+    platform: process.platform, arch: process.arch, dataDirectory: storage.data, tempDirectory: storage.temp,
+    fetch: (url, init) => net.fetch(url, init), reveal: file => shell.showItemInFolder(file), openExternal: url => shell.openExternal(url),
+  });
+  registerIpc(manager, () => mainWindow, updater);
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
@@ -160,8 +167,7 @@ app.on('before-quit', (e) => {
   e.preventDefault();
   quitting = true;
   const done = () => app.exit(0);
-  if (manager) void manager.stop().then(done, done);
-  else done();
+  void (async () => { await updater?.dispose(); await manager?.stop(); })().then(done, done);
 });
 
 process.on('uncaughtException', (err) => {

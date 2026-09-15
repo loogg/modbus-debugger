@@ -1,3 +1,4 @@
+import { AboutScreen } from './screens/about';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Desktop20Regular,
@@ -7,6 +8,7 @@ import {
   ArrowSync20Regular,
   Document20Regular,
   Settings20Regular,
+  Info20Regular,
   Add20Regular,
   ChevronDown20Regular,
   ChevronRight20Regular,
@@ -105,6 +107,9 @@ function AppRail() {
       >
         <Settings20Regular />
         {t('shell.rail.settings')}
+      </button>
+      <button onClick={() => setModule('about')} className={`focus-ring flex h-[68px] w-[52px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-ctl text-[11px] ${module === 'about' ? 'bg-accentsoft text-accent' : 'text-ink2 hover:bg-surface2'}`}>
+        <Info20Regular />{t('shell.rail.about')}
       </button>
     </nav>
   );
@@ -556,6 +561,7 @@ function Sidebar() {
       window.removeEventListener('mouseup', up);
     };
   }, [setWidth]);
+  if (module === 'about') return null;
   const body =
     module === 'devices' ? <DevicesSidebar /> : module === 'realtime' ? <RealtimeSidebar /> : module === 'trend' ? <TrendSidebar /> : module === 'history' ? <HistorySidebar /> : module === 'comm' ? <CommSidebar /> : module === 'templates' ? <TemplatesSidebar /> : <SettingsSidebar />;
   return (
@@ -578,7 +584,7 @@ function Main() {
   return (
     <main className="min-w-0 flex-1 overflow-y-auto bg-app">
       <div className="px-7 py-6 min-w-0">
-        {module === 'devices' ? <DevicesScreen /> : module === 'realtime' ? <RealtimeScreen /> : module === 'trend' ? <TrendScreen /> : module === 'history' ? <HistoryScreen /> : module === 'comm' ? <CommScreen /> : module === 'templates' ? <TemplatesScreen /> : <SettingsScreen />}
+        {module === 'devices' ? <DevicesScreen /> : module === 'realtime' ? <RealtimeScreen /> : module === 'trend' ? <TrendScreen /> : module === 'history' ? <HistoryScreen /> : module === 'comm' ? <CommScreen /> : module === 'templates' ? <TemplatesScreen /> : module === 'about' ? <AboutScreen /> : <SettingsScreen />}
       </div>
     </main>
   );

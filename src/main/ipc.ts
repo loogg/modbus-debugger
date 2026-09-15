@@ -1,3 +1,4 @@
+import type { UpdateService } from './services/updater';
 import { ipcMain, dialog, BrowserWindow, app } from 'electron';
 import path from 'node:path';
 import { IPC_CHANNELS } from '../shared/preload-api';
@@ -6,7 +7,9 @@ import { commandSchema } from '../shared/commands';
 import type { RuntimeManager } from './runtime/manager';
 import { parseImportSource } from './services/importer';
 
-export function registerIpc(manager: RuntimeManager, getWindow: () => BrowserWindow | null): void {
+export function registerIpc(manager: RuntimeManager, getWindow: () => BrowserWindow | null, updater: UpdateService): void {
+  manager.setUpdateState(updater.snapshot());
+  updater.onChange = state => manager.setUpdateState(state);
   ipcMain.handle(IPC_CHANNELS.snapshot, () => manager.buildSnapshot());
   ipcMain.handle(IPC_CHANNELS.versions, () => ({
     electron: process.versions.electron,
@@ -19,6 +22,18 @@ export function registerIpc(manager: RuntimeManager, getWindow: () => BrowserWin
       return { ok: false, error: `invalid command: ${parsed.error.message}` };
     }
     const cmd = parsed.data;
+    if (cmd.type.startsWith('update.')) {
+      try {
+        switch (cmd.type) {
+          case 'update.status': return { ok: true, value: updater.snapshot() };
+          case 'update.check': return { ok: true, value: await updater.check() };
+          case 'update.download': return { ok: true, value: await updater.download() };
+          case 'update.cancel': updater.cancel(); return { ok: true, value: null };
+          case 'update.reveal': await updater.revealDownload(); return { ok: true, value: null };
+          case 'update.openLink': await updater.openLink(cmd.target); return { ok: true, value: null };
+        }
+      } catch (error) { return { ok: false, error: String(error) }; }
+    }
     if (cmd.type === 'serial.list') {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
