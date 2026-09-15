@@ -145,3 +145,10 @@
 - 四种产物启动、程序文件清单校验、Portable 重启与持久化、自选数据目录、Setup 安装/重装/卸载检查全部通过。实际运行目录版核对了新图标的 16px SVG 和模板/内存布局页面。
 - 日志：`out/audit/review-0.10.2-make.log`、`review-0.10.2-smoke.log`；截图：`review-0.10.2-template.png`、`review-0.10.2-memory.png`。日常偏好未变化，复用既有业务验证，未重跑全量回归。
 - 此次仅供本地审核，未推送或发布 GitHub Release。
+
+### 0.10.2 GitHub 发布记录
+
+- 已推送当前提交及 `v0.10.2` 标签，标签对应 `701195de199be6b29e7fcfe0ba60eec091c9b586`，包含模板编辑修复、小方块图标及本地审核记录。
+- [标签发布任务](https://github.com/loogg/modbus-debugger/actions/runs/34981620809)的 build、publish 均成功，云端四种产物启动、Portable 重启/持久化、Setup 安装/重装/卸载检查全部通过。同一提交的[重复分支构建](https://github.com/loogg/modbus-debugger/actions/runs/34981620762)主动取消，未重复执行业务回归。
+- [v0.10.2 Release](https://github.com/loogg/modbus-debugger/releases/tag/v0.10.2)已正式公开并设为最新版本，非草稿、非预发布。ZIP、Portable.exe、Setup.exe 及 manifest.json 均上传完成，大小非零且具有 SHA-256；下载清单核对了版本、85 个程序文件及摘要。
+- 发布日志：`out/audit/github-v0.10.2-actions.log`；云端清单：`out/audit/github-v0.10.2/`。复用了既有功能测试结果，未重跑无关业务全量验收。
