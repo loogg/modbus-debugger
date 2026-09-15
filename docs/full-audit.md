@@ -121,3 +121,10 @@
 - 实际应用测试发现并修复了普通子进程随 Electron 退出、detached PowerShell 空执行、Windows 控制台中文编码、NSIS 缺少 InstallLocation、打包器添加清单外 elevate.exe 等问题。单独脚本通过没有被当成跨进程更新通过。测试脚本也修正了异步按钮状态与重启后的 DevTools 端点等待。
 - 自升级用例只在 GitHub HTTP 边界提供本机测试附件；应用、文件替换、安装、回滚、重启及版本快照均真实执行。测试版没有发布到 GitHub。未运行无关业务全量回归，未推送或发布此版本。
 - 最终 `release/` 已生成 0.10.1 的目录、ZIP、Portable、Setup 和辅助清单。目录/ZIP 逐文件清单与摘要一致，外部清单与包内清单一致。四种产物启动、Portable 重启/数据保留、自选数据目录、Setup 安装/重装/卸载功能检查通过。初次完整 Smoke 在清理安装测试空目录时遇到 Windows `EPERM`，没有将该命令标作成功；目录随后可删除，清理改为对暂时占用进行有上限等待，再单独补跑安装器并通过（实际触发了等待分支）。见 `self-update-smoke-release.log` 和 `self-update-installer-final.log`，没有重跑无关业务回归。
+
+### 0.10.1 GitHub 发布记录
+
+- 已推送源码提交 `7f1ed8a1b13fdcb88b4082b08a90ffb3f7a46f9a` 及对应的 `v0.10.1` 标签，未移动已有标签或覆盖已有发布附件。
+- [标签发布任务](https://github.com/loogg/modbus-debugger/actions/runs/34973709204)的 build、publish 均成功；云端四种产物启动、Portable 持久化、自选数据目录、Setup 安装/重装/卸载检查全部通过。同一提交触发的[重复分支任务](https://github.com/loogg/modbus-debugger/actions/runs/34973709482)主动取消，避免重复构建。
+- [v0.10.1 Release](https://github.com/loogg/modbus-debugger/releases/tag/v0.10.1)已正式公开并设为最新版本，非草稿、非预发布。ZIP、Portable.exe、Setup.exe、manifest.json 四个附件均为 uploaded、大小非零且提供 SHA-256；已下载云端清单核对摘要、版本及 85 个程序文件条目。
+- 云端日志和清单保存在本地 `out/audit/github-v0.10.1/`。本次发布复用既有功能验收，未重跑无关业务全量测试。
