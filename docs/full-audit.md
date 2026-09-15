@@ -138,3 +138,10 @@
 - 13 项相关 Unit/Integration/组件检查通过：映射跨度、无缓存布局、分页、树导航/跨模板返回、保存命令、改名、取消/确认删除、删除边界、真实保存及重新读取，另覆盖既有 Store 偏好同步。相关 lint、typecheck 通过。日志：`out/audit/template-tests-final.log`、`template-store-tests.log`。
 - 打包版两组实际按钮流程通过：离线 Ia/Ib 映射、新增点位后立即显示、布局与点位详情跳转、保存时文件选择器调用次数为 0、实际文件内容、模板改名及删除后持久化。检查 1440 标准及 1024 紧凑窗口，无文档横向溢出。首次 E2E 的新增点位选择器错误地将既有 Drawer 当作 role=dialog，修正选择器并隔离用例后通过，未用自动重试掩盖失败。日志：`template-e2e.log`、`template-e2e-final.log`；截图：`out/audit/template-shots/`。
 - 参考 Figma 正式 05 模板库、06 模板编辑，按本次需求扩展树形与管理操作；README 已替换为实际界面截图。只生成 E2E 所需的 0.10.2 目录版，未运行无关全量回归、四种产物 make 或推送发布；GitHub 和 release/ 中的正式产物仍是 0.10.1。
+
+### 0.10.2 本地审核包
+
+- 按用户要求，对提交 `7be0cf2`（含模板编辑修复和 16px 立方体数据块图标）运行正式 make，四种产物及辅助清单均已平铺到 `release/`。旧版本目录中的运行数据按规则保留到 `release/data/backups/`。
+- 四种产物启动、程序文件清单校验、Portable 重启与持久化、自选数据目录、Setup 安装/重装/卸载检查全部通过。实际运行目录版核对了新图标的 16px SVG 和模板/内存布局页面。
+- 日志：`out/audit/review-0.10.2-make.log`、`review-0.10.2-smoke.log`；截图：`review-0.10.2-template.png`、`review-0.10.2-memory.png`。日常偏好未变化，复用既有业务验证，未重跑全量回归。
+- 此次仅供本地审核，未推送或发布 GitHub Release。
