@@ -2,6 +2,7 @@ import type { UpdateState } from '../../shared/update';
 import fs from 'node:fs';
 import { templateSchema, workspaceSchema } from '../../domain/model';
 import { copyTemplate } from '../../domain/template-copy';
+import { removeTemplateBlock } from '../../domain/template-edit';
 import { BlockCache, blockKey } from './block-cache';
 import { ConnectionRuntime, type ConnectionState } from './connection-runtime';
 import { DiagnosticsStore, type ConnectionHealth } from './diagnostics';
@@ -694,6 +695,23 @@ export class RuntimeManager {
   async handleCommand(cmd: Command): Promise<CommandResult> {
     const wsSvc = this.workspaceService;
     switch (cmd.type) {
+      case 'template.save': {
+        const template = wsSvc.current.templates.find(t => t.id === cmd.templateId);
+        if (!template || (cmd.blockId !== undefined && !template.blocks.some(b => b.id === cmd.blockId))) return {ok:false,error:'模板或数据块不存在'};
+        const result = wsSvc.saveManaged();
+        if (result.ok) this.workspaceRev++;
+        return result.ok ? {ok:true,value:result.path} : {ok:false,error:result.error ?? '保存失败'};
+      }
+      case 'template.rename': {
+        if (!wsSvc.current.templates.some(t => t.id === cmd.templateId)) return {ok:false,error:'模板不存在'};
+        wsSvc.set(workspaceSchema.parse({...wsSvc.current,templates:wsSvc.current.templates.map(t => t.id === cmd.templateId ? {...t,name:cmd.name} : t)}));
+        this.workspaceChanged();
+        return {ok:true,value:null};
+      }
+      case 'template.deleteBlock': {
+        try { wsSvc.set(workspaceSchema.parse(removeTemplateBlock(wsSvc.current,cmd.templateId,cmd.blockId)));this.workspaceChanged();return {ok:true,value:null}; }
+        catch(error){return {ok:false,error:String(error)};}
+      }
       case 'template.importFile': {
         try {
           const parsed = templateSchema.parse(JSON.parse(fs.readFileSync(cmd.path, 'utf8')));

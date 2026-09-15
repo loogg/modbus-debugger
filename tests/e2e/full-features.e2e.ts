@@ -79,7 +79,7 @@ describe('既有页面操作回归', () => {
     await rail('模板');
     await browser.pause(400);
     await shot('12-templates-1440');
-    await clickText('编辑模板');
+    await $('//nav[@aria-label="设备模板树"]//button[contains(.,"控制寄存器")]').click();
     let text = await bodyText();
     expect(text).toContain('点位映射');
     expect(text).toContain('母线电压');

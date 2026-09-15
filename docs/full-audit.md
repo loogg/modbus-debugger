@@ -128,3 +128,13 @@
 - [标签发布任务](https://github.com/loogg/modbus-debugger/actions/runs/34973709204)的 build、publish 均成功；云端四种产物启动、Portable 持久化、自选数据目录、Setup 安装/重装/卸载检查全部通过。同一提交触发的[重复分支任务](https://github.com/loogg/modbus-debugger/actions/runs/34973709482)主动取消，避免重复构建。
 - [v0.10.1 Release](https://github.com/loogg/modbus-debugger/releases/tag/v0.10.1)已正式公开并设为最新版本，非草稿、非预发布。ZIP、Portable.exe、Setup.exe、manifest.json 四个附件均为 uploaded、大小非零且提供 SHA-256；已下载云端清单核对摘要、版本及 85 个程序文件条目。
 - 云端日志和清单保存在本地 `out/audit/github-v0.10.1/`。本次发布复用既有功能验收，未重跑无关业务全量测试。
+
+## 0.10.2：模板树、点位内存布局与数据块保存
+
+- 修复模板侧栏没有子块、返回模板时残留块编辑状态的问题；模板节点进入概览，子节点打开对应块，块页提供返回入口。设备页和“查看模板”入口也清除旧的块选择状态。
+- 内存布局按模板定义显示点位占用，与设备连接/缓存无关：Float32 连续两寄存器、字节/位字段、重叠映射及 String 均可显示；超过 32 个地址分页，不再截断后面的点位。点击映射跳回点位详情。
+- 模板概览可保存名称、添加/打开/删除数据块。删除先说明影响范围，Main 删除块及点位并清理绑定实例的相关趋势引用，其他模板和历史数据不删除。
+- 数据块保存改为 Main 的 `template.save`，不调用文件选择器。未命名工作区保存到默认 `data/workspaces/`，后续复用同一路径；已有工作区沿用原文件，导出/另存为保持独立。
+- 13 项相关 Unit/Integration/组件检查通过：映射跨度、无缓存布局、分页、树导航/跨模板返回、保存命令、改名、取消/确认删除、删除边界、真实保存及重新读取，另覆盖既有 Store 偏好同步。相关 lint、typecheck 通过。日志：`out/audit/template-tests-final.log`、`template-store-tests.log`。
+- 打包版两组实际按钮流程通过：离线 Ia/Ib 映射、新增点位后立即显示、布局与点位详情跳转、保存时文件选择器调用次数为 0、实际文件内容、模板改名及删除后持久化。检查 1440 标准及 1024 紧凑窗口，无文档横向溢出。首次 E2E 的新增点位选择器错误地将既有 Drawer 当作 role=dialog，修正选择器并隔离用例后通过，未用自动重试掩盖失败。日志：`template-e2e.log`、`template-e2e-final.log`；截图：`out/audit/template-shots/`。
+- 参考 Figma 正式 05 模板库、06 模板编辑，按本次需求扩展树形与管理操作；README 已替换为实际界面截图。只生成 E2E 所需的 0.10.2 目录版，未运行无关全量回归、四种产物 make 或推送发布；GitHub 和 release/ 中的正式产物仍是 0.10.1。

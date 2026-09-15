@@ -157,6 +157,12 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 - before-quit 拦截退出 → await RuntimeManager.stop()：停止所有 Scheduler 定时器、结算 in-flight 请求、关闭串口（serialport.close）与 TCP socket、flush 并关闭 history.db、flush 工作区 → 然后 app.exit(0)。
 - 异常崩溃时由操作系统回收句柄；正常关闭路径保证优雅释放（集成测试覆盖 stop() 后 transport.connected === false）。
 
+### 模板与数据块编辑（0.10.2）
+
+模板侧栏为可展开的模板/数据块两级列表；选择模板默认清除旧的块编辑状态，选择子节点显式进入该块。模板概览提供名称保存和数据块添加/删除，块编辑页提供返回入口。模板内存布局解释 Point 定义（寄存器、字节、位及重叠范围），不借用任意绑定从站的实时 Cache，完整地址范围按 32 项分页。
+
+`template.rename`、`template.deleteBlock`、`template.save` 由 Main 执行。删除只清理目标模板的块、点位以及绑定实例的相关趋势引用；历史 Session 的 Schema Snapshot 不变。保存不调用文件选择器：复用已有工作区路径，首次保存则由 WorkspaceService 在 `data/workspaces/` 分配唯一文件名并原子写入；文件另存为保持独立入口。
+
 ### 检查、下载与自升级（0.10.1）
 
 `UpdateService` 位于 Main，通过固定的 GitHub REST `releases/latest` 接口检查正式版本；不读取 Actions 构建，也不接受 Renderer 传入下载 URL 或目标路径。网络使用 Electron `net.fetch`，附件下载兼容 GitHub CDN 跳转并校验最终地址（若响应提供URL）、准确大小与 SHA-256 digest；元信息请求有20秒超时，下载有15分钟总超时。无匹配架构附件时显示发布说明但禁止下载；草稿、预发布、异常元信息和不可信附件拒绝。

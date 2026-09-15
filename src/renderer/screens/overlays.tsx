@@ -251,6 +251,7 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
+  const select = useApp(s=>s.select);
   const template = workspace?.templates.find((t) => t.id === props.templateId);
   const existing = template?.blocks.find((b) => b.id === props.blockId);
   const [name, setName] = useState(existing?.name ?? t('overlays.defaultBlockName'));
@@ -264,8 +265,10 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
   const overlaps = findBlockOverlaps([...others, candidate]);
   const bad = overlaps.length > 0;
   const save = async () => {
-    const blocks = existing ? template.blocks.map((b) => (b.id === existing.id ? { ...candidate, id: existing.id } : b)) : [...template.blocks, { ...candidate, id: uid('blk') }];
+    const id=existing?.id ?? uid('blk');
+    const blocks = existing ? template.blocks.map((b) => (b.id === existing.id ? { ...candidate, id: existing.id } : b)) : [...template.blocks, { ...candidate, id }];
     if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks } : t)) } })).ok) return;
+    select({templateId:template.id,templateEditing:true,editBlockId:id});
     close();
   };
   return (

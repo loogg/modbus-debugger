@@ -234,7 +234,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setModule: (m) => set({ module: m }),
-  select: (patch) => set({ selection: { ...get().selection, ...patch }, ...(patch.slaveId !== undefined && patch.slaveId !== get().selection.slaveId ? { selectedPoints: {} } : {}) }),
+  select: (patch) => set({ selection: { ...get().selection, ...(patch.templateId !== undefined ? {templateEditing:false,editBlockId:null} : {}), ...patch }, ...(patch.slaveId !== undefined && patch.slaveId !== get().selection.slaveId ? { selectedPoints: {} } : {}) }),
   setSidebarWidth: (w) => {
     const clamped = Math.min(320, Math.max(220, w));
     set({ sidebarWidth: clamped });

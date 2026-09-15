@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { useApp, useBlocks, useConnectionStates, useWorkspace, useWorkspacePath } from '../store/app';
+import { useApp, useConnectionStates, useWorkspace } from '../store/app';
+import { BlockMemoryLayout } from '../components/block-memory-layout';
+import { TemplateProperties } from '../components/template-properties';
 import { Button, EmptyState, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput } from '../components/ui';
 import { DataTable, type Column } from '../components/table';
 import { AREAS, parsePlcReference, toPlcReference } from '../../domain/address';
@@ -18,6 +20,8 @@ export function TemplatesScreen() {
   const command = useApp((s) => s.command);
   const overlay = useApp((s) => s.overlay);
   const setModule = useApp((s) => s.setModule);
+  const openOverlay = useApp(s => s.openOverlay);
+  const toast = useApp(s => s.toast);
 
   const template = workspace?.templates.find((t) => t.id === selection.templateId) ?? workspace?.templates[0];
   if (!workspace) return null;
@@ -25,7 +29,7 @@ export function TemplatesScreen() {
   if (!template) {
     return <EmptyState title={t('templates.emptyTitle')} message={t('templates.emptyMessage')} />;
   }
-  if (selection.templateEditing) return <TemplateEdit templateId={template.id} />;
+  if (selection.templateEditing) return <TemplateEdit key={`${template.id}:${selection.editBlockId}`} templateId={template.id} />;
 
   const bound = workspace.slaves.filter((s) => s.templateId === template.id);
   return (
@@ -45,10 +49,11 @@ export function TemplatesScreen() {
             >
               {t('templates.duplicate')}
             </Button>
-            <Button variant="primary" onClick={() => select({ templateEditing: true, editBlockId: template.blocks[0]?.id ?? null })}>{t('templates.edit')}</Button>
+            <Button variant="primary" onClick={() => openOverlay({kind:'dialog',id:'edit-block',templateId:template.id})}>{t('templates.addBlock')}</Button>
           </>
         }
       />
+      <TemplateProperties key={`${template.id}:${template.name}`} templateId={template.id} name={template.name}/>
       <InfoColumns
         items={[
           { label: t('templates.blocks'), value: String(template.blocks.length) },
@@ -68,6 +73,12 @@ export function TemplatesScreen() {
               <div className="flex"><span className="w-16 text-ink2">{t('templates.addressRange')}</span><span className="mono">{b.start}–{b.start + b.length - 1}</span></div>
               <div className="flex"><span className="w-16 text-ink2">{t('templates.length')}</span><span>{t('templates.registersUnit', { n: b.length })}</span></div>
               <div className="flex"><span className="w-16 text-ink2">{t('templates.points')}</span><span>{t('templates.pointsUnit', { n: template.points.filter((p) => p.blockId === b.id).length })}</span></div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button size="sm" onClick={()=>select({templateId:template.id,templateEditing:true,editBlockId:b.id})}>打开数据块</Button>
+              <Button size="sm" onClick={()=>openOverlay({kind:'dialog',id:'confirm',title:'删除数据块',confirmLabel:'删除数据块',danger:true,
+                message:`删除“${b.name}”将同时删除其中 ${template.points.filter(p=>p.blockId===b.id).length} 个点位及相关趋势引用，影响 ${bound.length} 个绑定从站。历史记录保留。`,
+                onConfirm:()=>{void(async()=>{if(!(await command({type:'template.deleteBlock',templateId:template.id,blockId:b.id})).ok)return;select({templateId:template.id,templateEditing:false,editBlockId:null});if((await command({type:'template.save',templateId:template.id})).ok)toast({kind:'success',title:'数据块已删除'});})();}})}>删除数据块</Button>
             </div>
           </div>
         ))}
@@ -99,33 +110,26 @@ export function TemplatesScreen() {
 function TemplateEdit(props: { templateId: string }) {
   const { t } = useTranslation();
   const workspace = useWorkspace();
-  const blockStates = useBlocks();
   const selection = useApp((s) => s.selection);
+  const select = useApp(s => s.select);
   const openOverlay = useApp((s) => s.openOverlay);
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
   const [tab, setTab] = useState<'map' | 'memory' | 'block'>('map');
   const [search, setSearch] = useState('');
   const [selectedPoint, setSelectedPoint] = useState<string | null>(null);
-  const workspacePath = useWorkspacePath();
   const save = async () => {
-    let target = workspacePath;
-    if (!target) {
-      const chosen = await command<string>({ type: 'dialog.saveFile', defaultName: 'workspace.workspace.json' });
-      if (!chosen.ok) return;
-      target = chosen.value;
-    }
-    const res = await command({ type: 'workspace.saveAs', path: target });
-    if (res.ok) toast({ kind: 'success', title: t('templates.savedToast') });
+    const res = await command({ type: 'template.save', templateId:props.templateId,blockId:block?.id });
+    if (res.ok) toast({ kind: 'success', title: '数据块已保存' });
   };
 
   const template = workspace?.templates.find((t) => t.id === props.templateId);
   const block = template?.blocks.find((b) => b.id === selection.editBlockId) ?? template?.blocks[0];
-  if (!workspace || !template || !block) return <EmptyState title={t('templates.noBlocksTitle')} actions={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'edit-block', templateId: props.templateId })}>{t('templates.addBlock')}</Button>} />;
+  const back=()=>select({templateId:props.templateId,templateEditing:false,editBlockId:null});
+  if (!workspace || !template || !block) return <EmptyState title={t('templates.noBlocksTitle')} actions={<><Button onClick={back}>返回设备模板</Button><Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'edit-block', templateId: props.templateId })}>{t('templates.addBlock')}</Button></>} />;
 
   const points = template.points.filter((p) => p.blockId === block.id && (!search || p.name.includes(search)));
-  const detail = template.points.find((p) => p.id === selectedPoint) ?? points[0];
-  const cacheEntry = Object.values(blockStates).find((b) => b.blockId === block.id);
+  const detail = points.find((p) => p.id === selectedPoint) ?? points[0];
 
   const cols: Array<Column<PointDef>> = [
     { id: 'offset', header: t('templates.colOffset'), width: 80, render: (p) => <span className="mono text-xs">+{p.mapping.offset}{p.mapping.bitOffset ? `.${p.mapping.bitOffset}:${p.mapping.bitOffset + p.mapping.bitWidth - 1}` : ''}</span> },
@@ -139,6 +143,7 @@ function TemplateEdit(props: { templateId: string }) {
 
   return (
     <>
+      <button onClick={back} className="focus-ring mb-4 rounded-ctl text-sm text-accent hover:underline">← 返回设备模板：{template.name}</button>
       <PageHeader
         title={block.name}
         subtitle={t('templates.blockSubtitle', { area: AREAS[block.area], start: block.start, end: block.start + block.length - 1, length: block.length, period: block.periodMs })}
@@ -197,19 +202,7 @@ function TemplateEdit(props: { templateId: string }) {
           </aside>
         </div>
       )}
-      {tab === 'memory' && (
-        <div className="rounded-card border border-line bg-surface p-5">
-          <div className="text-sm font-bold mb-3">{t('templates.rawMemoryTitle')}</div>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {Array.from({ length: Math.min(block.length, 32) }, (_, i) => (
-              <div key={i} className="rounded-ctl bg-surface2 px-3 py-2">
-                <div className="flex justify-between text-xs text-ink2"><span>+{i}</span><span>+{i + 1}</span></div>
-                <div className="mono text-sm mt-1">{cacheEntry?.registers?.[i] !== undefined ? `0x${cacheEntry.registers[i]!.toString(16).toUpperCase().padStart(4, '0')}` : cacheEntry?.bits?.[i] !== undefined ? String(Number(cacheEntry.bits[i])) : '—'}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {tab === 'memory' && <BlockMemoryLayout key={block.id} block={block} points={template.points} onSelect={id=>{setSelectedPoint(id);setTab('map');}}/>}
       {tab === 'block' && (
         <div className="max-w-xl flex flex-col gap-4">
           <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.name')}</div><TextInput value={block.name} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, name: e.target.value } : b)) } : t)) } })} /></label>

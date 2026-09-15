@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { emptyWorkspace, migrateWorkspace, workspaceSchema, type Workspace } from '../../domain/model';
 
 export interface Prefs {
@@ -173,6 +174,11 @@ export class WorkspaceService {
       this.saveTimer = null;
       if (this.dirty && this.filePath) this.saveTo();
     }, 800);
+  }
+
+  /** Persist editing operations without exporting or asking for a workspace filename. */
+  saveManaged(): { ok: boolean; error?: string; path?: string } {
+    return this.saveTo(this.filePath ?? path.join(this.userDataDir, 'workspaces', `workspace-${randomUUID()}.workspace.json`));
   }
 
   flushAutosave(): void {

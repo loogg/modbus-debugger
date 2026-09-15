@@ -138,9 +138,9 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await browser.waitUntil(async () => (await snap()).workspace.templates.length === 2);
     const templates = (await snap()).workspace.templates;
     expect(new Set(templates.flatMap(t => t.points.map(p => p.id))).size).toBe(18);
-    await $('//button[contains(.,"ServoDrive V2") and not(contains(.,"副本"))]').click();
-    await click('编辑模板'); await click('内存布局');
-    expect(await text()).toContain('0x0011');
+    await $('//nav[@aria-label="设备模板树"]//button[contains(.,"ServoDrive V2") and not(contains(.,"副本")) and not(@aria-expanded)]').click();
+    await $('//nav[@aria-label="设备模板树"]//button[contains(.,"控制寄存器")]').click(); await click('内存布局');
+    expect(await $('[data-testid="memory-offset-0"]').getText()).toContain('母线电压');
     await click('点位映射'); await click('导入寄存器表');
     await browser.electron.execute(electron => electron.clipboard.writeText('Address,Name,Type,Access,Unit,Scale,Offset\n100,Unsigned,UInt16,RW,,1,0\n102,Wide,Float32,R,,1,0'));
     await click('粘贴表格'); await waitText('Unsigned'); await click('导入 2 个点位');
@@ -183,7 +183,6 @@ describe('审计：实际按钮到持久化/通信结果', () => {
   it('新建模板/块/点位、编辑校验、导出模板与独立导入', async () => {
     await rail('模板'); await click('新建设备模板');
     await browser.waitUntil(async () => (await snap()).workspace.templates.length === 2);
-    if (await $('//button[text()="编辑模板"]').isExisting()) await click('编辑模板');
     await click('＋ 添加数据块'); await fill(field('名称'), 'Audit block'); await fill(field('起始地址'), '30'); await fill(field('长度'), '4'); await click('保存数据块');
     await waitText('Audit block'); await click('＋ 添加点位'); await fill(field('名称'), 'Audit point');
     await fill(field('寄存器偏移'), '10'); await click('保存点位'); await waitText('操作失败');
