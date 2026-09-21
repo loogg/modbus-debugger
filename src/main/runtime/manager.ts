@@ -2,7 +2,7 @@ import type { UpdateState } from '../../shared/update';
 import fs from 'node:fs';
 import { templateSchema, workspaceSchema } from '../../domain/model';
 import { copyTemplate } from '../../domain/template-copy';
-import { removeTemplateBlock } from '../../domain/template-edit';
+import { removeTemplateBlock, removeTemplatePoint } from '../../domain/template-edit';
 import { BlockCache, blockKey } from './block-cache';
 import { ConnectionRuntime, type ConnectionState } from './connection-runtime';
 import { DiagnosticsStore, type ConnectionHealth } from './diagnostics';
@@ -710,6 +710,10 @@ export class RuntimeManager {
       }
       case 'template.deleteBlock': {
         try { wsSvc.set(workspaceSchema.parse(removeTemplateBlock(wsSvc.current,cmd.templateId,cmd.blockId)));this.workspaceChanged();return {ok:true,value:null}; }
+        catch(error){return {ok:false,error:String(error)};}
+      }
+      case 'template.deletePoint': {
+        try { wsSvc.set(workspaceSchema.parse(removeTemplatePoint(wsSvc.current,cmd.templateId,cmd.pointId)));this.workspaceChanged();return {ok:true,value:null}; }
         catch(error){return {ok:false,error:String(error)};}
       }
       case 'template.importFile': {

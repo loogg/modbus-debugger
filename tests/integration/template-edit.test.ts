@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createScratch, snapshotLegacyPreferences, assertLegacyPreferencesUnchanged } from '../../tools/test-paths.mjs';
 import { templateWorkspace } from '../support/template-workspace';
-import { removeTemplateBlock, pointMemorySpan } from '../../src/domain/template-edit';
+import { removeTemplateBlock, removeTemplatePoint, pointMemorySpan } from '../../src/domain/template-edit';
 import { WorkspaceService } from '../../src/main/services/workspace';
 import { RuntimeManager } from '../../src/main/runtime/manager';
 import { HistoryStore } from '../../src/main/services/history';
@@ -24,6 +24,13 @@ it('deletes only the chosen template block and references, preserving other temp
   expect(after.templates[1]).toEqual(before.templates[1]);expect(after.slaves).toEqual(before.slaves);
   expect(after.trendGroups[0]!.signals.map(s=>s.id)).toEqual(['keep','other']);expect(before.templates[0]!.blocks).toHaveLength(2);
   expect(()=>removeTemplateBlock(before,'t1','missing')).toThrow();
+});
+it('deletes only the chosen template point and references, preserving other points and templates',()=>{
+  const before=templateWorkspace();const after=removeTemplatePoint(before,'t1','Ia');
+  expect(after.templates[0]!.points.map(p=>p.id)).not.toContain('Ia');
+  expect(after.templates[0]!.points.some(p=>p.id==='Ib')).toBe(true);
+  expect(after.templates[1]).toEqual(before.templates[1]);
+  expect(()=>removeTemplatePoint(before,'t1','missing')).toThrow();
 });
 it('persists block saves without a file dialog, reuses the path, and restores rename/deletion from disk',async()=>{
   const legacy=snapshotLegacyPreferences();const root=createScratch('template-save-');const service=new WorkspaceService(path.join(root,'data'));service.set(templateWorkspace());

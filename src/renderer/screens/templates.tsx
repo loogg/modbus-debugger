@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp, useConnectionStates, useWorkspace } from '../store/app';
 import { BlockMemoryLayout } from '../components/block-memory-layout';
 import { TemplateProperties } from '../components/template-properties';
+import { PointPropertyInspector } from '../components/point-property-inspector';
 import { Button, EmptyState, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput } from '../components/ui';
 import { DataTable, type Column } from '../components/table';
 import { AREAS, parsePlcReference, toPlcReference } from '../../domain/address';
@@ -118,18 +119,78 @@ function TemplateEdit(props: { templateId: string }) {
   const [tab, setTab] = useState<'map' | 'memory' | 'block'>('map');
   const [search, setSearch] = useState('');
   const [selectedPoint, setSelectedPoint] = useState<string | null>(null);
+  const template = workspace?.templates.find((t) => t.id === props.templateId);
+  const block = template?.blocks.find((b) => b.id === selection.editBlockId) ?? template?.blocks[0];
+
+  const deletePoint = useCallback((point: PointDef) => {
+    if (!template) return;
+    openOverlay({
+      kind: 'dialog',
+      id: 'confirm',
+      title: t('templates.deletePointConfirmTitle'),
+      confirmLabel: t('templates.deletePoint'),
+      danger: true,
+      message: t('templates.deletePointConfirmMessage', { name: point.name }),
+      onConfirm: () => {
+        void (async () => {
+          const res = await command({ type: 'template.deletePoint', templateId: template.id, pointId: point.id });
+          if (res.ok) {
+            toast({ kind: 'success', title: t('templates.pointDeletedToast') });
+            if (selectedPoint === point.id) {
+              setSelectedPoint(null);
+            }
+          }
+        })();
+      },
+    });
+  }, [command, openOverlay, selectedPoint, t, template, toast]);
+
+  useEffect(() => {
+    if (!template || !block) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const target = e.target as HTMLElement | null;
+        const isInput = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable;
+        if (isInput) return;
+        const currentPoints = template.points.filter((p) => p.blockId === block.id && (!search || p.name.includes(search)));
+        const pt = currentPoints.find((p) => p.id === (selectedPoint ?? currentPoints[0]?.id));
+        if (pt) {
+          e.preventDefault();
+          deletePoint(pt);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [block, deletePoint, search, selectedPoint, template]);
+
   const save = async () => {
     const res = await command({ type: 'template.save', templateId:props.templateId,blockId:block?.id });
     if (res.ok) toast({ kind: 'success', title: '数据块已保存' });
   };
 
-  const template = workspace?.templates.find((t) => t.id === props.templateId);
-  const block = template?.blocks.find((b) => b.id === selection.editBlockId) ?? template?.blocks[0];
   const back=()=>select({templateId:props.templateId,templateEditing:false,editBlockId:null});
   if (!workspace || !template || !block) return <EmptyState title={t('templates.noBlocksTitle')} actions={<><Button onClick={back}>返回设备模板</Button><Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'edit-block', templateId: props.templateId })}>{t('templates.addBlock')}</Button></>} />;
 
   const points = template.points.filter((p) => p.blockId === block.id && (!search || p.name.includes(search)));
   const detail = points.find((p) => p.id === selectedPoint) ?? points[0];
+
+  const handleSavePoint = async (updated: PointDef): Promise<boolean> => {
+    const updatedPoints = template.points.map((p) => (p.id === updated.id ? updated : p));
+    const res = await command({
+      type: 'workspace.apply',
+      workspace: {
+        ...workspace,
+        templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, points: updatedPoints } : t)),
+      },
+    });
+    if (res.ok) {
+      toast({ kind: 'success', title: t('templates.pointSavedToast') });
+      return true;
+    }
+    toast({ kind: 'error', title: res.error ?? '保存点位失败' });
+    return false;
+  };
 
   const cols: Array<Column<PointDef>> = [
     { id: 'offset', header: t('templates.colOffset'), width: 80, render: (p) => <span className="mono text-xs">+{p.mapping.offset}{p.mapping.bitOffset ? `.${p.mapping.bitOffset}:${p.mapping.bitOffset + p.mapping.bitWidth - 1}` : ''}</span> },
@@ -139,6 +200,24 @@ function TemplateEdit(props: { templateId: string }) {
     { id: 'unit', header: t('templates.colUnit'), width: 70, render: (p) => <span className="text-xs">{p.unit || '—'}</span> },
     { id: 'access', header: t('templates.colAccess'), width: 90, render: (p) => <span className={`text-xs ${p.access === 'rw' ? 'text-accent font-medium' : 'text-ink2'}`}>{p.access === 'rw' ? t('templates.accessRw') : t('templates.accessRo')}</span> },
     { id: 'desc', header: t('templates.colDesc'), width: 140, render: (p) => <span className="text-xs text-ink2">{p.mapping.wordOrder !== 'ABCD' ? p.mapping.wordOrder : p.enumMap && Object.keys(p.enumMap).length ? 'Enum' : p.mapping.rawType === 'String' ? p.mapping.stringEncoding.toUpperCase() : ''}</span> },
+    {
+      id: 'actions',
+      header: t('templates.colAction'),
+      width: 70,
+      render: (p) => (
+        <button
+          type="button"
+          className="focus-ring cursor-pointer text-xs text-err hover:underline"
+          title={t('templates.deletePoint')}
+          onClick={(e) => {
+            e.stopPropagation();
+            deletePoint(p);
+          }}
+        >
+          {t('templates.deletePointShort')}
+        </button>
+      ),
+    },
   ];
 
   return (
@@ -172,34 +251,30 @@ function TemplateEdit(props: { templateId: string }) {
             </div>
             <DataTable columns={cols} rows={points} rowKey={(p) => p.id} onRowClick={(p) => setSelectedPoint(p.id)} selectedKey={detail?.id ?? null} maxHeight={460} />
           </div>
-          <aside className="w-[280px] shrink-0 rounded-card bg-surface2 p-5 self-start">
-            <div className="text-sm font-bold mb-2">{t('templates.mappingDetail')}</div>
-            {detail ? (
-              <>
-                <div className="text-sm text-accent font-medium mb-3">{detail.name}</div>
-                <div className="text-xs text-ink2 mb-1">{t('templates.detailMemory')}</div>
-                <div className="text-xs leading-6 mb-3">
-                  {t('templates.detailRegisterOffset', { offset: detail.mapping.offset })}<br />
-                  {detail.mapping.rawType === 'Bool' || detail.mapping.rawType === 'BitField' ? <>{t('templates.detailBit', { bitOffset: detail.mapping.bitOffset, bitWidth: detail.mapping.bitWidth })}<br /></> : null}
-                  {t('templates.detailDataType', { type: detail.mapping.rawType === 'BitField' ? 'UInt' : detail.mapping.rawType })}<br />
-                  {Object.keys(detail.enumMap).length ? t('templates.detailShowEnum') : detail.mapping.rawType === 'String' ? t('templates.detailShowString', { encoding: detail.mapping.stringEncoding }) : t('templates.detailShowType', { type: detail.mapping.rawType })}
-                </div>
-                <div className="text-xs text-ink2 mb-1">{t('templates.detailAccessRule')}</div>
-                <div className="text-xs leading-6 mb-3">
-                  {block.area === 3 ? t('templates.accessRuleHolding') : t('templates.accessRuleReadOnly')}
-                  <br />
-                  {detail.access === 'rw' ? t('templates.accessConfiguredRw') : t('templates.accessRo')}
-                </div>
-                <div className="text-xs text-ink2 mb-1">{t('templates.detailOverlap')}</div>
-                <div className="text-xs leading-6 mb-3">{t('templates.overlapAllowedLead')}<br />{t('templates.overlapAllowedTail')}</div>
-                <div className="text-xs text-ink2 mb-1">{t('templates.detailAdvanced')}</div>
-                <div className="text-xs">{t('templates.detailAdvancedBody')}</div>
-                <Button size="sm" className="mt-4 w-full" onClick={() => openOverlay({ kind: 'drawer', id: 'edit-point', templateId: template.id, blockId: block.id, pointId: detail.id })}>{t('templates.editPoint')}</Button>
-              </>
-            ) : (
+          {detail ? (
+            <PointPropertyInspector
+              key={detail.id}
+              point={detail}
+              template={template}
+              block={block}
+              onSave={handleSavePoint}
+              onDelete={deletePoint}
+              onOpenDrawer={() =>
+                openOverlay({
+                  kind: 'drawer',
+                  id: 'edit-point',
+                  templateId: template.id,
+                  blockId: block.id,
+                  pointId: detail.id,
+                })
+              }
+            />
+          ) : (
+            <aside className="w-[330px] shrink-0 rounded-card bg-surface2 p-5 self-start">
+              <div className="text-sm font-bold mb-2">{t('templates.mappingDetail')}</div>
               <div className="text-xs text-ink2">{t('templates.selectPointHint')}</div>
-            )}
-          </aside>
+            </aside>
+          )}
         </div>
       )}
       {tab === 'memory' && <BlockMemoryLayout key={block.id} block={block} points={template.points} onSelect={id=>{setSelectedPoint(id);setTab('map');}}/>}

@@ -306,6 +306,8 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
+  const openOverlay = useApp((s) => s.openOverlay);
+  const toast = useApp((s) => s.toast);
   const template = workspace?.templates.find((t) => t.id === props.templateId);
   const block = template?.blocks.find((b) => b.id === props.blockId);
   const existing = template?.points.find((p) => p.id === props.pointId);
@@ -369,13 +371,46 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
     close();
   };
 
+  const deletePoint = () => {
+    if (!existing) return;
+    openOverlay({
+      kind: 'dialog',
+      id: 'confirm',
+      title: t('templates.deletePointConfirmTitle'),
+      confirmLabel: t('templates.deletePoint'),
+      danger: true,
+      message: t('templates.deletePointConfirmMessage', { name: existing.name }),
+      onConfirm: () => {
+        void (async () => {
+          const res = await command({ type: 'template.deletePoint', templateId: template.id, pointId: existing.id });
+          if (res.ok) {
+            toast({ kind: 'success', title: t('templates.pointDeletedToast') });
+            close();
+          }
+        })();
+      },
+    });
+  };
+
   return (
     <Drawer
       title={t('overlays.editPointTitle')}
       subtitle={existing ? t('overlays.editPointSubtitleNumeric') : t('overlays.editPointSubtitleNew')}
       width={590}
       onClose={close}
-      footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={() => void save()}>{t('overlays.savePoint')}</Button></>}
+      footer={
+        <div className="flex items-center justify-between w-full">
+          <div>
+            {existing ? (
+              <Button variant="danger" size="sm" onClick={deletePoint}>{t('templates.deletePoint')}</Button>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-3">
+            <Button onClick={close}>{t('overlays.cancel')}</Button>
+            <Button variant="primary" onClick={() => void save()}>{t('overlays.savePoint')}</Button>
+          </div>
+        </div>
+      }
     >
       <div className="text-xs text-ink2 mb-1.5">{t('overlays.basicSettings')}</div>
       <Field label={t('overlays.name')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>

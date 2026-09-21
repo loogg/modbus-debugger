@@ -19,3 +19,15 @@ export function removeTemplateBlock(workspace: Workspace, templateId: string, bl
     trendGroups: workspace.trendGroups.map(g => ({ ...g, signals: g.signals.filter(s => !(bound.has(s.pointRef.slaveId) && removed.has(s.pointRef.pointId))) })),
   };
 }
+
+/** Remove a single point from a template and clean up its references in bound slaves' trend groups. */
+export function removeTemplatePoint(workspace: Workspace, templateId: string, pointId: string): Workspace {
+  const template = workspace.templates.find(t => t.id === templateId);
+  if (!template?.points.some(p => p.id === pointId)) throw new Error('点位不存在');
+  const bound = new Set(workspace.slaves.filter(s => s.templateId === templateId).map(s => s.id));
+  return { ...workspace,
+    templates: workspace.templates.map(t => t.id === templateId ? { ...t, points: t.points.filter(p => p.id !== pointId) } : t),
+    trendGroups: workspace.trendGroups.map(g => ({ ...g, signals: g.signals.filter(s => !(bound.has(s.pointRef.slaveId) && s.pointRef.pointId === pointId)) })),
+  };
+}
+
