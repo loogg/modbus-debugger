@@ -9,12 +9,14 @@ import { RuntimeManager } from './runtime/manager';
 import { WorkspaceService } from './services/workspace';
 import { HistoryStore } from './services/history';
 import { registerIpc } from './ipc';
+import { DevBridgeServer } from './services/dev-bridge';
 import { executionDirectory } from './services/execution-directory';
 import { prepareStorage } from './services/storage-paths';
 
 let mainWindow: BrowserWindow | null = null;
 let manager: RuntimeManager | null = null;
 let updater: UpdateService | null = null;
+let devBridge: DevBridgeServer | null = null;
 
 // Configure Electron/Chromium BEFORE ready, logging or creating any BrowserWindow.
 const executionDir = executionDirectory(app.isPackaged, app.getPath('exe'), process.cwd(), app.commandLine.getSwitchValue('portable-dir') || process.env.PORTABLE_EXECUTABLE_DIR);
@@ -120,7 +122,11 @@ async function createWindow(): Promise<void> {
     },
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.once('ready-to-show', () => {
+    if (process.env.MODBUS_HEADLESS !== '1') {
+      mainWindow?.show();
+    }
+  });
 
   let boundsTimer: NodeJS.Timeout | null = null;
   const persistBounds = () => {
@@ -173,7 +179,15 @@ async function createWindow(): Promise<void> {
       }
     },
   });
-  registerIpc(manager, () => mainWindow, updater);
+  const backend = registerIpc(manager, () => mainWindow, updater);
+  if (!app.isPackaged) {
+    const bridgePort = Number(process.env.MODBUS_DEV_BRIDGE_PORT || 5174);
+    devBridge = new DevBridgeServer(backend, { port: bridgePort, host: '127.0.0.1' });
+    devBridge
+      .start()
+      .then((port) => log.info(`Dev Bridge server listening on ws://127.0.0.1:${port}`))
+      .catch((err) => log.error('Failed to start Dev Bridge server', err));
+  }
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
@@ -199,7 +213,11 @@ app.on('before-quit', (e) => {
   e.preventDefault();
   quitting = true;
   const done = () => app.exit(0);
-  void (async () => { await updater?.dispose(); await manager?.stop(); })().then(done, done);
+  void (async () => {
+    if (devBridge) await devBridge.close();
+    await updater?.dispose();
+    await manager?.stop();
+  })().then(done, done);
 });
 
 process.on('uncaughtException', (err) => {

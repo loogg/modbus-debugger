@@ -1,13 +1,15 @@
 {
   "name": "modbus-debugger",
   "productName": "Modbus Debugger",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "description": "Modbus RTU / TCP desktop debugging tool",
   "main": ".vite/build/index.js",
   "private": true,
   "license": "MIT",
   "scripts": {
     "start": "electron-forge start",
+    "review": "vite --config vite.renderer.config.ts --port 5173",
+    "review:bridge": "vite-node tools/dev-bridge.ts",
     "package": "electron-forge package",
     "make": "electron-forge make",
     "lint": "eslint . --ext .ts,.tsx",
