@@ -149,12 +149,38 @@ export function CommScreen() {
             <div className="text-sm mb-4">{t('comm.address')} {selected.summary} {selected.exceptionCode !== null ? t('comm.exceptionCode', { code: selected.exceptionCode.toString(16).padStart(2, '0'), name: EXCEPTION_NAMES[selected.exceptionCode] ?? '' }) : ''}</div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div>
-                <div className="text-xs text-ink2 mb-1">{t('comm.request')}</div>
-                <div className="rounded-ctl bg-surface px-3 py-2 mono text-xs">{selected.requestAduHex.match(/.{1,2}/g)?.join(' ')}</div>
+                <div className="flex items-center justify-between text-xs text-ink2 mb-1">
+                  <span>{t('comm.request')}</span>
+                  <button
+                    type="button"
+                    className="focus-ring cursor-pointer text-accent hover:underline text-[11px]"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(selected.requestAduHex);
+                      toast({ kind: 'success', title: '已复制请求 Hex' });
+                    }}
+                  >
+                    复制 Hex
+                  </button>
+                </div>
+                <div className="rounded-ctl bg-surface px-3 py-2 mono text-xs select-all">{selected.requestAduHex.match(/.{1,2}/g)?.join(' ')}</div>
               </div>
               <div>
-                <div className="text-xs text-ink2 mb-1">{t('comm.response')}</div>
-                <div className="rounded-ctl bg-surface px-3 py-2 mono text-xs">{selected.responseAduHex ? selected.responseAduHex.match(/.{1,2}/g)?.join(' ') : '—'}</div>
+                <div className="flex items-center justify-between text-xs text-ink2 mb-1">
+                  <span>{t('comm.response')}</span>
+                  {selected.responseAduHex ? (
+                    <button
+                      type="button"
+                      className="focus-ring cursor-pointer text-accent hover:underline text-[11px]"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(selected.responseAduHex!);
+                        toast({ kind: 'success', title: '已复制响应 Hex' });
+                      }}
+                    >
+                      复制 Hex
+                    </button>
+                  ) : null}
+                </div>
+                <div className="rounded-ctl bg-surface px-3 py-2 mono text-xs select-all">{selected.responseAduHex ? selected.responseAduHex.match(/.{1,2}/g)?.join(' ') : '—'}</div>
               </div>
             </div>
           </div>

@@ -127,6 +127,16 @@ export function RealtimeScreen() {
   const clearSelection = useApp((s) => s.clearPointSelection);
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
+  const select = useApp((s) => s.select);
+
+  React.useEffect(() => {
+    if (!selection.slaveId && workspace?.slaves && workspace.slaves.length > 0) {
+      const first = workspace.slaves[0];
+      if (first) {
+        select({ slaveId: first.id, connectionId: first.connectionId, blockId: null, realtimeScope: 'device' });
+      }
+    }
+  }, [selection.slaveId, workspace?.slaves, select]);
   const compact = useCompact();
   const [search, setSearch] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);

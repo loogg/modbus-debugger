@@ -206,9 +206,31 @@ export function ScanView(props: { connectionId: string }) {
       <div className="text-xs text-ink2 mt-3">{t('devices.scanProbeHint')}</div>
       {error ? <div role="alert" className="text-sm text-err mt-3">{error}</div> : null}
       {running ? <div role="status" className="text-sm text-accent mt-3">{stopping ? t('devices.scanStoppingHint') : t('devices.scanProgress', { current: String(scan?.currentUnit ?? '—'), checked: String(scan?.checked ?? 0), total: String((scan?.to ?? Number(to)) - (scan?.from ?? Number(from)) + 1), found: String(rows.length) })}</div> : null}
-      <div className="mt-4 flex gap-4">
+      <div className="mt-4 flex flex-wrap items-end gap-4">
         <div className="w-32"><div className="text-xs text-ink2 mb-1.5">{t('devices.scanFromLabel')}</div><TextInput aria-label={t('devices.scanFromLabel')} data-testid="scan-from" type="number" min={1} max={247} disabled={running} value={running ? scan?.from ?? from : from} onChange={(e) => setFrom(e.target.value)} /></div>
         <div className="w-32"><div className="text-xs text-ink2 mb-1.5">{t('devices.scanToLabel')}</div><TextInput aria-label={t('devices.scanToLabel')} data-testid="scan-to" type="number" min={1} max={247} disabled={running} value={running ? scan?.to ?? to : to} onChange={(e) => setTo(e.target.value)} /></div>
+        {!running ? (
+          <div className="flex items-center gap-1.5 pb-1">
+            <span className="text-xs text-ink2 mr-1">常用范围:</span>
+            {([16, 32, 64, 247] as const).map((maxUnit) => (
+              <button
+                key={maxUnit}
+                type="button"
+                className={`focus-ring rounded border px-2 py-1 text-xs cursor-pointer ${
+                  from === '1' && to === String(maxUnit)
+                    ? 'border-accent bg-accentsoft text-accent font-medium'
+                    : 'border-line bg-surface text-ink2 hover:bg-surface2'
+                }`}
+                onClick={() => {
+                  setFrom('1');
+                  setTo(String(maxUnit));
+                }}
+              >
+                1~{maxUnit}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       {!validRange && !running ? <div role="alert" className="text-xs text-err mt-2">{t('devices.scanInvalidRange')}</div> : null}
       <details className="mt-4 rounded-card border border-line bg-surface">

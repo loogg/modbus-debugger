@@ -165,13 +165,14 @@ export class WebSocketBridgeTransport implements AppTransport {
     throw new Error('Dev Bridge transport disposed');
   }
 
-  private async sendRequest<T>(msg: BridgeClientMessage): Promise<T> {
+  private async sendRequest<T>(msg: BridgeClientMessage, customTimeoutMs?: number): Promise<T> {
+    const timeout = customTimeoutMs ?? this.timeoutMs;
     const ws = await this.waitForOpen(this.timeoutMs);
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(msg.id);
-        reject(new Error(`Bridge request timeout after ${this.timeoutMs}ms (${msg.type})`));
-      }, this.timeoutMs);
+        reject(new Error(`Bridge request timeout after ${timeout}ms (${msg.type})`));
+      }, timeout);
 
       this.pending.set(msg.id, {
         resolve: (val) => resolve(val as T),
@@ -196,7 +197,9 @@ export class WebSocketBridgeTransport implements AppTransport {
   async command<T = unknown>(cmd: Command): Promise<CommandResult<T>> {
     const id = `cmd_${this.seq++}`;
     try {
-      const value = await this.sendRequest<T>({ type: 'command', id, command: cmd });
+      const isLongRunning = cmd.type === 'device.scan';
+      const timeoutMs = isLongRunning ? 300000 : this.timeoutMs;
+      const value = await this.sendRequest<T>({ type: 'command', id, command: cmd }, timeoutMs);
       return { ok: true, value };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
