@@ -37,7 +37,7 @@
 - RTU / TCP 接收链路必须按**流式解析**设计，能够处理任意分片输入、连续多帧、半包+粘包混合、异常帧识别与自动恢复；单个坏帧不得使后续合法帧永久失步或被整段丢弃。具体 Framing / Resync / Buffer 边界见 `architecture.md`，硬测试见 `acceptance.md`。
 - RTU / TCP 当前每 Connection `maxInFlight = 1`；写确认、RMW、Scanner 调度见 `architecture.md`。
 - Value 永远代表设备 confirmed value；输入和 pending 不进入 Block Cache。
-- UI 以 Figma 正式页面和组件规范为视觉真值，并覆盖 Standard / Compact 窗口。
+- UI 以 Figma 正式页面和组件规范为视觉真值，并覆盖 Standard / Compact 窗口；涉及界面修改必须在真实界面（Browser Review Mode 或桌面实例）中验证布局、响应式与操作状态，发现问题迭代至收敛，自动化测试不得替代肉眼与真实交互审查。
 
 ### 执行方式
 
