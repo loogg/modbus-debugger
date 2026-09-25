@@ -170,8 +170,8 @@ const toneColor: Record<StatusTone, string> = {
 
 export function StatusDot(props: { tone: StatusTone; label?: string; className?: string }) {
   return (
-    <span className={`inline-flex items-center gap-1.5 text-xs ${props.className ?? ''}`} style={{ color: toneColor[props.tone] }}>
-      <span className="inline-block h-2 w-2 rounded-full" style={{ background: toneColor[props.tone] }} />
+    <span className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 text-xs ${props.className ?? ''}`} style={{ color: toneColor[props.tone] }}>
+      <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: toneColor[props.tone] }} />
       {props.label}
     </span>
   );

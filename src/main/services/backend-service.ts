@@ -48,7 +48,7 @@ export class AppBackendService {
     return {
       electron: process.versions.electron ?? (electron?.app ? 'electron' : 'browser'),
       node: process.versions.node ?? 'unknown',
-      app: electron?.app?.getVersion ? electron.app.getVersion() : '0.10.3',
+      app: electron?.app?.getVersion ? electron.app.getVersion() : '0.11.0',
     };
   }
 

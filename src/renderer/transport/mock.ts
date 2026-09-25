@@ -382,7 +382,7 @@ export class MockTransport implements AppTransport {
     return {
       electron: 'mock',
       node: 'mock',
-      app: '0.10.3-mock',
+      app: '0.11.0-mock',
     };
   }
 

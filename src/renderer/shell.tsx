@@ -134,10 +134,10 @@ function TreeConnection(props: { connectionId: string; children?: React.ReactNod
   if (!conn) return null;
   return (
     <div className="mb-2">
-      <button className="focus-ring flex w-full cursor-pointer items-center justify-between rounded px-1 py-1.5 text-left" onClick={() => { setOpen(!open); props.onSelectConnection?.(); }}>
-        <span className="flex items-center gap-1.5 text-sm font-medium truncate">
+      <button className="focus-ring flex w-full cursor-pointer items-center justify-between gap-2 rounded px-1 py-1.5 text-left" onClick={() => { setOpen(!open); props.onSelectConnection?.(); }}>
+        <span className="flex items-center gap-1.5 text-sm font-medium truncate min-w-0">
           {open ? <ChevronDown20Regular className="shrink-0" /> : <ChevronRight20Regular className="shrink-0" />}
-          {conn.name}
+          <span className="truncate">{conn.name}</span>
         </span>
         <StatusDot tone={state === 'online' ? 'ok' : state === 'error' ? 'err' : 'idle'} label={state === 'online' ? t('shell.conn.online') : state === 'connecting' ? t('shell.conn.connecting') : t('shell.conn.offline')} />
       </button>
@@ -159,10 +159,10 @@ function SlaveCard(props: { slaveId: string; showBlocks: boolean; selectedSlave?
   if (!slave) return null;
   return (
     <div className={`mb-2 rounded-ctl px-3 py-2 ${props.selectedSlave ? 'bg-accentsoft' : 'bg-surface'}`}>
-      <button className="focus-ring flex w-full cursor-pointer items-center justify-between text-left" onClick={() => { setOpen(!open); props.onSelectSlave?.(); }}>
-        <span className="flex items-center gap-1.5 text-sm font-medium truncate">
+      <button className="focus-ring flex w-full cursor-pointer items-center justify-between gap-2 text-left" onClick={() => { setOpen(!open); props.onSelectSlave?.(); }}>
+        <span className="flex items-center gap-1.5 text-sm font-medium truncate min-w-0">
           {open ? <ChevronDown20Regular className="shrink-0" /> : <ChevronRight20Regular className="shrink-0" />}
-          {slave.name}
+          <span className="truncate">{slave.name}</span>
         </span>
         <StatusDot {...slaveStatus(slave.enabled, connState)} />
       </button>

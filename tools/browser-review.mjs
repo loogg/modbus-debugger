@@ -83,6 +83,53 @@ async function review() {
     console.log('[DevBridge] Template created in real backend:', afterCreateText.includes('未命名模板') || afterCreateText.includes('模板名称'));
   }
 
+  // Navigate across other modules
+  // Click 'realtime' (button 1)
+  if (railButtons.length > 1) {
+    await railButtons[1].click();
+    await new Promise((r) => setTimeout(r, 600));
+    await page.screenshot({ path: path.join(outDir, '08_bridge_realtime.png') });
+    console.log('[DevBridge] Saved screenshot: 08_bridge_realtime.png');
+  }
+
+  // Click 'trend' (button 2)
+  if (railButtons.length > 2) {
+    await railButtons[2].click();
+    await new Promise((r) => setTimeout(r, 600));
+    await page.screenshot({ path: path.join(outDir, '09_bridge_trend.png') });
+    console.log('[DevBridge] Saved screenshot: 09_bridge_trend.png');
+  }
+
+  // Click 'comm' (button 4)
+  if (railButtons.length > 4) {
+    await railButtons[4].click();
+    await new Promise((r) => setTimeout(r, 600));
+    await page.screenshot({ path: path.join(outDir, '10_bridge_comm.png') });
+    console.log('[DevBridge] Saved screenshot: 10_bridge_comm.png');
+  }
+
+  // Click 'devices' (button 0) and open '添加连接' dialog
+  if (railButtons.length > 0) {
+    await railButtons[0].click();
+    await new Promise((r) => setTimeout(r, 400));
+    const addConnBtn = await page.$('button');
+    const allButtons = await page.$$('button');
+    for (const b of allButtons) {
+      const txt = await page.evaluate((el) => el.textContent, b);
+      if (txt && txt.includes('添加连接')) {
+        await b.click();
+        break;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 500));
+    await page.screenshot({ path: path.join(outDir, '11_bridge_add_connection_dialog.png') });
+    console.log('[DevBridge] Saved screenshot: 11_bridge_add_connection_dialog.png');
+
+    // Close dialog with Escape or cancel
+    await page.keyboard.press('Escape');
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
   // --- Step 2: Mock Mode - Default ---
   console.log('\n--- Step 2: Mock Mode - Default ---');
   await page.goto('http://localhost:5173/?transport=mock&fixture=default', { waitUntil: 'networkidle0' });
@@ -92,6 +139,15 @@ async function review() {
   console.log('[Mock:Default] Shows smart meter:', mockDefaultText.includes('智能三相多功能电表') || mockDefaultText.includes('进线电表'));
   await page.screenshot({ path: path.join(outDir, '05_mock_default.png') });
   console.log('[Mock:Default] Saved screenshot: 05_mock_default.png');
+
+  // Navigate to realtime in Mock mode to observe live fluctuating numbers
+  const mockRailButtons = await page.$$('nav button, aside button');
+  if (mockRailButtons.length > 1) {
+    await mockRailButtons[1].click();
+    await new Promise((r) => setTimeout(r, 1500));
+    await page.screenshot({ path: path.join(outDir, '12_mock_realtime_live_data.png') });
+    console.log('[Mock:Default] Saved screenshot: 12_mock_realtime_live_data.png');
+  }
 
   // --- Step 3: Mock Mode - Empty ---
   console.log('\n--- Step 3: Mock Mode - Empty ---');
@@ -108,6 +164,18 @@ async function review() {
   console.log('[Mock:LargeData] Shows 300点高密度采集器:', largeDataText.includes('300点高密度采集器') || largeDataText.includes('高密度测试从站'));
   await page.screenshot({ path: path.join(outDir, '07_mock_large_data.png') });
   console.log('[Mock:LargeData] Saved screenshot: 07_mock_large_data.png');
+
+  // --- Step 5: Mock Mode - Error and Timeout ---
+  console.log('\n--- Step 5: Mock Mode - Error and Timeout ---');
+  await page.goto('http://localhost:5173/?transport=mock&fixture=error', { waitUntil: 'networkidle0' });
+  await new Promise((r) => setTimeout(r, 600));
+  await page.screenshot({ path: path.join(outDir, '13_mock_error_state.png') });
+  console.log('[Mock:Error] Saved screenshot: 13_mock_error_state.png');
+
+  await page.goto('http://localhost:5173/?transport=mock&fixture=timeout', { waitUntil: 'networkidle0' });
+  await new Promise((r) => setTimeout(r, 600));
+  await page.screenshot({ path: path.join(outDir, '14_mock_timeout_state.png') });
+  console.log('[Mock:Timeout] Saved screenshot: 14_mock_timeout_state.png');
 
   await browser.close();
 

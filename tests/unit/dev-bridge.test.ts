@@ -25,7 +25,7 @@ describe('DevBridgeServer and AppBackendService', () => {
     history = await HistoryStore.open(path.join(testDir, 'test.db'));
     manager = new RuntimeManager(wsSvc, history);
     updater = new UpdateService({
-      currentVersion: '0.10.3',
+      currentVersion: '0.11.0',
       packageKind: 'zip',
       platform: 'win32',
       arch: 'x64',

@@ -19,6 +19,12 @@ async function main() {
   const history = await HistoryStore.open(historyPath);
   const manager = new RuntimeManager(wsSvc, history);
   wsSvc.loadFrom(null);
+  if (wsSvc.current.connections.length === 0 && wsSvc.current.templates.length === 0) {
+    const demoPath = path.resolve(__dirname, 'e2e/demo.workspace.json');
+    if (fs.existsSync(demoPath)) {
+      wsSvc.loadFrom(demoPath);
+    }
+  }
   manager.start();
 
   const updater = new UpdateService({
