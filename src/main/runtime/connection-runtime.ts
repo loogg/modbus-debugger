@@ -3,27 +3,20 @@ import { BlockCache, blockKey } from './block-cache';
 import { DiagnosticsStore, type ResultKind, type SourceKind, type TransactionRecord } from './diagnostics';
 import { Transport } from './transport';
 import { encodeRequestPdu, buildRtuAdu, buildTcpAdu, expectedResponseAduLength, RtuStreamingFramer, TcpStreamingFramer, validateAdu, type Framer, type FramerEvent, type Clock, systemClock, type RequestContext, type AduVerdict } from '../../domain/protocol';
-import type { ModbusRequest, ModbusResponse, ReadFC } from '../../domain/protocol';
+import type { ModbusRequest, ReadFC } from '../../domain/protocol';
 import type { BlockDef, ConnectionDef, SlaveDef } from '../../domain/model';
 import { encodeRaw, type PointMapping, type RawMemory } from '../../domain/mapping';
 import type { ScanRow, ScanStateView } from '../../shared/snapshot';
 import { scanOptionsSchema, type ScanOverrides } from '../../shared/scan-options';
+import type { RequestOutcome } from '../../shared/contracts';
+
+export type { RequestOutcome } from '../../shared/contracts';
 
 export type ConnectionState = 'offline' | 'connecting' | 'online' | 'error';
 
 export interface PollTarget {
   slave: SlaveDef;
   block: BlockDef;
-}
-
-export interface RequestOutcome {
-  result: ResultKind;
-  response: ModbusResponse | null;
-  exceptionCode: number | null;
-  durationMs: number;
-  requestAduHex: string;
-  responseAduHex: string | null;
-  traceId: string;
 }
 
 export interface RuntimeHooks {
@@ -34,6 +27,7 @@ export interface RuntimeHooks {
 interface PendingWaiter {
   ctx: RequestContext;
   traceId: string;
+  sourceKind: SourceKind;
   resolve(verdict: AduVerdict, adu: Uint8Array): void;
   abort(result: ResultKind, reason: string): void;
 }
@@ -43,6 +37,11 @@ const RETRY_BACKOFF_MS = 50;
 
 function hex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('hex');
+}
+
+function responsePduHex(aduHex: string, transport: 'rtu' | 'tcp'): string {
+  const adu = Buffer.from(aduHex, 'hex');
+  return transport === 'rtu' ? hex(adu.subarray(1, -2)) : hex(adu.subarray(7));
 }
 
 export class ConnectionRuntime {
@@ -68,6 +67,7 @@ export class ConnectionRuntime {
   private scanController: AbortController | null = null;
   private scanState: ScanStateView | null = null;
   private drainUntil = 0;
+  private recoveryContext: { traceId: string; unitId: number; functionCode: number; sourceKind: SourceKind } | null = null;
   private reconnectAt = 0;
   private reconnectDelay = 1000;
   private stopped = false;
@@ -125,7 +125,7 @@ export class ConnectionRuntime {
     // idempotent: a second start() must not stack a second scheduler interval
     if (!this.timer) this.timer = setInterval(() => this.tick(), 5);
     this.reconnectAt = 0;
-    if (this.state === 'connecting') return;
+    if (this.state === 'connecting' || this.state === 'online') return;
     await this.connect();
   }
 
@@ -152,6 +152,10 @@ export class ConnectionRuntime {
     this.setState('connecting');
     try {
       await this.transport.connect();
+      if (this.stopped) {
+        await this.transport.close().catch(() => undefined);
+        return;
+      }
       this.reconnectDelay = 1000;
       this.setState('online');
       const now = this.clock.now();
@@ -187,6 +191,8 @@ export class ConnectionRuntime {
   private handleFramerEvents(events: FramerEvent[]): void {
     for (const ev of events) {
       if (ev.type === 'parse-error') {
+        const waiter = this.waiter;
+        const recovery = this.recoveryContext;
         this.diagnostics.recordParseEvent({
           connectionId: this.connectionId,
           kind: ev.kind,
@@ -194,7 +200,10 @@ export class ConnectionRuntime {
           rawHex: hex(ev.raw),
           discarded: ev.discarded,
           recoveredCount: ev.recovered.length,
-          traceId: this.waiter?.traceId ?? null,
+          traceId: waiter?.traceId ?? recovery?.traceId ?? null,
+          unitId: waiter?.ctx.unitId ?? recovery?.unitId ?? null,
+          functionCode: waiter?.ctx.fc ?? recovery?.functionCode ?? null,
+          sourceKind: waiter?.sourceKind ?? recovery?.sourceKind ?? null,
           utc: new Date().toISOString(),
           mono: this.clock.now(),
         });
@@ -208,6 +217,27 @@ export class ConnectionRuntime {
 
   private deliverAdu(adu: Uint8Array): void {
     const waiter = this.waiter;
+    if (this.clock.now() < this.drainUntil) {
+      // No RTU request may start in this bounded quiet window. A late complete
+      // frame is recorded with the timed-out request context and never matched.
+      const recovery = this.recoveryContext;
+      this.diagnostics.recordParseEvent({
+        connectionId: this.connectionId,
+        kind: 'unexpected',
+        reason: 'late frame discarded during bounded drain / quiet recovery',
+        rawHex: hex(adu),
+        discarded: adu.length,
+        recoveredCount: 0,
+        traceId: recovery?.traceId ?? null,
+        unitId: recovery?.unitId ?? null,
+        functionCode: recovery?.functionCode ?? null,
+        sourceKind: recovery?.sourceKind ?? null,
+        utc: new Date().toISOString(),
+        mono: this.clock.now(),
+      });
+      this.hooks.onChange();
+      return;
+    }
     if (!waiter) {
       // No in-flight request: late/unsolicited frame. Record for diagnosis only.
       this.diagnostics.recordParseEvent({
@@ -215,25 +245,12 @@ export class ConnectionRuntime {
         kind: 'unexpected',
         reason: 'frame received with no in-flight request (late response)',
         rawHex: hex(adu),
-        discarded: 0,
-        recoveredCount: 0,
-        traceId: null,
-        utc: new Date().toISOString(),
-        mono: this.clock.now(),
-      });
-      this.hooks.onChange();
-      return;
-    }
-    if (this.clock.now() < this.drainUntil) {
-      // Quiet recovery: do not associate bytes with the next request.
-      this.diagnostics.recordParseEvent({
-        connectionId: this.connectionId,
-        kind: 'unexpected',
-        reason: 'frame discarded during bounded drain / quiet recovery',
-        rawHex: hex(adu),
         discarded: adu.length,
         recoveredCount: 0,
-        traceId: waiter.traceId,
+        traceId: null,
+        unitId: null,
+        functionCode: null,
+        sourceKind: null,
         utc: new Date().toISOString(),
         mono: this.clock.now(),
       });
@@ -251,6 +268,9 @@ export class ConnectionRuntime {
         discarded: 0,
         recoveredCount: 0,
         traceId: waiter.traceId,
+        unitId: waiter.ctx.unitId,
+        functionCode: waiter.ctx.fc,
+        sourceKind: waiter.sourceKind,
         utc: new Date().toISOString(),
         mono: this.clock.now(),
       });
@@ -266,6 +286,9 @@ export class ConnectionRuntime {
         discarded: adu.length,
         recoveredCount: 0,
         traceId: waiter.traceId,
+        unitId: waiter.ctx.unitId,
+        functionCode: waiter.ctx.fc,
+        sourceKind: waiter.sourceKind,
         utc: new Date().toISOString(),
         mono: this.clock.now(),
       });
@@ -304,7 +327,7 @@ export class ConnectionRuntime {
   ): Promise<RequestOutcome> {
     // Every path (including retry and write/read-back groups) must observe RTU recovery.
     while (this.clock.now() < this.drainUntil) await new Promise(resolve => setTimeout(resolve, 2));
-    if (this.drainUntil) { this.drainUntil = 0; this.framer.reset(); }
+    if (this.drainUntil) { this.drainUntil = 0; this.recoveryContext = null; this.framer.reset(); }
     const gap = this.config.interFrameMs - (this.clock.now() - this.lastRequestEnd);
     if (gap > 0) await new Promise(resolve => setTimeout(resolve, gap));
     const startedMono = this.clock.now();
@@ -341,6 +364,7 @@ export class ConnectionRuntime {
           // Bounded drain / quiet recovery before the next request may use the line.
           this.framer.reset();
           this.drainUntil = this.clock.now() + 20;
+          this.recoveryContext = { traceId, unitId, functionCode: req.fc, sourceKind: opts.sourceKind };
         }
         finish({
           result: 'timeout',
@@ -357,6 +381,7 @@ export class ConnectionRuntime {
       this.waiter = {
         ctx,
         traceId,
+        sourceKind: opts.sourceKind,
         abort: (result, reason) => {
           finish({
             result,
@@ -420,6 +445,8 @@ export class ConnectionRuntime {
       durationMs: outcome.durationMs,
       requestAduHex: outcome.requestAduHex,
       responseAduHex: outcome.responseAduHex,
+      requestPduHex: hex(pdu),
+      responsePduHex: outcome.responseAduHex ? responsePduHex(outcome.responseAduHex, this.transport.kind) : null,
       result: outcome.result,
       exceptionCode: outcome.exceptionCode,
       mbapTransactionId: tid,
@@ -475,6 +502,7 @@ export class ConnectionRuntime {
     if (events.length) this.handleFramerEvents(events);
     if (this.transport.kind === 'rtu' && this.drainUntil && now >= this.drainUntil) {
       this.drainUntil = 0;
+      this.recoveryContext = null;
       // Drop anything the drain window absorbed so it can never reach a later request.
       this.framer.reset();
     }
@@ -604,7 +632,7 @@ export class ConnectionRuntime {
     pointId: string;
     readBackRange: { start: number; length: number };
   }): Promise<{ result: ResultKind; exceptionCode: number | null; readBack: RequestOutcome | null }> {
-    const box: { outcome: RequestOutcome | null } = { outcome: null };
+    const box: { outcome: RequestOutcome | null; readBack: RequestOutcome | null } = { outcome: null, readBack: null };
     await this.enqueue(PRIORITY.write, `write ${opts.pointId}`, async () => {
       const { slave, block, mapping } = opts;
       const key = blockKey(slave.id, block.id);
@@ -645,7 +673,9 @@ export class ConnectionRuntime {
       }
 
       box.outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'write', sourceId: opts.pointId });
-      if (box.outcome.result !== 'ok') return;
+      // A timed-out write may have reached the device. Do not send it again; read
+      // back after the transport's recovery window and keep the command result unknown.
+      if (box.outcome.result !== 'ok' && box.outcome.result !== 'timeout') return;
 
       // Read back: confirms the device value and refreshes every shared point.
       const rb = await this.executeRequest(
@@ -655,12 +685,13 @@ export class ConnectionRuntime {
           : { kind: 'read', fc: 0x03, address: opts.readBackRange.start, quantity: opts.readBackRange.length },
         { sourceKind: 'readback', sourceId: opts.pointId },
       );
+      box.readBack = rb;
       if (rb.result === 'ok' && rb.response) {
         this.cache.applyReadResult(key, rb.response, rb.durationMs);
         this.hooks.onChange();
       }
     });
-    return { result: box.outcome?.result ?? 'transport', exceptionCode: box.outcome?.exceptionCode ?? null, readBack: box.outcome };
+    return { result: box.outcome?.result ?? 'transport', exceptionCode: box.outcome?.exceptionCode ?? null, readBack: box.readBack };
   }
 
   get scan(): ScanStateView | null {

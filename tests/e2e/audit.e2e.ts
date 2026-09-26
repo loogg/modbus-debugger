@@ -1,6 +1,7 @@
 import { browser, $, $$, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SerialPort } from 'serialport';
 import type { ModbusApi } from '../../src/shared/preload-api';
 import type { Workspace } from '../../src/domain/model';
 
@@ -11,7 +12,10 @@ const click = async (label: string) => { await $(`//button[normalize-space(.)="$
 const rail = async (label: string) => { await $(`//nav//button[contains(.,"${label}")]`).click(); };
 const fill = async (selector: string, value: string) => { const el = await $(selector); await el.click(); await browser.keys(['Control','a']); await browser.keys('Backspace'); await el.addValue(value); };
 const field = (label: string) => `//div[normalize-space(.)="${label}"]/following-sibling::input`;
+const drawerField = (label: string) => `//div[contains(@class,"fixed") and contains(@class,"z-40")]${field(label)}`;
+const savePointDrawer = () => $('//div[contains(@class,"fixed") and contains(@class,"z-40")]//button[normalize-space(.)="保存点位"]').click();
 const waitText = (fragment: string) => browser.waitUntil(async () => (await text()).includes(fragment), { timeout: 15000 });
+const figmaShot = async (name: string) => { fs.mkdirSync('out/audit/figma-current', { recursive: true }); await browser.saveScreenshot(path.resolve('out/audit/figma-current', `${name}.png`)); };
 const writeValue = async (name: string, value: string) => { await $(`//div[text()="${name}"]/following-sibling::div[2]`).doubleClick(); await fill('input.w-24', value); await browser.keys('Enter'); };
 // IPC is only used for fixture setup and read-only observation. Actions under test use real pointer/keyboard input.
 async function setup(ws = fixture()) {
@@ -24,6 +28,17 @@ async function setup(ws = fixture()) {
 }
 async function realtime() { await rail('实时'); await $('//button[contains(.,"伺服驱动器 A")]').click(); await browser.waitUntil(async () => (await snap()).points['slave-1::pt-speed']?.hasValue === true, { timeout: 15000 }); }
 async function openDialogFile(file: string) { const mock = await browser.electron.mock('dialog', 'showOpenDialog'); await mock.mockResolvedValue({ canceled: false, filePaths: [file] }); return mock; }
+async function serialPortAvailable(portPath: string): Promise<boolean> {
+  const probe = new SerialPort({ path: portPath, baudRate: 115200, autoOpen: false });
+  try {
+    await new Promise<void>((resolve, reject) => probe.open(error => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+    return true;
+  } catch {
+    if (probe.isOpen) await new Promise<void>(resolve => probe.close(() => resolve()));
+    return false;
+  }
+}
 
 let savedClipboard = '';
 describe('审计：实际按钮到持久化/通信结果', () => {
@@ -41,6 +56,13 @@ describe('审计：实际按钮到持久化/通信结果', () => {
   });
   it('RTU：通过 UI 新建指定端口连接与从站，实际读写并隔离 TCP', async function () {
     if (!process.env.MODBUS_RTU_MASTER_PORT) this.skip();
+    // The normal fixture already owns COM1. Release it before testing creation of a
+    // second RTU connection through the UI, while retaining the TCP isolation peer.
+    const isolated = fixture();
+    isolated.connections = isolated.connections.filter(connection => connection.id !== 'conn-rtu');
+    isolated.slaves = isolated.slaves.filter(slave => slave.connectionId !== 'conn-rtu');
+    await setup(isolated);
+    await browser.waitUntil(() => serialPortAvailable(process.env.MODBUS_RTU_MASTER_PORT!), { timeout: 15000, interval: 100, timeoutMsg: 'Existing RTU fixture did not release the master port' });
     await click('添加连接');
     await fill('//*[@role="dialog"]' + field('连接名称'), '审计 RTU');
     await fill('input[data-testid="port-combo"]', process.env.MODBUS_RTU_MASTER_PORT!);
@@ -77,6 +99,7 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await click('查看通信诊断'); await waitText('通信诊断');
   });
   it('扫描：折叠配置、停止保留结果、重扫替换结果、不自动添加从站', async () => {
+    const originalSlaveIds = (await snap()).workspace.slaves.map(slave => slave.id).sort();
     await click('扫描');
     expect(await $('details').getAttribute('open')).toBeNull();
     await click('开始扫描');
@@ -84,7 +107,7 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await click('停止扫描'); await waitText('扫描已停止');
     const stopped = (await snap()).connections['conn-tcp']!.scan!;
     expect(stopped.checked).toBeLessThan(247);
-    expect((await snap()).workspace.slaves).toHaveLength(1);
+    expect((await snap()).workspace.slaves.map(slave => slave.id).sort()).toEqual(originalSlaveIds);
     await fill('[data-testid="scan-from"]', '2'); await fill('[data-testid="scan-to"]', '3');
     await $('summary').click(); await fill('input[aria-label="起始地址（0-based）"]', '128');
     await click('开始扫描'); await waitText('扫描摘要');
@@ -109,6 +132,23 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await click('刷新全部');
     await browser.waitUntil(async () => (await snap()).transactions.at(-1)?.traceId !== last);
   });
+  it('实时点位通过可见入口打开原始数据检查器并展示设备确认寄存器', async () => {
+    await realtime();
+    const confirmed = (await snap()).blocks['slave-1::blk-ctrl']?.registers?.slice(0, 2);
+    expect(confirmed).toHaveLength(2);
+    await $('//div[text()="母线电压"]/following-sibling::div[2]//button[normalize-space(.)="原始数据"]').click();
+    await waitText('原始数据检查器');
+    const drawer = await $('div.fixed.inset-0.z-40 > div.absolute.right-0');
+    const content = await drawer.getText();
+    expect(content).toContain('原始寄存器');
+    expect(content).toContain('Float32 · ABCD');
+    for (const register of confirmed!) expect(content).toContain(`0x${register.toString(16).toUpperCase().padStart(4, '0')}`);
+    const bytes = confirmed!.flatMap((register) => [(register >> 8) & 0xff, register & 0xff]).map((value) => value.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+    expect(content).toContain(`字节：${bytes}`);
+    await figmaShot('19-realtime-raw-inspector-drawer');
+    await click('查看最近通信');
+    await waitText('通信诊断');
+  });
   it('趋势：暂停冻结时间、恢复继续、窗口配置保存、显隐与删除信号', async () => {
     await rail('趋势'); await click('图表'); await browser.pause(500);
     await click('暂停'); const end = await $('[data-testid="trend-window"]').getAttribute('data-end-ms');
@@ -128,24 +168,28 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await fill('input[placeholder*="搜索"]','impossible-search'); expect(await $$('tbody tr')).toHaveLength(0);
     await fill('input[placeholder*="搜索"]',''); await click('仅异常'); expect((await $$('tbody tr').map(row => row.getText())).every(row => !row.includes('成功'))).toBe(true);
     await click('仅异常'); await click('导出日志');
-    expect(await browser.electron.execute(electron => electron.clipboard.readText())).toContain('FC3');
+    expect(await browser.electron.execute(electron => electron.clipboard.readText())).toContain('FC03');
     await click('清空'); expect(await $$('tbody tr')).toHaveLength(0);
     await click('继续显示'); await waitText('FC03');
     await $('//tbody/tr[1]').click(); expect(await text()).toContain('响应');
   });
   it('模板：复制隔离 ID、内存显示真实数据、编辑保存、导入 CSV 的 UInt16 与宽度', async () => {
+    const originalTemplates = (await snap()).workspace.templates;
     await rail('模板'); await click('复制模板');
-    await browser.waitUntil(async () => (await snap()).workspace.templates.length === 2);
+    await browser.waitUntil(async () => (await snap()).workspace.templates.length === originalTemplates.length + 1);
     const templates = (await snap()).workspace.templates;
-    expect(new Set(templates.flatMap(t => t.points.map(p => p.id))).size).toBe(18);
+    const copied = templates.find(template => !originalTemplates.some(original => original.id === template.id));
+    expect(copied?.points).toHaveLength(originalTemplates.find(template => template.id === 'tpl-servo')!.points.length);
+    const pointIds = templates.flatMap(template => template.points.map(point => point.id));
+    expect(new Set(pointIds).size).toBe(pointIds.length);
     await $('//nav[@aria-label="设备模板树"]//button[contains(.,"ServoDrive V2") and not(contains(.,"副本")) and not(@aria-expanded)]').click();
     await $('//nav[@aria-label="设备模板树"]//button[contains(.,"控制寄存器")]').click(); await click('内存布局');
     expect(await $('[data-testid="memory-offset-0"]').getText()).toContain('母线电压');
     await click('点位映射'); await click('导入寄存器表');
     await browser.electron.execute(electron => electron.clipboard.writeText('Address,Name,Type,Access,Unit,Scale,Offset\n100,Unsigned,UInt16,RW,,1,0\n102,Wide,Float32,R,,1,0'));
     await click('粘贴表格'); await waitText('Unsigned'); await click('导入 2 个点位');
-    await browser.waitUntil(async () => (await snap()).workspace.templates[0]!.points.some(p => p.name === 'Wide'));
-    const template = (await snap()).workspace.templates[0]!;
+    await browser.waitUntil(async () => (await snap()).workspace.templates.find(template => template.id === 'tpl-servo')?.points.some(point => point.name === 'Wide') === true);
+    const template = (await snap()).workspace.templates.find(item => item.id === 'tpl-servo')!;
     expect(template.points.find(p => p.name === 'Unsigned')?.mapping.rawType).toBe('UInt16');
     expect(template.blocks.find(b => b.start === 100)?.length).toBe(4);
     await click('保存');
@@ -173,7 +217,9 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     const save = await browser.electron.mock('dialog','showSaveDialog'); await save.mockResolvedValue({ canceled: false, filePath: target });
     await click('另存为'); await browser.waitUntil(() => fs.existsSync(target));
     expect(JSON.parse(fs.readFileSync(target,'utf8')).name).toBe(fixture().name);
-    await click('导出工作区'); expect(JSON.parse(await browser.electron.execute(electron => electron.clipboard.readText())).templates).toHaveLength(1);
+    await click('导出工作区');
+    const exported = JSON.parse(await browser.electron.execute(electron => electron.clipboard.readText())) as Workspace;
+    expect(exported.templates.map(template => template.id).sort()).toEqual(fixture().templates.map(template => template.id).sort());
     const invalid = path.resolve(process.env.MODBUS_TEST_RUN_DIR!, 'invalid.json'); fs.writeFileSync(invalid,'invalid json');
     await openDialogFile(invalid); await click('导入工作区'); await waitText('操作失败'); expect((await snap()).workspace.name).toBe(fixture().name);
     await click('日志'); await click('清空通信诊断'); await click('取消');
@@ -181,16 +227,18 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await click('清空通信诊断'); const rev = (await snap()).diagRev; await click('清空'); await browser.waitUntil(async () => (await snap()).diagRev > rev);
   });
   it('新建模板/块/点位、编辑校验、导出模板与独立导入', async () => {
+    const originalTemplateIds = new Set((await snap()).workspace.templates.map(template => template.id));
     await rail('模板'); await click('新建设备模板');
-    await browser.waitUntil(async () => (await snap()).workspace.templates.length === 2);
+    await browser.waitUntil(async () => (await snap()).workspace.templates.length === originalTemplateIds.size + 1);
+    const createdId = (await snap()).workspace.templates.find(template => !originalTemplateIds.has(template.id))!.id;
     await click('＋ 添加数据块'); await fill(field('名称'), 'Audit block'); await fill(field('起始地址'), '30'); await fill(field('长度'), '4'); await click('保存数据块');
-    await waitText('Audit block'); await click('＋ 添加点位'); await fill(field('名称'), 'Audit point');
-    await fill(field('寄存器偏移'), '10'); await click('保存点位'); await waitText('操作失败');
+    await waitText('Audit block'); await click('＋ 添加点位'); await fill(drawerField('名称'), 'Audit point');
+    await fill(drawerField('寄存器偏移'), '10'); await savePointDrawer(); await waitText('操作失败');
     expect(await $('//button[text()="保存点位"]').isExisting()).toBe(true);
-    await fill(field('寄存器偏移'), '1'); await click('保存点位');
-    await browser.waitUntil(async () => (await snap()).workspace.templates[1]?.points.length === 1);
-    await click('编辑点位'); await fill(field('名称'), 'Edited point'); await click('保存点位');
-    await browser.waitUntil(async () => (await snap()).workspace.templates[1]?.points[0]?.name === 'Edited point');
+    await fill(drawerField('寄存器偏移'), '1'); await savePointDrawer();
+    await browser.waitUntil(async () => (await snap()).workspace.templates.find(template => template.id === createdId)?.points.length === 1);
+    await click('编辑点位'); await fill(drawerField('名称'), 'Edited point'); await savePointDrawer();
+    await browser.waitUntil(async () => (await snap()).workspace.templates.find(template => template.id === createdId)?.points[0]?.name === 'Edited point');
     await click('导出模板'); const exported = await browser.electron.execute(electron => electron.clipboard.readText());
     expect(JSON.parse(exported).points[0].mapping.offset).toBe(1);
     const file = path.resolve(process.env.MODBUS_TEST_RUN_DIR!, 'standalone-template.json'); fs.writeFileSync(file, exported);
@@ -200,7 +248,11 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     expect((await snap()).workspace.templates[0]?.points[0]?.name).toBe('Edited point');
   });
   it('新建趋势组、添加信号、复制/删除组、实时选择加入趋势', async () => {
-    await rail('趋势'); await click('新建趋势组'); await fill(field('名称'), 'Audit group'); await click('创建趋势组');
+    await rail('趋势'); await click('新建趋势组');
+    const groupDialog = await $('[role="dialog"]'); await groupDialog.waitForDisplayed();
+    expect(await groupDialog.getText()).toContain('默认时间窗口');
+    await figmaShot('16-new-trend-group-dialog');
+    await fill(field('名称'), 'Audit group'); await click('创建趋势组');
     await $('//*[@role="dialog"]//button[@role="checkbox"]').click();
     await $('//*[@role="dialog"]//button[contains(.,"添加") and not(@role="checkbox")]').click();
     await browser.waitUntil(async () => (await snap()).workspace.trendGroups.find(g => g.name === 'Audit group')?.signals.length === 1);

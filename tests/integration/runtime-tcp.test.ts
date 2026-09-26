@@ -107,6 +107,10 @@ describe('ConnectionRuntime over fake TCP transport', () => {
     expect(tx.sourceKind).toBe('poll');
     expect(tx.sourceId).toBe('b1');
     expect(tx.requestAduHex.length).toBeGreaterThan(0);
+    expect(tx.requestPduHex).toBe('0300000004');
+    expect(tx.responsePduHex).toBe('03080001000200030004');
+    expect(tx.requestAduHex).not.toBe(tx.requestPduHex);
+    expect(tx.responseAduHex).not.toBe(tx.responsePduHex);
     expect(tx.mbapTransactionId).not.toBeNull();
     expect(tx.durationMs).not.toBeNull();
     await ctx.runtime.stop();
@@ -173,6 +177,7 @@ describe('ConnectionRuntime over fake TCP transport', () => {
     const res = await ctx.runtime.writePoint({ slave, block, mapping: point.mapping, rawValue: 99, pointId: 'p1', readBackRange: { start: 0, length: 4 } });
     expect(res.result).toBe('exception');
     expect(res.exceptionCode).toBe(0x02);
+    expect(ctx.diag.recentTransactions(10).find((tx) => tx.sourceKind === 'write')?.responsePduHex).toBe('8602');
     const entry = ctx.cache.get(blockKey('s1', 'b1'));
     if (entry?.memory.kind === 'registers') expect(entry.memory.registers[0]).toBe(5);
     await ctx.runtime.stop();
@@ -379,18 +384,41 @@ describe('ConnectionRuntime over fake TCP transport', () => {
 
   it('unexpected (wrong tid) frame is diagnosed and the matching frame still completes the request', async () => {
     let polluted = false;
+    const wrongTid = respRegs([9, 9, 9, 9], 0x0bad);
     ctx.transport.onResponse((adu) => {
       if (!polluted) {
         polluted = true;
-        return [respRegs([9, 9, 9, 9], 0x0bad), respRegs([1, 2, 3, 4], tidOf(adu))];
+        return [wrongTid, respRegs([1, 2, 3, 4], tidOf(adu))];
       }
       return [respRegs([1, 2, 3, 4], tidOf(adu))];
     });
     await ctx.runtime.start();
     await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
     await waitFor(() => ctx.diag.recentParseEvents(20).some((e) => e.kind === 'unexpected'));
+    const unexpected = ctx.diag.recentParseEvents(20).find((event) => event.kind === 'unexpected');
+    expect(unexpected).toMatchObject({
+      connectionId: 'c1', kind: 'unexpected', reason: expect.stringContaining('transaction id mismatch'),
+      rawHex: hex(wrongTid), discarded: 0, recoveredCount: 0,
+      traceId: expect.any(String), unitId: 1, functionCode: 3, sourceKind: 'poll',
+    });
     const entry = ctx.cache.get(blockKey('s1', 'b1'));
     if (entry?.memory.kind === 'registers') expect(entry.memory.registers[0]).toBe(1);
+    await ctx.runtime.stop();
+  });
+
+  it('records malformed prefix bytes and request context while resynchronizing to a good TCP frame', async () => {
+    ctx.transport.onResponse((adu) => {
+      const good = respRegs([1, 2, 3, 4], tidOf(adu));
+      return [new Uint8Array([0xff, ...good])];
+    });
+    await ctx.runtime.start();
+    await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
+    const malformed = ctx.diag.recentParseEvents(20).find((event) => event.kind === 'malformed');
+    expect(malformed).toMatchObject({
+      connectionId: 'c1', kind: 'malformed', reason: expect.stringContaining('illegal MBAP'),
+      rawHex: 'ff', discarded: 1, recoveredCount: 0,
+      traceId: expect.any(String), unitId: 1, functionCode: 3, sourceKind: 'poll',
+    });
     await ctx.runtime.stop();
   });
 
@@ -443,13 +471,22 @@ describe('retry policy', () => {
   });
   it('writes do NOT retry on timeout (read-back resolves truth)', async () => {
     const ctx = make(2);
-    ctx.transport.onResponse((adu) => (adu[7] === 0x06 ? null : [respRegs([1, 0, 0, 0], tidOf(adu))]));
+    let applied = false;
+    ctx.transport.onResponse((adu) => {
+      if (adu[7] === 0x06) { applied = true; return null; }
+      return [respRegs([applied ? 42 : 1, 0, 0, 0], tidOf(adu))];
+    });
     await ctx.runtime.start();
     await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
     const res = await ctx.runtime.writePoint({ slave, block, mapping: point.mapping, rawValue: 42, pointId: 'p1', readBackRange: { start: 0, length: 4 } });
     expect(res.result).toBe('timeout');
+    expect(res.readBack?.result).toBe('ok');
+    expect(res.readBack?.response?.kind === 'registers' && res.readBack.response.registers[0]).toBe(42);
     const fc06 = ctx.diag.recentTransactions(40).filter((t) => t.functionCode === 0x06);
     expect(fc06.length).toBe(1);
+    expect(ctx.diag.recentTransactions(40).filter((t) => t.sourceKind === 'readback')).toHaveLength(1);
+    const confirmed = ctx.cache.get(blockKey('s1', 'b1'))?.memory;
+    expect(confirmed?.kind === 'registers' && confirmed.registers[0]).toBe(42);
     await ctx.runtime.stop();
   });
 });

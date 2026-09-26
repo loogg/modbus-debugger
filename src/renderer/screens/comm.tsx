@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp, useHealth, useParseEvents, useTransactions, useWorkspace } from '../store/app';
-import { Button, InfoBand, PageHeader, TextInput } from '../components/ui';
+import { Button, InfoBand, OverflowMenu, PageHeader, TextInput } from '../components/ui';
 import { DataTable, type Column } from '../components/table';
 import { NumericChart, type LineSeries } from '../components/chart';
-import type { BlockHealth, HealthSample, ResultKind, TransactionRecord } from '../../main/runtime/diagnostics';
+import type { BlockHealth, HealthSample, ResultKind, TransactionRecord } from '../../shared/contracts';
 import { fmtTimeMs } from '../time';
 import { EXCEPTION_NAMES } from '../../domain/protocol';
 import { useTranslation } from '../i18n';
@@ -28,6 +28,31 @@ const RESULT_COLOR: Record<string, string> = {
   transport: 'text-err',
 };
 
+export interface CommunicationMessageRow {
+  key: string;
+  transaction: TransactionRecord;
+  direction: 'TX' | 'RX';
+  timeUtc: string;
+}
+
+/** Newest first, capped by visible messages rather than by request/response pairs. */
+export function transactionMessageRows(transactions: TransactionRecord[], limit = 200): CommunicationMessageRow[] {
+  if (limit <= 0) return [];
+  const rows: CommunicationMessageRow[] = [];
+  for (const transaction of transactions) {
+    rows.push({ key: `${transaction.traceId}:TX`, transaction, direction: 'TX', timeUtc: transaction.startUtc });
+    if (transaction.responseAduHex) {
+      const started = Date.parse(transaction.startUtc);
+      const elapsed = transaction.durationMs;
+      const timeUtc = Number.isFinite(started) && elapsed !== null && Number.isFinite(elapsed)
+        ? new Date(started + Math.max(0, elapsed)).toISOString()
+        : transaction.startUtc;
+      rows.push({ key: `${transaction.traceId}:RX`, transaction, direction: 'RX', timeUtc });
+    }
+  }
+  return rows.slice(-Math.max(0, limit)).reverse();
+}
+
 export function CommScreen() {
   const { t } = useTranslation();
   const resultLabel = useCallback((kind: ResultKind) => t(RESULT_LABEL[kind]), [t]);
@@ -40,7 +65,7 @@ export function CommScreen() {
   const toast = useApp((s) => s.toast);
   const [search, setSearch] = useState('');
   const [onlyErrors, setOnlyErrors] = useState(false);
-  const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
+  const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
   const [paused, setPaused] = useState<TransactionRecord[] | null>(null);
   const slaveFilter = useApp(s => s.commSlaveFilter);
   const resultFilter = useApp(s => s.commResultFilter);
@@ -48,8 +73,7 @@ export function CommScreen() {
   const connectionId = selection.connectionId ?? workspace?.connections[0]?.id ?? null;
   const connection = workspace?.connections.find((c) => c.id === connectionId);
 
-  // Narrow slice: the transactions array keeps its identity between deltas that only
-  // carry point values, so this filter (up to 500 records) does not run ten times a second.
+  // Keep filters at transaction scope: a result/slave/search choice applies to both frames.
   const transactions = useMemo(() => {
     const list = (paused ?? allTransactions).filter((t) => t.connectionId === connectionId);
     return list
@@ -58,25 +82,24 @@ export function CommScreen() {
         return (!slave || slaveFilter[slave.id] !== false) && resultFilter[tx.result === 'ok' ? 'ok' : tx.result === 'timeout' ? 'timeout' : tx.result === 'exception' ? 'exception' : 'other'];
       })
       .filter((t) => !onlyErrors || t.result !== 'ok')
-      .filter((t) => !search || t.summary.includes(search) || String(t.functionCode).includes(search) || t.traceId.includes(search))
-      .slice(-200)
-      .reverse();
+      .filter((t) => !search || t.summary.includes(search) || String(t.functionCode).includes(search) || t.traceId.includes(search));
   }, [allTransactions, paused, connectionId, onlyErrors, search, workspace, slaveFilter, resultFilter]);
+  const messageRows = useMemo(() => transactionMessageRows(transactions), [transactions]);
 
   const connectionName = connection?.name ?? '';
   // Stable identity is required for DataTable's row memo to bail out on unchanged rows.
-  const cols = useMemo<Array<Column<TransactionRecord>>>(() => [
-    { id: 'time', header: t('comm.colTime'), width: 110, render: (r) => <span className="mono text-xs">{fmtTimeMs(r.startUtc)}</span> },
+  const cols = useMemo<Array<Column<CommunicationMessageRow>>>(() => [
+    { id: 'time', header: t('comm.colTime'), width: 110, render: (r) => <span className="mono text-xs">{fmtTimeMs(r.timeUtc)}</span> },
     { id: 'conn', header: t('comm.colConnection'), width: 90, render: () => <span className="text-xs">{connectionName}</span> },
-    { id: 'slave', header: t('comm.colSlave'), width: 80, render: (r) => <span className="text-xs">{t('comm.slaveUnit', { id: r.unitId })}</span> },
-    { id: 'dir', header: t('comm.colDirection'), width: 60, render: (r) => <span className={`text-xs font-medium ${r.responseAduHex || r.result !== 'ok' ? 'text-ok' : 'text-accent'}`}>{r.result === 'ok' ? 'RX' : 'TX'}</span> },
-    { id: 'fc', header: t('comm.colFunctionCode'), width: 80, render: (r) => <span className="text-xs text-accent mono">FC{r.functionCode.toString(16).toUpperCase().padStart(2, '0')}</span> },
-    { id: 'range', header: t('comm.colRangeValue'), width: 180, render: (r) => <span className="text-xs">{r.summary}</span> },
-    { id: 'result', header: t('comm.colResult'), width: 90, render: (r) => <span className={`text-xs ${RESULT_COLOR[r.result]}`}>{resultLabel(r.result)}</span> },
-    { id: 'dur', header: t('comm.colDuration'), width: 90, render: (r) => <span className="text-xs text-ink2">{r.durationMs !== null ? `${r.durationMs.toFixed(1)} ms` : '—'}</span> },
+    { id: 'slave', header: t('comm.colSlave'), width: 80, render: (r) => <span className="text-xs">{t('comm.slaveUnit', { id: r.transaction.unitId })}</span> },
+    { id: 'dir', header: t('comm.colDirection'), width: 60, render: (r) => <span className={`text-xs font-medium ${r.direction === 'RX' ? 'text-ok' : 'text-accent'}`}>{r.direction}</span> },
+    { id: 'fc', header: t('comm.colFunctionCode'), width: 80, render: (r) => <span className="text-xs text-accent mono">FC{(r.direction === 'RX' && r.transaction.result === 'exception' ? r.transaction.functionCode | 0x80 : r.transaction.functionCode).toString(16).toUpperCase().padStart(2, '0')}</span> },
+    { id: 'range', header: t('comm.colRangeValue'), width: 180, render: (r) => <span className="text-xs">{r.direction === 'RX' ? `${(r.transaction.responseAduHex?.length ?? 0) / 2} bytes` : r.transaction.summary}</span> },
+    { id: 'result', header: t('comm.colResult'), width: 90, render: (r) => <span className={`text-xs ${r.direction === 'TX' && r.transaction.responseAduHex ? 'text-ink2' : RESULT_COLOR[r.transaction.result]}`}>{r.direction === 'TX' && r.transaction.responseAduHex ? t('comm.sent') : resultLabel(r.transaction.result)}</span> },
+    { id: 'dur', header: t('comm.colDuration'), width: 90, render: (r) => <span className="text-xs text-ink2">{(r.direction === 'RX' || !r.transaction.responseAduHex) && r.transaction.durationMs !== null ? `${r.transaction.durationMs.toFixed(1)} ms` : '—'}</span> },
   ], [connectionName, resultLabel, t]);
 
-  const handleRowClick = useCallback((r: TransactionRecord) => setSelectedTrace(r.traceId), []);
+  const handleRowClick = useCallback((r: CommunicationMessageRow) => setSelectedRowKey(r.key), []);
 
   if (!workspace || !connection) {
     return (
@@ -87,12 +110,28 @@ export function CommScreen() {
     );
   }
 
-  const selected = transactions.find((t) => t.traceId === selectedTrace) ?? transactions[0];
+  const selectedMessage = messageRows.find((row) => row.key === selectedRowKey) ?? messageRows[0];
+  const selected = selectedMessage?.transaction;
 
   if (selection.commView === 'health') return <HealthView connectionId={connection.id} connectionName={connection.name} />;
   if (selection.commView === 'trace') return <TraceView connectionId={connection.id} />;
 
-
+  const clearDiagnostics = async () => {
+    const res = await command({ type: 'diagnostics.clear' });
+    if (res.ok && paused) setPaused([]);
+  };
+  const exportLog = () => {
+    const text = messageRows.map((row) => {
+      const tx = row.transaction;
+      const result = row.direction === 'TX' && tx.responseAduHex ? t('comm.sent') : resultLabel(tx.result);
+      const functionCode = row.direction === 'RX' && tx.result === 'exception' ? tx.functionCode | 0x80 : tx.functionCode;
+      const range = row.direction === 'RX' ? `${tx.responseAduHex!.length / 2} bytes` : tx.summary;
+      const duration = row.direction === 'RX' || !tx.responseAduHex ? (tx.durationMs === null ? '—' : `${tx.durationMs.toFixed(1)} ms`) : '—';
+      return `${row.timeUtc} ${row.direction} FC${functionCode.toString(16).toUpperCase().padStart(2, '0')} ${range} ${result} ${duration}`;
+    }).join('\n');
+    void navigator.clipboard.writeText(text);
+    toast({ kind: 'success', title: t('comm.exportedToast') });
+  };
 
   return (
     <>
@@ -101,19 +140,19 @@ export function CommScreen() {
         subtitle={t('comm.subtitle')}
         actions={
           <>
-            <Button onClick={() => select({ commView: 'health' })}>{t('comm.health')}</Button>
-            <Button onClick={() => setPaused(paused ? null : [...allTransactions])}>{paused ? t('comm.resume') : t('comm.pause')}</Button>
-            <Button onClick={async () => { const res = await command({ type: 'diagnostics.clear' }); if (res.ok && paused) setPaused([]); }}>{t('comm.clear')}</Button>
-            <Button
-              variant="primary"
-              onClick={() => {
-                const text = transactions.map((t) => `${t.startUtc} FC${t.functionCode} ${t.summary} ${resultLabel(t.result)} ${t.durationMs ?? ''}ms`).join('\n');
-                void navigator.clipboard.writeText(text);
-                toast({ kind: 'success', title: t('comm.exportedToast') });
-              }}
-            >
-              {t('comm.exportLog')}
-            </Button>
+            <div className="hidden items-center gap-3 xl:flex">
+              <Button onClick={() => select({ commView: 'health' })}>{t('comm.health')}</Button>
+              <Button onClick={() => setPaused(paused ? null : [...allTransactions])}>{paused ? t('comm.resume') : t('comm.pause')}</Button>
+              <Button onClick={() => { void clearDiagnostics(); }}>{t('comm.clear')}</Button>
+            </div>
+            <div className="flex items-center gap-2 xl:hidden">
+              <Button onClick={() => setPaused(paused ? null : [...allTransactions])}>{paused ? t('comm.resume') : t('comm.pause')}</Button>
+              <OverflowMenu items={[
+                { label: t('comm.health'), onSelect: () => select({ commView: 'health' }) },
+                { label: t('comm.clear'), onSelect: () => { void clearDiagnostics(); }, danger: true },
+              ]} />
+            </div>
+            <Button variant="primary" onClick={exportLog}>{t('comm.exportLog')}</Button>
           </>
         }
       />
@@ -128,10 +167,10 @@ export function CommScreen() {
       </div>
       <DataTable
         columns={cols}
-        rows={transactions}
-        rowKey={(r) => r.traceId}
+        rows={messageRows}
+        rowKey={(r) => r.key}
         maxHeight={420}
-        selectedKey={selected?.traceId ?? null}
+        selectedKey={selectedMessage?.key ?? null}
         onRowClick={handleRowClick}
       />
       {selected ? (
@@ -326,11 +365,11 @@ function TraceView(props: { connectionId: string }) {
     [allTransactions, connectionId],
   );
   const selected = txs.find((t) => t.traceId === selectedTrace) ?? txs[0];
-  const pointIndexName = (id: string | null) => {
-    if (!id || !workspace) return null;
-    const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === id);
-    return point?.name ?? null;
-  };
+  const selectedSlave = workspace?.slaves.find((slave) => slave.connectionId === connectionId && slave.unitId === selected?.unitId);
+  const selectedTemplate = workspace?.templates.find((template) => template.id === selectedSlave?.templateId);
+  const relatedPoints = selected?.sourceKind === 'poll'
+    ? selectedTemplate?.points.filter((point) => point.blockId === selected.sourceId) ?? []
+    : selectedTemplate?.points.filter((point) => point.id === selected?.sourceId) ?? [];
   const traceCols = useMemo<Array<Column<TransactionRecord>>>(
     () => [
       { id: 'time', header: t('comm.colTime'), width: 110, render: (r) => <span className="mono text-xs">{fmtTimeMs(r.startUtc)}</span> },
@@ -360,12 +399,12 @@ function TraceView(props: { connectionId: string }) {
             <div className="text-xs text-ink2 mb-1">{t('comm.requestSource')}</div>
             <div className="text-sm font-bold mb-3">{selected.sourceKind === 'poll' ? t('comm.sourcePoll') : selected.sourceKind === 'write' ? t('comm.sourceWrite') : selected.sourceKind === 'readback' ? t('comm.sourceReadback') : selected.sourceKind === 'temporary-read' ? t('comm.sourceTemporaryRead') : selected.sourceKind === 'scanner' ? t('comm.sourceScanner') : 'RMW'}</div>
             <div className="text-xs text-ink2 mb-1">{t('comm.device')}</div>
-            <div className="text-sm mb-3">{workspace?.slaves.find((s) => s.unitId === selected.unitId && s.connectionId === props.connectionId)?.name ?? t('comm.slaveUnit', { id: selected.unitId })} · Unit {selected.unitId}</div>
+            <div className="text-sm mb-3">{selectedSlave?.name ?? t('comm.slaveUnit', { id: selected.unitId })} · Unit {selected.unitId}</div>
             <div className="text-xs text-ink2 mb-1">{t('comm.block')}</div>
-            <div className="text-sm mb-3">{workspace?.templates.flatMap((t) => t.blocks).find((b) => b.id === selected.sourceId)?.name ?? selected.sourceId ?? '—'}</div>
+            <div className="text-sm mb-3">{selectedTemplate?.blocks.find((block) => block.id === selected.sourceId)?.name ?? selected.sourceId ?? '—'}</div>
             <div className="text-xs text-ink2 mb-1">{t('comm.relatedPoints')}</div>
-            <div className="text-sm mb-3">{pointIndexName(selected.sourceId) ? `${pointIndexName(selected.sourceId)}` : selected.sourceKind === 'poll' ? t('comm.pointCount', { points: workspace?.templates.flatMap((tpl) => tpl.points).filter((p) => p.blockId === selected.sourceId).length ?? 0 }) : '—'}</div>
-            <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => { const slave = workspace?.slaves.find(s => s.connectionId === connectionId && s.unitId === selected.unitId); const point = workspace?.templates.flatMap(t => t.points).find(p => p.id === selected.sourceId); const blockId = point?.blockId ?? selected.sourceId; select({ connectionId, slaveId: slave?.id ?? null, realtimeScope: blockId ? 'block' : 'device', blockId }); setModule('realtime'); }}>{t('comm.openRealtime')}</button>
+            <div className="mb-3 max-h-20 overflow-y-auto text-sm">{relatedPoints.length ? `${t('comm.pointCount', { points: relatedPoints.length })}：${relatedPoints.map((point) => point.name).join(' / ')}` : '—'}</div>
+            <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => { const point = selectedTemplate?.points.find(item => item.id === selected.sourceId); const blockId = point?.blockId ?? selected.sourceId; select({ connectionId, slaveId: selectedSlave?.id ?? null, realtimeScope: blockId ? 'block' : 'device', blockId }); setModule('realtime'); }}>{t('comm.openRealtime')}</button>
           </div>
           <div className="rounded-card border border-line bg-surface p-5">
             <div className="text-sm font-bold mb-3">{t('comm.rawFrame')}</div>

@@ -18,6 +18,14 @@ export function resolveAppTransport(customUrl?: string): AppTransport {
   const transportParam = url?.searchParams.get('transport')?.toLowerCase();
   const fixtureParam = (url?.searchParams.get('fixture')?.toLowerCase() ?? 'default') as MockFixtureName;
   const bridgeUrlParam = url?.searchParams.get('bridgeUrl') ?? undefined;
+  const electronApi = typeof window !== 'undefined' ? (window as unknown as { modbus?: ModbusApi }).modbus : undefined;
+
+  // Query parameters can switch review transports only in development. A packaged
+  // renderer always consumes the authoritative Main service through preload.
+  if (import.meta.env.PROD) {
+    if (!electronApi) throw new Error('Packaged renderer requires the typed preload API');
+    return new ElectronTransport(electronApi);
+  }
 
   // 1. Explicit mock
   if (transportParam === 'mock') {
@@ -30,7 +38,6 @@ export function resolveAppTransport(customUrl?: string): AppTransport {
   }
 
   // 3. Electron native preload if present
-  const electronApi = typeof window !== 'undefined' ? (window as unknown as { modbus?: ModbusApi }).modbus : undefined;
   if (electronApi && transportParam !== 'browser') {
     return new ElectronTransport(electronApi);
   }

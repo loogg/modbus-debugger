@@ -1,77 +1,14 @@
-export type ResultKind =
-  | 'ok'
-  | 'exception'
-  | 'unexpected'
-  | 'timeout'
-  | 'crc'
-  | 'malformed'
-  | 'transport';
+import type { BlockHealth, ConnectionHealth, HealthSample, ParseEventRecord, TransactionRecord } from '../../shared/contracts';
 
-export type SourceKind = 'poll' | 'write' | 'readback' | 'temporary-read' | 'scanner' | 'rmw-read' | 'rmw-write';
-
-export interface TransactionRecord {
-  traceId: string;
-  connectionId: string;
-  unitId: number;
-  functionCode: number;
-  sourceKind: SourceKind;
-  sourceId: string | null;
-  startUtc: string;
-  startMono: number;
-  durationMs: number | null;
-  requestAduHex: string;
-  responseAduHex: string | null;
-  result: ResultKind;
-  exceptionCode: number | null;
-  mbapTransactionId: number | null;
-  summary: string;
-}
-
-export interface ParseEventRecord {
-  id: string;
-  connectionId: string;
-  kind: 'crc' | 'malformed' | 'unexpected' | 'truncated' | 'overflow';
-  reason: string;
-  rawHex: string;
-  discarded: number;
-  recoveredCount: number;
-  traceId: string | null;
-  utc: string;
-  mono: number;
-}
-
-export interface BlockHealth {
-  slaveId: string;
-  blockId: string;
-  blockName: string;
-  configuredPeriodMs: number;
-  actualPeriodMs: number | null;
-  p95Ms: number | null;
-  timeoutRate: number;
-}
-
-/** One 1 Hz sample of the computed health, kept for the 连接健康 trend chart. */
-export interface HealthSample {
-  /** epoch ms */
-  t: number;
-  busLoadPercent: number;
-  p95Ms: number;
-  requestRatePerSec: number;
-}
-
-export interface ConnectionHealth {
-  connectionId: string;
-  busLoadPercent: number;
-  requestRatePerSec: number;
-  p50Ms: number;
-  p95Ms: number;
-  timeouts: number;
-  crcErrors: number;
-  exceptions: number;
-  unexpected: number;
-  windowSec: number;
-  blocks: BlockHealth[];
-}
+export type {
+  BlockHealth,
+  ConnectionHealth,
+  HealthSample,
+  ParseEventRecord,
+  ResultKind,
+  SourceKind,
+  TransactionRecord,
+} from '../../shared/contracts';
 
 const RING = 5000;
 /** 1 Hz sampling => 10 minutes of health history per connection. */

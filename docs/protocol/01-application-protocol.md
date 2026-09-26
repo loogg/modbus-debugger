@@ -1,7 +1,7 @@
 # Modbus 协议参考（实现依据）
 
 来源：Modbus Application Protocol V1.1b3、Modbus over Serial Line V1.02。
-本目录为仓库内实现参考；冲突时以 `docs/project-spec.md` 与 `docs/architecture.md` 的 Override 为准。
+本目录记录线协议格式与边界；报文合法性以官方规范为准。工程分帧策略的显式例外见 [RTU 分帧说明](02-rtu-framing.md) 与 [架构](../architecture.md)，文档职责与冲突规则见 [设计与规范来源](../design-source.md)。
 
 ## 功能码（正式范围）
 

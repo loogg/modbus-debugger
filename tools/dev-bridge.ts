@@ -6,6 +6,7 @@ import { WorkspaceService } from '../src/main/services/workspace';
 import { HistoryStore } from '../src/main/services/history';
 import { UpdateService } from '../src/main/services/updater';
 import { AppBackendService } from '../src/main/services/backend-service';
+import packageJson from '../package.json';
 import { DevBridgeServer } from '../src/main/services/dev-bridge';
 
 async function main() {
@@ -90,7 +91,7 @@ async function main() {
   manager.start();
 
   const updater = new UpdateService({
-    currentVersion: '0.11.0',
+    currentVersion: packageJson.version,
     packageKind: 'zip',
     platform: process.platform,
     arch: process.arch,

@@ -31,6 +31,9 @@ function ev(i: number): Omit<ParseEventRecord, 'id'> {
     discarded: 1,
     recoveredCount: 0,
     traceId: null,
+    unitId: null,
+    functionCode: null,
+    sourceKind: null,
     utc: new Date(1700000000000 + i).toISOString(),
     mono: i,
   };

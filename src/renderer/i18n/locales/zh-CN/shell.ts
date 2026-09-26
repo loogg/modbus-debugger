@@ -1,5 +1,6 @@
 export const shell = {
   loading: '正在加载工作区…',
+  warningsTitle: '运行告警',
   common: {
     copySuffix: '副本',
   },

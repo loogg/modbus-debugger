@@ -83,6 +83,14 @@ describe('store applyDelta display prefs', () => {
     expect(i18n.language).toBe('zh-CN');
   });
 
+  it('ignores an already included or replayed delta after a newer snapshot', () => {
+    useApp.setState({ snapshot: { ...snapshot(8), transactions: [tx(1)] } });
+    useApp.getState().applyDelta({ revision: 8, transactions: [tx(1)] });
+    useApp.getState().applyDelta({ revision: 7, transactions: [tx(0)] });
+    expect(useApp.getState().snapshot?.revision).toBe(8);
+    expect(useApp.getState().snapshot?.transactions.map((row) => row.traceId)).toEqual(['t1']);
+  });
+
   it('applies a prefs-only delta', () => {
     const base = useApp.getState().snapshot!;
     useApp.getState().applyDelta({ revision: 4, prefs: { ...base.prefs, timezone: 'Asia/Tokyo' } });

@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import initSqlJs, { type Database } from 'sql.js';
+import type { ResultKind, SessionSummary, SourceKind, TransactionRecord } from '../../shared/contracts';
+
+export type { SessionSummary } from '../../shared/contracts';
 
 export interface SessionSignalSchema {
   slaveId?: string;
@@ -15,22 +18,9 @@ export interface SessionSignalSchema {
   unit: string;
   scale: number;
   offset: number;
+  decimalPlaces?: number;
   enumMap: Record<string, string>;
   recordMode: 'samples' | 'events';
-}
-
-export interface SessionSummary {
-  slaveNames?: string[];
-  id: string;
-  groupId: string;
-  groupName: string;
-  startUtc: string;
-  endUtc: string | null;
-  status: 'recording' | 'completed';
-  signalCount: number;
-  sampleCount: number;
-  eventCount: number;
-  sizeBytes: number;
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -48,6 +38,34 @@ export interface EventRow {
   kind: 'bool' | 'enum' | 'string' | 'write' | 'marker' | 'connection';
   value: string;
 }
+
+/** Session-scoped diagnostics without frame bytes; retained even when Raw Communication is off. */
+export interface TransactionMetadataRow {
+  traceId: string;
+  connectionId: string;
+  slaveId: string | null;
+  unitId: number;
+  sourceKind: SourceKind;
+  sourceId: string | null;
+  functionCode: number;
+  result: ResultKind;
+  tMs: number;
+  startUtc: string;
+  durationMs: number | null;
+  exceptionCode: number | null;
+  mbapTransactionId: number | null;
+  summary: string;
+}
+
+export interface RawCommRow {
+  tMs: number;
+  direction: string;
+  hex: string;
+  pduHex: string | null;
+  traceId: string | null;
+}
+
+type RawFrames = Pick<TransactionRecord, 'requestAduHex' | 'responseAduHex' | 'requestPduHex' | 'responsePduHex'>;
 
 const TEN_GB = 10 * 1024 * 1024 * 1024;
 
@@ -109,11 +127,37 @@ export class HistoryStore {
         session_id TEXT NOT NULL,
         t_ms INTEGER NOT NULL,
         direction TEXT NOT NULL,
-        hex TEXT NOT NULL
+        hex TEXT NOT NULL,
+        pdu_hex TEXT,
+        trace_id TEXT
+      );
+      CREATE TABLE IF NOT EXISTS transaction_meta (
+        session_id TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL,
+        slave_id TEXT,
+        unit_id INTEGER NOT NULL,
+        source_kind TEXT NOT NULL,
+        source_id TEXT,
+        function_code INTEGER NOT NULL,
+        result TEXT NOT NULL,
+        t_ms INTEGER NOT NULL,
+        start_utc TEXT NOT NULL,
+        duration_ms REAL,
+        exception_code INTEGER,
+        mbap_transaction_id INTEGER,
+        summary TEXT NOT NULL,
+        PRIMARY KEY (session_id, trace_id)
       );
       CREATE INDEX IF NOT EXISTS idx_samples ON samples(session_id, signal_id, t_ms);
       CREATE INDEX IF NOT EXISTS idx_events ON events(session_id, t_ms);
+      CREATE INDEX IF NOT EXISTS idx_raw_comm ON raw_comm(session_id, t_ms);
+      CREATE INDEX IF NOT EXISTS idx_transaction_meta_time ON transaction_meta(session_id, t_ms);
     `);
+    // Older history.db files already have raw_comm without these two columns.
+    const rawColumns = new Set((db.exec('PRAGMA table_info(raw_comm)')[0]?.values ?? []).map(row => row[1]));
+    if (!rawColumns.has('pdu_hex')) db.run('ALTER TABLE raw_comm ADD COLUMN pdu_hex TEXT');
+    if (!rawColumns.has('trace_id')) db.run('ALTER TABLE raw_comm ADD COLUMN trace_id TEXT');
     return new HistoryStore(db, dbPath);
   }
 
@@ -196,17 +240,46 @@ export class HistoryStore {
     this.scheduleFlush();
   }
 
-  insertRawComm(sessionId: string, tMs: number, direction: string, hex: string): void {
-    this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex) VALUES (?, ?, ?, ?)', [sessionId, tMs, direction, hex]);
+  insertRawComm(sessionId: string, tMs: number, direction: string, hex: string, pduHex: string | null = null, traceId: string | null = null): void {
+    this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex, pdu_hex, trace_id) VALUES (?, ?, ?, ?, ?, ?)', [sessionId, tMs, direction, hex, pduHex, traceId]);
+    this.scheduleFlush();
+  }
+
+  /** Metadata and optional Raw frames commit together, so a retry cannot duplicate a frame. */
+  insertTransaction(sessionId: string, row: TransactionMetadataRow, raw: RawFrames | null): void {
+    this.db.run('BEGIN');
+    try {
+      this.db.run(`INSERT OR IGNORE INTO transaction_meta
+        (session_id, trace_id, connection_id, slave_id, unit_id, source_kind, source_id, function_code, result,
+         t_ms, start_utc, duration_ms, exception_code, mbap_transaction_id, summary)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+        sessionId, row.traceId, row.connectionId, row.slaveId, row.unitId, row.sourceKind, row.sourceId,
+        row.functionCode, row.result, row.tMs, row.startUtc, row.durationMs, row.exceptionCode,
+        row.mbapTransactionId, row.summary,
+      ]);
+      if (this.db.getRowsModified() > 0 && raw) {
+        if (raw.requestAduHex) this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex, pdu_hex, trace_id) VALUES (?, ?, ?, ?, ?, ?)',
+          [sessionId, row.tMs, 'tx', raw.requestAduHex, raw.requestPduHex ?? null, row.traceId]);
+        if (raw.responseAduHex) this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex, pdu_hex, trace_id) VALUES (?, ?, ?, ?, ?, ?)',
+          [sessionId, row.tMs + Math.max(0, Math.round(row.durationMs ?? 0)), 'rx', raw.responseAduHex, raw.responsePduHex ?? null, row.traceId]);
+      }
+      this.db.run('COMMIT');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
     this.scheduleFlush();
   }
 
   private query(sql: string, params: Array<string | number> = []): Array<Record<string, unknown>> {
     const stmt = this.db.prepare(sql);
-    stmt.bind(params);
     const out: Array<Record<string, unknown>> = [];
-    while (stmt.step()) out.push(stmt.getAsObject() as Record<string, unknown>);
-    stmt.free();
+    try {
+      stmt.bind(params);
+      while (stmt.step()) out.push(stmt.getAsObject() as Record<string, unknown>);
+    } finally {
+      stmt.free();
+    }
     return out;
   }
 
@@ -245,10 +318,20 @@ export class HistoryStore {
   }
 
   readSamples(sessionId: string, signalId?: string): SampleRow[] {
-    const rows = signalId
-      ? this.query('SELECT signal_id, t_ms, value FROM samples WHERE session_id=? AND signal_id=? ORDER BY t_ms', [sessionId, signalId])
-      : this.query('SELECT signal_id, t_ms, value FROM samples WHERE session_id=? ORDER BY t_ms', [sessionId]);
-    return rows.map((r) => ({ signalId: r.signal_id as string, tMs: r.t_ms as number, value: r.value as number }));
+    const stmt = this.db.prepare(signalId
+      ? 'SELECT signal_id, t_ms, value FROM samples WHERE session_id=? AND signal_id=? ORDER BY t_ms'
+      : 'SELECT signal_id, t_ms, value FROM samples WHERE session_id=? ORDER BY t_ms');
+    const rows: SampleRow[] = [];
+    try {
+      stmt.bind(signalId ? [sessionId, signalId] : [sessionId]);
+      while (stmt.step()) {
+        const [id, tMs, value] = stmt.get();
+        rows.push({ signalId: id as string, tMs: tMs as number, value: value as number });
+      }
+    } finally {
+      stmt.free();
+    }
+    return rows;
   }
 
   readEvents(sessionId: string): EventRow[] {
@@ -260,11 +343,32 @@ export class HistoryStore {
     }));
   }
 
-  readRawComm(sessionId: string): Array<{ tMs: number; direction: string; hex: string }> {
-    return this.query('SELECT t_ms, direction, hex FROM raw_comm WHERE session_id=? ORDER BY t_ms', [sessionId]).map((r) => ({
+  readRawComm(sessionId: string): RawCommRow[] {
+    return this.query('SELECT t_ms, direction, hex, pdu_hex, trace_id FROM raw_comm WHERE session_id=? ORDER BY t_ms, rowid', [sessionId]).map((r) => ({
       tMs: r.t_ms as number,
       direction: r.direction as string,
       hex: r.hex as string,
+      pduHex: (r.pdu_hex as string | null) ?? null,
+      traceId: (r.trace_id as string | null) ?? null,
+    }));
+  }
+
+  readTransactionMetadata(sessionId: string): TransactionMetadataRow[] {
+    return this.query('SELECT * FROM transaction_meta WHERE session_id=? ORDER BY t_ms, rowid', [sessionId]).map(r => ({
+      traceId: r.trace_id as string,
+      connectionId: r.connection_id as string,
+      slaveId: (r.slave_id as string | null) ?? null,
+      unitId: r.unit_id as number,
+      sourceKind: r.source_kind as SourceKind,
+      sourceId: (r.source_id as string | null) ?? null,
+      functionCode: r.function_code as number,
+      result: r.result as ResultKind,
+      tMs: r.t_ms as number,
+      startUtc: r.start_utc as string,
+      durationMs: (r.duration_ms as number | null) ?? null,
+      exceptionCode: (r.exception_code as number | null) ?? null,
+      mbapTransactionId: (r.mbap_transaction_id as number | null) ?? null,
+      summary: r.summary as string,
     }));
   }
 }

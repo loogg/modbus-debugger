@@ -25,5 +25,5 @@
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts", "tests/**/*.ts", "tests/**/*.tsx", "forge.config.ts", "vite.*.config.ts", "vitest.config.ts"],
-  "exclude": ["node_modules", ".webpack", "out", "tests/e2e"]
+  "exclude": ["node_modules", ".webpack", "out", "tests/e2e", "tests/capacity"]
 }

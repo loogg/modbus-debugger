@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createScratch } from '../../tools/test-paths.mjs';
 import path from 'node:path';
 import { RuntimeManager } from '../../src/main/runtime/manager';
@@ -302,6 +302,8 @@ describe('same template bound to multiple slaves', () => {
     // This harness manager has not started; the new manager owns the same open store.
     void mgr;
     const ws = demoWorkspace();
+    ws.templates[0]!.points[0]!.decimalPlaces = 2;
+    ws.templates[0]!.points[1] = { ...ws.templates[0]!.points[1]!, scale: 0.123456, decimalPlaces: 2 };
     ws.slaves.push({ ...slave, id: 's2', unitId: 2 });
     ws.trendGroups.push({ id: 'g', name: 'isolated', description: '', windowSec: 60, signals: ws.slaves.map(s => ({ id: `sig-${s.id}`, pointRef: { connectionId: 'c1', slaveId: s.id, pointId: 'p1' }, visible: true })) });
     svc.adopt(ws, null);
@@ -311,6 +313,8 @@ describe('same template bound to multiple slaves', () => {
       await sleep(250);
       let snap = runtime.buildSnapshot();
       expect(snap.points['s1::p1']?.engNumber).toBe(111);
+      expect(snap.points['s1::p2']?.engNumber).toBeCloseTo(13.703616);
+      expect(snap.points['s1::p2']?.engText).toBe('13.7');
       expect(snap.points['s2::p1']?.engNumber).toBe(222);
       expect((await runtime.handleCommand({ type: 'point.write', slaveId: 's1', pointId: 'p1', engineering: 999, boolValue: null, stringValue: null })).ok).toBe(true);
       await sleep(200);
@@ -323,6 +327,7 @@ describe('same template bound to multiple slaves', () => {
       await sleep(350);
       runtime.stopRecording();
       const session = history.listSessions()[0]!;
+      expect(history.getSession(session.id)?.schema.find((signal) => signal.signalId === 'sig-s1')?.decimalPlaces).toBe(2);
       const samples = history.readSamples(session.id);
       expect(samples.filter(s => s.signalId === 'sig-s1').map(s => s.value)).not.toHaveLength(0);
       expect(new Set(samples.filter(s => s.signalId === 'sig-s1').map(s => s.value))).toEqual(new Set([999]));
@@ -363,4 +368,141 @@ it('publishes update progress with other deltas and retains the update state in 
     expect(deltas.flatMap(d=>d.transactions??[]).some(tx=>tx.traceId==='pre777')).toBe(true);
     expect(mgr.buildSnapshot().update?.phase).toBe('downloaded');
   } finally {await mgr.stop();history.close();}
+});
+
+describe('Record Session persistence', () => {
+  it('stores numeric samples and Bool, Enum, String change events from confirmed Block Cache values', async () => {
+    const { dir, svc, history, mgr } = await harness();
+    const numeric = { ...point('numeric', 'voltage'), scale: 2, offset: 1 };
+    const bool = { ...point('bool', 'enabled'), mapping: { ...point('bool', 'enabled').mapping, rawType: 'Bool' as const, offset: 1 } };
+    const enumPoint = { ...point('enum', 'mode'), mapping: { ...point('enum', 'mode').mapping, offset: 2 }, enumMap: { '1': 'Standby', '2': 'Run' } };
+    const string = { ...point('string', 'firmware'), mapping: { ...point('string', 'firmware').mapping, rawType: 'String' as const, offset: 3, registerCount: 2, stringLength: 4 } };
+    const ws = demoWorkspace();
+    ws.templates = [{ ...ws.templates[0]!, blocks: [{ ...block, length: 5, periodMs: 10000 }], points: [numeric, bool, enumPoint, string] }];
+    ws.trendGroups = [{ id: 'g-four', name: 'four kinds', description: '', windowSec: 60,
+      signals: [numeric, bool, enumPoint, string].map(p => ({ id: `sig-${p.id}`, pointRef: { connectionId: conn.id, slaveId: slave.id, pointId: p.id }, visible: true })) }];
+    svc.adopt(ws, null);
+    mgr.start();
+    try {
+      mgr.cache.applyReadResult('s1::b1', { kind: 'registers', fc: 3, registers: [10, 1, 1, 0x4142, 0x4344] }, 1);
+      const started = mgr.startRecording('g-four');
+      expect(started.ok).toBe(true);
+      const id = history.listSessions()[0]!.id;
+      const waitForEvents = async (count: number) => {
+        for (let i = 0; i < 50 && history.readEvents(id).length < count; i++) await sleep(20);
+        expect(history.readEvents(id)).toHaveLength(count);
+      };
+      await waitForEvents(3);
+      mgr.cache.applyReadResult('s1::b1', { kind: 'registers', fc: 3, registers: [12, 0, 2, 0x4546, 0x4748] }, 1);
+      await waitForEvents(6);
+      expect(mgr.stopRecording().ok).toBe(true);
+      expect(history.getSession(id)?.schema.map(s => [s.signalId, s.recordMode])).toEqual([
+        ['sig-numeric', 'samples'], ['sig-bool', 'events'], ['sig-enum', 'events'], ['sig-string', 'events'],
+      ]);
+      expect(history.readSamples(id).every(s => s.signalId === 'sig-numeric')).toBe(true);
+      expect(new Set(history.readSamples(id).map(s => s.value))).toEqual(new Set([21, 25]));
+      const expectedEvents = [
+        ['sig-bool', 'bool', 'true'], ['sig-enum', 'enum', 'Standby'], ['sig-string', 'string', 'ABCD'],
+        ['sig-bool', 'bool', 'false'], ['sig-enum', 'enum', 'Run'], ['sig-string', 'string', 'EFGH'],
+      ];
+      expect(history.readEvents(id).map(e => [e.signalId, e.kind, e.value])).toEqual(expectedEvents);
+    } finally { await mgr.stop(); }
+    const reopened = await HistoryStore.open(path.join(dir, 'history.db'));
+    try {
+      const id = reopened.listSessions()[0]!.id;
+      expect(new Set(reopened.readSamples(id).map(s => s.value))).toEqual(new Set([21, 25]));
+      expect(reopened.readEvents(id).map(e => [e.signalId, e.kind, e.value])).toEqual([
+        ['sig-bool', 'bool', 'true'], ['sig-enum', 'enum', 'Standby'], ['sig-string', 'string', 'ABCD'],
+        ['sig-bool', 'bool', 'false'], ['sig-enum', 'enum', 'Run'], ['sig-string', 'string', 'EFGH'],
+      ]);
+    } finally { reopened.close(); }
+  });
+
+  it('captures Tx and Rx only while Raw Communication is enabled and reads past bytes after disabling and reopening', async () => {
+    const { dir, svc, history, mgr } = await harness();
+    void mgr;
+    const ws = demoWorkspace();
+    ws.templates = [{ ...ws.templates[0]!, blocks: [{ ...block, periodMs: 10000 }] }];
+    ws.trendGroups = [{ id: 'g-raw', name: 'raw', description: '', windowSec: 60,
+      signals: [{ id: 'sig-p1', pointRef: { connectionId: conn.id, slaveId: slave.id, pointId: 'p1' }, visible: true }] }];
+    svc.adopt(ws, null);
+    const fake = new FakeTransport('tcp');
+    fake.onResponse(adu => {
+      const response = Buffer.alloc(11);
+      response[0] = adu[0]!; response[1] = adu[1]!;
+      response.writeUInt16BE(5, 4); response[6] = adu[6]!;
+      response[7] = 3; response[8] = 2; response.writeUInt16BE(42, 9);
+      return [response];
+    });
+    const runtime = new RuntimeManager(svc, history, { transportFactory: () => fake });
+    runtime.start();
+    try {
+      // ConnectionRuntime polls once on connect; finish that pre-session request first.
+      for (let i = 0; i < 50 && !runtime.diagnostics.recentTransactions().some(tx => tx.sourceKind === 'poll'); i++) await sleep(10);
+      expect(runtime.diagnostics.recentTransactions().some(tx => tx.sourceKind === 'poll')).toBe(true);
+      expect(runtime.startRecording('g-raw').ok).toBe(true);
+      const read = () => runtime.runtimeFor(conn.id)!.temporaryRead(1, 3, 0, 1);
+      expect((await read()).result).toBe('ok');
+      const id = history.listSessions()[0]!.id;
+      expect(history.readRawComm(id)).toEqual([]);
+      expect(history.readTransactionMetadata(id)).toHaveLength(1);
+      expect((await runtime.handleCommand({ type: 'prefs.set', patch: { persistRawComm: true } })).ok).toBe(true);
+      expect((await read()).result).toBe('ok');
+      const captured = runtime.diagnostics.recentTransactions().at(-1)!;
+      expect((await runtime.handleCommand({ type: 'prefs.set', patch: { persistRawComm: false } })).ok).toBe(true);
+      expect((await read()).result).toBe('ok');
+      expect(runtime.stopRecording().ok).toBe(true);
+      const metadata = history.readTransactionMetadata(id);
+      expect(metadata).toHaveLength(3);
+      expect(metadata.map(row => row.result)).toEqual(['ok', 'ok', 'ok']);
+      expect(metadata[1]).toMatchObject({
+        traceId: captured.traceId, connectionId: conn.id, slaveId: slave.id, unitId: 1,
+        sourceKind: 'temporary-read', sourceId: null, functionCode: 3,
+        result: 'ok', durationMs: captured.durationMs, summary: captured.summary,
+      });
+      expect(Object.keys(metadata[1]!)).not.toContain('requestAduHex');
+      expect(history.readRawComm(id).map(row => row.direction)).toEqual(['tx', 'rx']);
+      expect(history.readRawComm(id).map(row => row.hex)).toEqual([
+        captured.requestAduHex, captured.responseAduHex,
+      ]);
+      expect(history.readRawComm(id).map(row => row.pduHex)).toEqual([
+        captured.requestPduHex, captured.responsePduHex,
+      ]);
+      expect(history.readRawComm(id).map(row => row.traceId)).toEqual([captured.traceId, captured.traceId]);
+      const sessionData = await runtime.handleCommand({ type: 'history.sessionData', sessionId: id });
+      expect(sessionData.ok).toBe(true);
+      if (sessionData.ok) expect((sessionData.value as { rawComm: Array<{ hex: string }> }).rawComm).toHaveLength(2);
+      expect((await runtime.handleCommand({ type: 'prefs.set', patch: { persistRawComm: true } })).ok).toBe(true);
+      expect((await read()).result).toBe('ok');
+      expect(history.readRawComm(id)).toHaveLength(2); // No active session: never append to the last one.
+      expect(history.readTransactionMetadata(id)).toHaveLength(3);
+      fake.onResponse(() => null);
+      const second = runtime.startRecording('g-raw');
+      expect(second.ok).toBe(true);
+      if (!second.ok) throw new Error(second.error);
+      expect((await read()).result).toBe('timeout');
+      expect(runtime.stopRecording().ok).toBe(true);
+      expect(history.readRawComm(second.value.sessionId).map(row => row.direction)).toEqual(['tx']);
+      expect(history.readTransactionMetadata(second.value.sessionId).map(row => row.result)).toEqual(['timeout']);
+      expect(history.readRawComm(id)).toHaveLength(2);
+    } finally { await runtime.stop(); }
+    const reopened = await HistoryStore.open(path.join(dir, 'history.db'));
+    try {
+      expect(reopened.listSessions()).toHaveLength(2);
+      expect(reopened.listSessions().map(s => reopened.readRawComm(s.id).length).sort()).toEqual([1, 2]);
+      expect(reopened.listSessions().map(s => reopened.readTransactionMetadata(s.id).length).sort()).toEqual([1, 3]);
+    }
+    finally { reopened.close(); }
+  });
+
+  it('publishes the history size warning once the injected file size exceeds 10 GiB', async () => {
+    const { mgr, history, deltas } = await harness();
+    vi.spyOn(history, 'sizeBytes').mockReturnValue(10 * 1024 ** 3 + 1);
+    mgr.start();
+    try {
+      await sleep(160);
+      expect(mgr.buildSnapshot().warnings.some(w => w.includes('history.db 已超过 10 GB'))).toBe(true);
+      expect(deltas.some(d => d.warnings?.some(w => w.includes('history.db 已超过 10 GB')))).toBe(true);
+    } finally { await mgr.stop(); }
+  });
 });

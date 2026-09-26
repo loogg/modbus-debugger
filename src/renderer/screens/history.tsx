@@ -6,12 +6,15 @@ import { StateTrack } from '../components/state-track';
 import { fmtDateTime, fmtEpochDateTime } from '../time';
 import { DataTable, type Column } from '../components/table';
 import { useTranslation } from '../i18n';
+import { buildHistoryCsv, chartSamples, groupSamplesBySignal, sampleAtOrBefore } from '../history-data';
+import { formatEngineeringNumber } from '../../domain/point-format';
 
 interface SessionSchemaEntry {
   signalId: string;
   pointName: string;
   rawType: string;
   unit: string;
+  decimalPlaces?: number;
   recordMode: string;
   enumMap: Record<string, string>;
   connectionName: string;
@@ -89,6 +92,7 @@ export function HistoryScreen() {
   }, [playing, speed, data]);
 
   const total = data ? totalMs(data) : 0;
+  const samplesBySignal = useMemo(() => groupSamplesBySignal(data?.samples ?? []), [data]);
 
   const series = useMemo<LineSeries[]>(() => {
     if (!data) return [];
@@ -97,10 +101,11 @@ export function HistoryScreen() {
       .map((s, i) => ({
         name: data.detail.schema.filter(other => other.pointName === s.pointName).length > 1 ? `${s.pointName} · ${s.connectionName} / ${s.slaveName}` : s.pointName,
         unit: s.unit,
+        decimalPlaces: s.decimalPlaces,
         color: COLORS[i % COLORS.length] ?? '#0078D4',
-        data: data.samples.filter((x) => x.signalId === s.signalId).map((x) => [x.tMs, x.value] as [number, number]),
+        data: chartSamples(samplesBySignal.get(s.signalId) ?? []),
       }));
-  }, [data]);
+  }, [data, samplesBySignal]);
 
   if (!ready) return null;
   if (!session || !data) {
@@ -116,11 +121,7 @@ export function HistoryScreen() {
   const startMs = new Date(data.detail.startUtc).getTime();
 
   const exportCsv = async () => {
-    const cell = (value: unknown) => `"${String(value).replaceAll('"', '""')}"`;
-    const lines: string[] = ['signal,t_ms,value'];
-    for (const s of data.samples) lines.push(`${cell(s.signalId)},${s.tMs},${cell(s.value)}`);
-    for (const e of data.events) lines.push(`${cell(e.signalId)},${e.tMs},${cell(e.value)}`);
-    await navigator.clipboard.writeText(lines.join('\n'));
+    await navigator.clipboard.writeText(buildHistoryCsv(data.samples, data.events));
     toast({ kind: 'success', title: t('history.csvToast') });
   };
 
@@ -155,13 +156,12 @@ export function HistoryScreen() {
             <div className="text-sm font-bold mb-3">{t('history.cursorData')}</div>
             <div className="rounded-card border border-line bg-surface">
               {schema.map((s) => {
-                const samples = data.samples.filter((x) => x.signalId === s.signalId && x.tMs <= cursorMs);
-                const last = samples[samples.length - 1];
+                const last = sampleAtOrBefore(samplesBySignal.get(s.signalId) ?? [], cursorMs);
                 const ev = cursorEvents.filter((e) => e.signalId === s.signalId).slice(-1)[0];
                 return (
                   <div key={s.signalId} className="flex justify-between border-b border-[#E7EAEE] px-4 py-2.5 text-sm last:border-0">
                     <span>{s.pointName}</span>
-                    <span className={s.recordMode === 'samples' ? '' : 'text-[#7A5AF8]'}>{s.recordMode === 'samples' ? (last ? `${last.value} ${s.unit}` : '—') : ev?.value ?? '—'}</span>
+                    <span className={s.recordMode === 'samples' ? '' : 'text-[#7A5AF8]'}>{s.recordMode === 'samples' ? (last ? `${formatEngineeringNumber(last.value, s.decimalPlaces)} ${s.unit}` : '—') : ev?.value ?? '—'}</span>
                   </div>
                 );
               })}
@@ -208,7 +208,7 @@ export function HistoryScreen() {
   const sampleCols: Array<Column<(typeof sampleRows)[number]>> = [
     { id: 't', header: t('history.colTime'), width: 110, render: (r) => <span className="mono text-xs">{fmt(r.tMs)}</span> },
     { id: 'signal', header: t('history.colSignal'), width: 180, render: (r) => schema.find((s) => s.signalId === r.signalId)?.pointName ?? r.signalId },
-    { id: 'value', header: t('history.colValue'), width: 160, render: (r) => <span className="mono">{r.value}</span> },
+    { id: 'value', header: t('history.colValue'), width: 160, render: (r) => <span className="mono">{formatEngineeringNumber(r.value, schema.find((signal) => signal.signalId === r.signalId)?.decimalPlaces)}</span> },
     { id: 'unit', header: t('history.colUnit'), width: 80, render: (r) => schema.find((s) => s.signalId === r.signalId)?.unit ?? '' },
   ];
 

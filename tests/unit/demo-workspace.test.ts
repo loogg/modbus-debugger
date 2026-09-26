@@ -7,7 +7,12 @@ describe('demo workspace fixture', () => {
   it('parses against the workspace schema', () => {
     const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tools', 'e2e', 'demo.workspace.json'), 'utf-8')) as unknown;
     const ws = migrateWorkspace(raw);
-    expect(ws.connections.length).toBe(1);
-    expect(ws.templates[0]?.points.length).toBe(9);
+    expect(ws.connections).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'conn-tcp', transport: 'tcp' }),
+      expect.objectContaining({ id: 'conn-rtu', transport: 'rtu' }),
+    ]));
+    expect(ws.connections).toHaveLength(2);
+    expect(ws.templates.find((template) => template.id === 'tpl-servo')?.points).toHaveLength(9);
+    expect(ws.templates.find((template) => template.id === 'tpl-flow')?.points).toHaveLength(5);
   });
 });

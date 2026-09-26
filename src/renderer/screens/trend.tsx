@@ -73,12 +73,16 @@ export function TrendScreen() {
 
   const series: LineSeries[] = rows
     .filter((r) => r.visible && live[r.instanceKey]?.samples.length)
-    .map((r, i) => ({
-      name: rows.filter(other => other.name === r.name).length > 1 ? `${r.name} · ${r.source}` : r.name,
-      unit: workspace.templates.flatMap(t => t.points).find(p => p.id === r.pointId)?.unit ?? '',
-      color: SERIES_COLORS[i % SERIES_COLORS.length] ?? '#0078D4',
-      data: (live[r.instanceKey]?.samples ?? []).filter(([t]) => t >= start && t <= end) as Array<[number, number]>,
-    }));
+    .map((r, i) => {
+      const point = workspace.templates.flatMap(t => t.points).find(p => p.id === r.pointId);
+      return {
+        name: rows.filter(other => other.name === r.name).length > 1 ? `${r.name} · ${r.source}` : r.name,
+        unit: point?.unit ?? '',
+        decimalPlaces: point?.decimalPlaces,
+        color: SERIES_COLORS[i % SERIES_COLORS.length] ?? '#0078D4',
+        data: (live[r.instanceKey]?.samples ?? []).filter(([t]) => t >= start && t <= end) as Array<[number, number]>,
+      };
+    });
 
   const discrete = rows.filter((r) => {
     const buf = live[r.instanceKey];
@@ -106,11 +110,7 @@ export function TrendScreen() {
           className="focus-ring cursor-pointer"
           title={r.visible ? t('trend.hideChart') : t('trend.showChart')}
           onClick={() => {
-            const ws = workspace;
-            void command({
-              type: 'workspace.apply',
-              workspace: { ...ws, trendGroups: ws.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: g.signals.map((s) => (s.id === r.signalId ? { ...s, visible: !s.visible } : s)) } : g)) },
-            });
+            void command({ type: 'trend.setSignalVisible', groupId: group.id, signalId: r.signalId, visible: !r.visible });
           }}
         >
           <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: r.visible ? SERIES_COLORS[rows.indexOf(r) % SERIES_COLORS.length] : '#D9DEE5' }} />
@@ -138,8 +138,7 @@ export function TrendScreen() {
         <button
           className="focus-ring cursor-pointer text-xs text-accent hover:underline"
           onClick={() => {
-            const ws = workspace;
-            void command({ type: 'workspace.apply', workspace: { ...ws, trendGroups: ws.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: g.signals.filter((s) => s.id !== r.signalId) } : g)) } });
+            void command({ type: 'trend.removeSignal', groupId: group.id, signalId: r.signalId });
           }}
         >
           {t('trend.remove')}
@@ -174,7 +173,7 @@ export function TrendScreen() {
         <div className="flex items-center gap-4 pb-2">
           {selection.trendTab === 'chart' ? (
             <>
-              <select className="focus-ring h-8 rounded-ctl border border-line bg-surface px-2 text-xs" value={windowSec} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: workspace.trendGroups.map(g => g.id === group.id ? { ...g, windowSec: Number(e.target.value) } : g) } })}>
+              <select className="focus-ring h-8 rounded-ctl border border-line bg-surface px-2 text-xs" value={windowSec} onChange={(e) => void command({ type: 'trend.setWindow', groupId: group.id, windowSec: Number(e.target.value) })}>
                 <option value={30}>{t('trend.window30')}</option>
                 <option value={60}>{t('trend.window60')}</option>
                 <option value={300}>{t('trend.window300')}</option>

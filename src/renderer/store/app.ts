@@ -8,9 +8,7 @@ import type {
   PointViewState,
   RecordingView,
 } from '../../shared/snapshot';
-import type { ParseEventRecord, TransactionRecord, ConnectionHealth } from '../../main/runtime/diagnostics';
-import type { Prefs } from '../../main/services/workspace';
-import type { SessionSummary } from '../../main/services/history';
+import type { ParseEventRecord, TransactionRecord, ConnectionHealth, Prefs, SessionSummary } from '../../shared/contracts';
 import type { Command, CommandResult } from '../../shared/commands';
 import type { ModbusApi } from '../../shared/preload-api';
 import { setDisplayTimeZone } from '../time';
@@ -168,6 +166,9 @@ export const useApp = create<AppState>((set, get) => ({
   applyDelta: (d) => {
     const prev = get().snapshot;
     if (!prev) return;
+    // A snapshot may overtake an in-flight bridge delta, and reconnects may replay one.
+    // Reapplying it would duplicate transactions and restore stale workspace slices.
+    if (d.revision <= prev.revision) return;
     // diagnostics.clear bumps diagRev: the local ring copies must be dropped, not appended to.
     const cleared = d.diagRev !== undefined && d.diagRev !== prev.diagRev;
     const next: AppSnapshot = {

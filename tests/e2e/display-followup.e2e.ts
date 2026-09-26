@@ -18,6 +18,9 @@ const timezone = async (label:string) => {
 
 describe('字符串、结果筛选、时区与多信号专项回归',()=>{
   before(async()=>{ fs.mkdirSync('out/audit/followup-shots',{recursive:true}); });
+  afterEach(async()=>{
+    await browser.execute(async()=> (window as unknown as {modbus:ModbusApi}).modbus.command({type:'prefs.set',patch:{timezone:'local'}}));
+  });
   beforeEach(async()=>{
     const ws:Workspace=JSON.parse(fs.readFileSync('tools/e2e/demo.workspace.json','utf8'));
     ws.connections[0]!.timeoutMs=100; ws.connections[0]!.retries=0;
@@ -40,7 +43,7 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     for(const name of filters) await toggle(name);
     expect(await resultCells()).toHaveLength(0);
     for(const [name,result] of [['成功','成功'],['超时','超时'],['Modbus 异常','异常']]) {
-      await toggle(name!); const values=await resultCells(); expect(values.length).toBeGreaterThan(0); expect(values.every(v=>v===result)).toBe(true); await toggle(name!);
+      await toggle(name!); const values=await resultCells(); expect(values).toContain(result); expect(values.every(v=>v===result || v==='已发送')).toBe(true); await toggle(name!);
     }
     await toggle('其他错误'); expect(await resultCells()).toHaveLength(0);
     for(const name of filters.slice(0,3)) await toggle(name);
@@ -53,8 +56,8 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     for(const [choice,zone] of [['UTC','UTC'],['Asia/Shanghai（UTC+8）','Asia/Shanghai']]) {
       await timezone(choice!); await rail('通信');
       await fill('input[placeholder*="搜索"]',tx.traceId);
-      await browser.waitUntil(async()=> (await $$('tbody tr')).length===1);
-      expect(await $('tbody tr td:first-child').getText()).toBe(expected(zone!));
+      await browser.waitUntil(async()=> (await $$('tbody tr')).length===(tx.responseAduHex?2:1));
+      expect(await $('//tbody/tr[td[4][normalize-space(.)="TX"]]/td[1]').getText()).toBe(expected(zone!));
       expect((await snap()).transactions.find(t=>t.traceId===tx.traceId)?.startUtc).toBe(tx.startUtc);
     }
     await timezone('跟随系统');
@@ -66,6 +69,14 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     expect(await charts()).toHaveLength(5);
     expect((await charts()).find(c=>c.units[0]==='V')?.count).toBe(2);
     await browser.saveScreenshot(path.resolve('out/audit/followup-shots/many-signals.png'));
+    const enumTrack = await $('[data-state-track="enum"]');
+    await enumTrack.waitForDisplayed({ timeout: 15000 });
+    expect(await enumTrack.getAttribute('aria-label')).toContain('模式');
+    await enumTrack.$('svg rect').waitForExist({ timeout: 15000 });
+    await enumTrack.scrollIntoView();
+    fs.mkdirSync('out/audit/figma-current',{recursive:true});
+    await browser.saveScreenshot(path.resolve('out/audit/figma-current/11-trend-chart-enum-track.png'));
+    await enumTrack.saveScreenshot(path.resolve('out/audit/figma-current/11-enum-track-detail.png'));
     await click('信号');
     for(const name of ['电机电流','目标转速','状态字']) await $(`//tbody/tr[.//*[text()="${name}"]]//button[@title="隐藏图表"]`).click();
     await click('图表');

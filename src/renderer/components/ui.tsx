@@ -334,10 +334,11 @@ export function OverflowMenu(props: { items: Array<{ label: string; onSelect: ()
 
 export function Toasts() {
   const toasts = useApp((s) => s.toasts);
+  const drawerOpen = useApp((s) => s.overlay?.kind === 'drawer');
   const dismiss = useApp((s) => s.dismissToast);
   const tone: Record<string, string> = { info: 'border-accent', success: 'border-ok', warning: 'border-warn', error: 'border-err' };
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2 w-[360px]">
+    <div className={`pointer-events-none fixed bottom-4 z-[60] flex w-[360px] max-w-[calc(100vw-96px)] flex-col gap-2 ${drawerOpen ? 'left-20' : 'right-4'}`}>
       {toasts.map((t) => (
         <div key={t.id} className={`relative rounded-ctl border-l-4 ${tone[t.kind]} bg-surface shadow-lg pl-4 pr-8 py-3`}>
           <button aria-label="关闭提示" className="pointer-events-auto absolute right-2 top-2 focus-ring text-ink2" onClick={() => dismiss(t.id)}>×</button>

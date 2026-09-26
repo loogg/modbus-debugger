@@ -34,9 +34,9 @@ import { CommScreen } from './screens/comm';
 import { TemplatesScreen } from './screens/templates';
 import { SettingsScreen } from './screens/settings';
 import { Overlays } from './screens/overlays';
+import { RuntimeWarnings } from './components/runtime-warnings';
 import { useTranslation } from './i18n';
 import { dayKey, fmtTime, todayKey } from './time';
-import { copyTemplate } from '../domain/template-copy';
 
 type RailLabelKey = `shell.rail.${'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates'}`;
 
@@ -309,8 +309,8 @@ function TrendSidebar() {
                 const ws = workspace;
                 if (!ws) return;
                 const copy = { ...group, id: `g-${Date.now().toString(36)}`, name: `${group.name} ${t('shell.common.copySuffix')}`, signals: group.signals.map((s) => ({ ...s, id: `sig-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}` })) };
-                await command({ type: 'workspace.apply', workspace: { ...ws, trendGroups: [...ws.trendGroups, copy] } });
-                toast({ kind: 'success', title: t('shell.trend.groupCopiedToast') });
+                const result = await command({ type: 'trend.upsertGroup', group: copy });
+                if (result.ok) toast({ kind: 'success', title: t('shell.trend.groupCopiedToast') });
               }}
             >
               {t('shell.trend.duplicateGroup')}
@@ -320,8 +320,8 @@ function TrendSidebar() {
               onClick={async () => {
                 const ws = workspace;
                 if (!ws) return;
-                await command({ type: 'workspace.apply', workspace: { ...ws, trendGroups: ws.trendGroups.filter((g) => g.id !== group.id) } });
-                select({ groupId: null });
+                const result = await command({ type: 'trend.deleteGroup', groupId: group.id });
+                if (result.ok) select({ groupId: null });
               }}
             >
               {t('shell.trend.deleteGroup')}
@@ -461,7 +461,7 @@ export function TemplatesSidebar() {
           const ws = workspace;
           if (!ws) return;
           const id = `tpl-${Date.now().toString(36)}`;
-          const result=await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, { id, name: t('shell.templates.newTemplateName'), version: '1.0', description: '', blocks: [], points: [] }] } });
+          const result=await command({ type: 'template.add', template: { id, name: t('shell.templates.newTemplateName'), version: '1.0', description: '', blocks: [], points: [] } });
           if(result.ok)select({ templateId:id,templateEditing:false,editBlockId:null });
         }}
       >
@@ -491,9 +491,9 @@ export function TemplatesSidebar() {
             const ws = workspace;
             const tpl = ws?.templates.find((x) => x.id === selection.templateId) ?? ws?.templates[0];
             if (!ws || !tpl) return;
-            const copy = copyTemplate(tpl, `tpl-${Date.now().toString(36)}`, `${tpl.name} ${t('shell.common.copySuffix')}`);
-            const res = await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, copy] } });
-            if (res.ok) select({ templateId: copy.id, templateEditing: false });
+            const newId = `tpl-${Date.now().toString(36)}`;
+            const res = await command({ type: 'template.copy', sourceTemplateId: tpl.id, newId, name: `${tpl.name} ${t('shell.common.copySuffix')}` });
+            if (res.ok) select({ templateId: newId, templateEditing: false });
           }}
         >
           {t('shell.templates.duplicateTemplate')}
@@ -576,6 +576,7 @@ function Main() {
   return (
     <main className="min-w-0 flex-1 overflow-y-auto bg-app">
       <div className="px-7 py-6 min-w-0">
+        <RuntimeWarnings />
         {module === 'devices' ? <DevicesScreen /> : module === 'realtime' ? <RealtimeScreen /> : module === 'trend' ? <TrendScreen /> : module === 'history' ? <HistoryScreen /> : module === 'comm' ? <CommScreen /> : module === 'templates' ? <TemplatesScreen /> : module === 'about' ? <AboutScreen /> : <SettingsScreen />}
       </div>
     </main>

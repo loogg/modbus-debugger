@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { AppTransport, TransportState } from '../transport/types';
+import { useApp } from '../store/app';
 
 interface DevReviewIndicatorProps {
   transport: AppTransport;
@@ -9,6 +10,7 @@ export function DevReviewIndicator({ transport }: DevReviewIndicatorProps): Reac
   const [state, setState] = useState<TransportState>(transport.getStatus());
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const overlay = useApp((s) => s.overlay);
   const [viewport, setViewport] = useState({
     width: typeof window !== 'undefined' ? window.innerWidth : 1280,
     height: typeof window !== 'undefined' ? window.innerHeight : 800,
@@ -28,7 +30,7 @@ export function DevReviewIndicator({ transport }: DevReviewIndicatorProps): Reac
 
   // Do not show in native Electron unless forced with ?transport=
   const isNativeElectron = state.type === 'electron' && typeof window !== 'undefined' && !window.location.search.includes('transport');
-  if (isNativeElectron) return null;
+  if (import.meta.env.PROD || isNativeElectron || overlay) return null;
 
   const breakpoint = viewport.width < 1280 ? 'Compact (<1280px)' : 'Standard (≥1280px)';
 
@@ -56,7 +58,7 @@ export function DevReviewIndicator({ transport }: DevReviewIndicatorProps): Reac
         type="button"
         title="展开 Browser Review 工具条"
         onClick={() => setCollapsed(false)}
-        className="fixed bottom-2 right-2 z-50 flex h-7 items-center gap-1.5 rounded-full border border-slate-300 bg-white/95 px-2.5 text-xs font-medium text-slate-700 shadow-md backdrop-blur transition hover:bg-slate-100"
+        className="fixed left-1/2 top-2 z-50 flex h-7 -translate-x-1/2 items-center gap-1.5 rounded-full border border-slate-300 bg-white/95 px-2.5 text-xs font-medium text-slate-700 shadow-md backdrop-blur transition hover:bg-slate-100"
       >
         <span className={`h-2 w-2 rounded-full ${statusColor}`} />
         <span>Review</span>
@@ -65,7 +67,7 @@ export function DevReviewIndicator({ transport }: DevReviewIndicatorProps): Reac
   }
 
   return (
-    <div className="fixed bottom-3 right-3 z-50 select-none font-sans text-xs">
+    <div className="fixed left-1/2 top-2 z-50 -translate-x-1/2 select-none font-sans text-xs">
       <div className="flex items-center gap-2 rounded-lg border border-slate-300/80 bg-white/95 px-3 py-1.5 text-slate-700 shadow-lg backdrop-blur">
         <span className="relative flex h-2 w-2">
           <span className={`h-2 w-2 rounded-full ${statusColor}`} />
@@ -129,6 +131,7 @@ export function DevReviewIndicator({ transport }: DevReviewIndicatorProps): Reac
               { id: 'default', label: '标准预设 (Default Workspace)' },
               { id: 'empty', label: '空状态 (Empty Workspace)' },
               { id: 'large-data', label: '大数据量 (300+ 点位高频)' },
+              { id: 'warning', label: '运行告警 (History 10 GB)' },
               { id: 'error', label: '错误状态 (Operation Error)' },
               { id: 'timeout', label: '超时状态 (Timeout 5s)' },
             ].map((fix) => (

@@ -37,7 +37,7 @@ it('renames from the overview and only deletes a block after confirmation',()=>{
   calls.mockClear();fireEvent.click(screen.getAllByRole('button',{name:'删除数据块'})[0]!);expect(screen.getByRole('dialog')).toHaveTextContent('6 个点位');fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(calls).not.toHaveBeenCalledWith(expect.objectContaining({type:'template.deleteBlock'}));
   fireEvent.click(screen.getAllByRole('button',{name:'删除数据块'})[0]!);fireEvent.click(within(screen.getByRole('dialog')).getByRole('button',{name:'删除数据块'}));expect(calls).toHaveBeenCalledWith({type:'template.deleteBlock',templateId:'t1',blockId:'b1'});
 });
-it('configures point directly in the right inspector and saves via workspace.apply', async () => {
+it('configures point directly in the right inspector and saves through Main point command', async () => {
   useApp.setState({ selection: { ...useApp.getState().selection, templateEditing: true, editBlockId: 'b1' } });
   render(<><TemplatesScreen/><Overlays/></>);
   expect(screen.getByText('点位属性')).toBeTruthy();
@@ -45,16 +45,9 @@ it('configures point directly in the right inspector and saves via workspace.app
   fireEvent.change(nameInput, { target: { value: 'Ia_Mod' } });
   fireEvent.click(screen.getByRole('button', { name: '保存点位' }));
   expect(calls).toHaveBeenCalledWith(expect.objectContaining({
-    type: 'workspace.apply',
-    workspace: expect.objectContaining({
-      templates: expect.arrayContaining([
-        expect.objectContaining({
-          points: expect.arrayContaining([
-            expect.objectContaining({ name: 'Ia_Mod' }),
-          ]),
-        }),
-      ]),
-    }),
+    type: 'template.upsertPoint',
+    templateId: 't1',
+    point: expect.objectContaining({ name: 'Ia_Mod' }),
   }));
 });
 it('deletes point with confirmation dialog and calls template.deletePoint', async () => {
@@ -71,4 +64,3 @@ it('deletes point with confirmation dialog and calls template.deletePoint', asyn
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除点位' }));
   expect(calls).toHaveBeenCalledWith({ type: 'template.deletePoint', templateId: 't1', pointId: 'Ia' });
 });
-

@@ -38,6 +38,7 @@ export const comm = {
 
   // Transaction results (RESULT_LABEL map, resolved with t() at render)
   resultOk: '成功',
+  sent: '已发送',
   resultException: '异常',
   resultUnexpected: '意外响应',
   resultTimeout: '超时',

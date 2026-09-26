@@ -7,6 +7,7 @@ const snap=()=>browser.execute(()=>(window as unknown as {modbus:ModbusApi}).mod
 const click=async(text:string)=>{const button=$(`//button[normalize-space(.)="${text}"]`);await button.waitForEnabled();await button.click();};
 const fill=async(selector:string,value:string)=>{await $(selector).click();await browser.keys(['Control','a']);await browser.keys('Backspace');await $(selector).addValue(value);};
 const block=(name:string)=>$(`//nav[@aria-label="设备模板树"]//button[contains(.,"${name}")]`);
+const drawerField=(label:string)=>`//div[contains(@class,"fixed") and contains(@class,"z-40")]//div[@role="group"][div[normalize-space(.)="${label}"]]//input`;
 const shot=async(name:string)=>{fs.mkdirSync('out/audit/template-shots',{recursive:true});await browser.saveScreenshot(path.resolve(`out/audit/template-shots/${name}.png`));};
 
 describe('模板与数据块实际交互',()=>{
@@ -22,12 +23,21 @@ describe('模板与数据块实际交互',()=>{
   });
   it('树形导航、离线映射、新增点位实时映射及无文件框保存',async()=>{
     const fileDialog=await browser.electron.mock('dialog','showSaveDialog');await fileDialog.mockResolvedValue({canceled:true,filePath:undefined});
-    await block('控制寄存器').click();await click('内存布局');
+    await block('控制寄存器').click();
+    await click('编辑块');
+    const existingBlockDialog=await $('[role="dialog"]');await existingBlockDialog.waitForDisplayed();
+    expect(await existingBlockDialog.getText()).toContain('计算范围');
+    fs.mkdirSync('out/audit/figma-current',{recursive:true});
+    await browser.saveScreenshot(path.resolve('out/audit/figma-current/07-edit-existing-block-dialog.png'));
+    await $('//div[@role="dialog"]//button[normalize-space(.)="取消"]').click();
+    await click('内存布局');
     expect(await $('[data-testid="memory-offset-0"]').getText()).toContain('Ia');expect(await $('[data-testid="memory-offset-1"]').getText()).toContain('Ia');
     expect(await $('[data-testid="memory-offset-2"]').getText()).toContain('Ib');expect(await $('[data-testid="memory-offset-3"]').getText()).toContain('Ib');
     expect(Object.keys((await snap()).blocks)).toHaveLength(0);await shot('memory-standard');
     await click('下一页');expect(await $('[data-testid="memory-offset-34"]').getText()).toContain('Late');await $('[data-testid="memory-offset-34"] button').click();
-    await click('＋ 添加点位');await fill('//div[@role="group"][div[text()="名称"]]//input','新增点');await fill('//div[@role="group"][div[text()="寄存器偏移"]]//input','8');await click('保存点位');
+    await click('＋ 添加点位');await $(drawerField('名称')).waitForDisplayed();expect(await $(drawerField('名称')).getValue()).not.toBe('Late');
+    await fill(drawerField('名称'),'新增点');await fill(drawerField('寄存器偏移'),'8');
+    await $('//div[contains(@class,"fixed") and contains(@class,"z-40")]//button[normalize-space(.)="保存点位"]').click();
     await browser.waitUntil(async()=>(await snap()).workspace.templates[0]!.points.some(p=>p.name==='新增点'));
     await click('内存布局');expect(await $('[data-testid="memory-offset-8"]').getText()).toContain('新增点');
     await click('保存');await browser.waitUntil(async()=>Boolean((await snap()).workspacePath));

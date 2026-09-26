@@ -36,7 +36,7 @@ const view = (over: Partial<PointViewState> = {}): PointViewState => ({
 });
 
 beforeEach(() => {
-  useApp.setState({ writeStates: {}, selectedPoints: {}, snapshot: null, api: null });
+  useApp.setState({ writeStates: {}, selectedPoints: {}, snapshot: null, api: null, overlay: null });
 });
 
 afterEach(() => {
@@ -48,6 +48,13 @@ describe('ValueCell write semantics', () => {
     render(<ValueCell point={point} view={view()} />);
     expect(screen.getByText('1500')).toBeTruthy();
     expect(screen.getByText('rpm')).toBeTruthy();
+  });
+
+  it('opens the Raw Inspector from a visible button without entering write mode', () => {
+    render(<ValueCell point={point} view={view()} />);
+    fireEvent.click(screen.getByRole('button', { name: '原始数据' }));
+    expect(useApp.getState().overlay).toEqual({ kind: 'drawer', id: 'inspector', pointId: point.id });
+    expect(screen.queryByDisplayValue('1500')).toBeNull();
   });
 
   it('double click enters editing mode without touching the confirmed value', () => {

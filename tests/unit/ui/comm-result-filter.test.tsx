@@ -14,18 +14,22 @@ it('result checkboxes include exactly their own categories, with search and slav
   useApp.setState({ module:'comm', toasts:[], commSlaveFilter:{}, commResultFilter:{ok:true,timeout:true,exception:true,other:true}, selection:{...useApp.getState().selection,connectionId:'conn-tcp',commView:'messages'}, snapshot:{ revision:1, workspace:workspaceSchema.parse(JSON.parse(fs.readFileSync('tools/e2e/demo.workspace.json','utf8'))), workspacePath:null,dirty:false,connections:{},blocks:{},points:{},transactions,parseEvents:[],diagRev:0,health:{},recording:null,sessions:[],warnings:[],prefs:DEFAULT_PREFS,historyDbPath:'' } });
   const {container} = render(<App />);
   const rows = () => [...container.querySelectorAll('tbody tr')].map(row => row.textContent ?? '');
-  expect(rows()).toHaveLength(7);
+  expect(rows()).toHaveLength(8); // successful transaction has both TX and RX frames
   const names = ['成功','超时','Modbus 异常','其他错误'];
   for(const name of names) fireEvent.click(screen.getByRole('checkbox',{name}));
   expect(rows()).toHaveLength(0);
   for(const [i,name] of names.entries()) {
     fireEvent.click(screen.getByRole('checkbox',{name}));
     const expected = i === 3 ? results.slice(3) : [results[i]!];
-    expect(rows()).toHaveLength(expected.length);
+    expect(rows()).toHaveLength(expected.length + (name === '成功' ? 1 : 0));
     for(const result of expected) expect(rows().some(row=>row.includes(`result-${result}`))).toBe(true);
     fireEvent.click(screen.getByRole('checkbox',{name}));
   }
   for(const name of names) fireEvent.click(screen.getByRole('checkbox',{name}));
   fireEvent.change(screen.getByPlaceholderText(/搜索地址/),{target:{value:'result-crc'}}); expect(rows()).toHaveLength(1);
-  fireEvent.click(screen.getByRole('checkbox',{name:/从站 1/})); expect(rows()).toHaveLength(0);
+  const tcpSlave = screen.getByRole('checkbox', { name: /伺服驱动器 A/ });
+  const rtuSlave = screen.getByRole('checkbox', { name: /流量变送器/ });
+  fireEvent.click(tcpSlave);
+  expect(rows()).toHaveLength(0);
+  expect(rtuSlave).toHaveAttribute('aria-checked', 'true');
 });

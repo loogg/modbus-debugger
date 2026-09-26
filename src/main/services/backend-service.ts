@@ -7,6 +7,7 @@ import type { Command, CommandResult } from '../../shared/commands';
 import { commandSchema } from '../../shared/commands';
 import type { AppDelta, AppSnapshot } from '../../shared/snapshot';
 import type { AppVersions } from '../../shared/preload-api';
+import packageJson from '../../../package.json';
 
 function getElectron() {
   try {
@@ -24,6 +25,7 @@ export class AppBackendService {
     readonly manager: RuntimeManager,
     readonly updater: UpdateService,
     private readonly getWindow?: () => BrowserWindow | null,
+    private readonly options: { allowWholeWorkspaceApply?: boolean } = {},
   ) {
     this.manager.setUpdateState(this.updater.snapshot());
     this.updater.onChange = (state) => this.manager.setUpdateState(state);
@@ -48,7 +50,7 @@ export class AppBackendService {
     return {
       electron: process.versions.electron ?? (electron?.app ? 'electron' : 'browser'),
       node: process.versions.node ?? 'unknown',
-      app: electron?.app?.getVersion ? electron.app.getVersion() : '0.11.0',
+      app: electron?.app?.getVersion ? electron.app.getVersion() : packageJson.version,
     };
   }
 
@@ -65,6 +67,9 @@ export class AppBackendService {
       return { ok: false, error: `invalid command: ${parsed.error.message}` };
     }
     const cmd = parsed.data;
+    if (cmd.type === 'workspace.apply' && !this.options.allowWholeWorkspaceApply) {
+      return { ok: false, error: 'workspace.apply is reserved for isolated test fixtures' };
+    }
     if (['preparing', 'installing'].includes(this.updater.snapshot().phase) && !cmd.type.startsWith('update.')) {
       return { ok: false, error: '正在准备或安装更新，请稍候。' };
     }

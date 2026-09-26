@@ -148,7 +148,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
 
   return (
     <span
-      className="inline-flex w-full items-center gap-1.5"
+      className="inline-flex w-full min-w-0 items-center gap-1.5"
       onDoubleClick={() => {
         if (!writable) return;
         setDraft(isBool ? (view?.boolValue ? 'ON' : 'OFF') : confirmedText);
@@ -156,9 +156,19 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
       }}
       title={writable ? t('ui.valueCell.doubleClickEdit') : undefined}
     >
-      {valueNode}
-      {unit && view?.hasValue ? <span className="text-xs text-ink2">{unit}</span> : null}
+      <span className="min-w-0 flex-1 truncate">
+        {valueNode}
+        {unit && view?.hasValue ? <span className="text-xs text-ink2"> {unit}</span> : null}
+      </span>
       {markerFresh ? marker : null}
+      <button
+        type="button"
+        className="focus-ring shrink-0 cursor-pointer text-[11px] text-accent hover:underline"
+        onClick={(event) => { event.stopPropagation(); openOverlay({ kind: 'drawer', id: 'inspector', pointId: props.point.id }); }}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
+        {t('devices.rawData')}
+      </button>
     </span>
   );
 }

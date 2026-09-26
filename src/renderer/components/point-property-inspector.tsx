@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { BlockDef, DeviceTemplate, PointDef } from '../../domain/model';
 import { registersForType, type RawType } from '../../domain/mapping';
+import { DEFAULT_DECIMAL_PLACES, MAX_DECIMAL_PLACES } from '../../domain/point-format';
 import { useTranslation } from '../i18n';
 import { Button, Checkbox, Field, InfoBand, Select, TextInput } from './ui';
 
@@ -31,6 +32,7 @@ export function PointPropertyInspector({
   const [access, setAccess] = useState<'ro' | 'rw'>(point.access);
   const [unit, setUnit] = useState(point.unit ?? '');
   const [format, setFormat] = useState(point.displayFormat ?? 'auto');
+  const [decimalPlaces, setDecimalPlaces] = useState(String(point.decimalPlaces ?? DEFAULT_DECIMAL_PLACES));
   const [scale, setScale] = useState(String(point.scale ?? 1));
   const [offsetEng, setOffsetEng] = useState(String(point.offset ?? 0));
   const [wordOrder, setWordOrder] = useState(point.mapping.wordOrder ?? 'ABCD');
@@ -59,6 +61,7 @@ export function PointPropertyInspector({
     setAccess(point.access);
     setUnit(point.unit ?? '');
     setFormat(point.displayFormat ?? 'auto');
+    setDecimalPlaces(String(point.decimalPlaces ?? DEFAULT_DECIMAL_PLACES));
     setScale(String(point.scale ?? 1));
     setOffsetEng(String(point.offset ?? 0));
     setWordOrder(point.mapping.wordOrder ?? 'ABCD');
@@ -93,6 +96,7 @@ export function PointPropertyInspector({
     access !== point.access ||
     unit !== (point.unit ?? '') ||
     format !== (point.displayFormat ?? 'auto') ||
+    decimalPlaces !== String(point.decimalPlaces ?? DEFAULT_DECIMAL_PLACES) ||
     scale !== String(point.scale ?? 1) ||
     offsetEng !== String(point.offset ?? 0) ||
     wordOrder !== (point.mapping.wordOrder ?? 'ABCD') ||
@@ -147,6 +151,7 @@ export function PointPropertyInspector({
       unit: unit.trim(),
       access: (block.area === 2 || block.area === 4) ? 'ro' : access,
       displayFormat: format,
+      decimalPlaces: Number(decimalPlaces),
       enumMap: parsedEnum,
       highRisk,
       description: description.trim(),
@@ -296,22 +301,23 @@ export function PointPropertyInspector({
                 ]}
               />
             </Field>
-            {showScale && (
-              <Field label={t('overlays.scaleFactor')}>
-                <TextInput
-                  className="h-8 text-xs font-mono"
-                  type="number"
-                  step="any"
-                  value={scale}
-                  onChange={(e) => setScale(e.target.value)}
-                />
-              </Field>
-            )}
+            <Field label={t('overlays.decimalPlaces')}>
+              <Select value={decimalPlaces} onChange={setDecimalPlaces} disabled={!showScale || format !== 'auto'} options={Array.from({ length: MAX_DECIMAL_PLACES + 1 }, (_, value) => ({ value: String(value), label: String(value) }))} />
+            </Field>
           </div>
 
           {showScale && (
             <>
-              <div className="mb-2">
+              <div className="mb-2 grid grid-cols-2 gap-2">
+                <Field label={t('overlays.scaleFactor')}>
+                  <TextInput
+                    className="h-8 text-xs font-mono"
+                    type="number"
+                    step="any"
+                    value={scale}
+                    onChange={(e) => setScale(e.target.value)}
+                  />
+                </Field>
                 <Field label={t('overlays.offsetAmount')}>
                   <TextInput
                     className="h-8 text-xs font-mono"

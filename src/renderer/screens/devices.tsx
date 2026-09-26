@@ -7,11 +7,10 @@ import { useTranslation } from '../i18n';
 import { fmtTime } from '../time';
 import type { ScanRow } from '../../shared/snapshot';
 import { scanOptionsSchema } from '../../shared/scan-options';
-import type { RequestOutcome } from '../../main/runtime/connection-runtime';
+import type { RequestOutcome } from '../../shared/contracts';
 import type { Command } from '../../shared/commands';
+import { BAUD_PRESETS } from '../features/devices/baud-presets';
 
-/** Shared baud-rate presets for the add-connection dialog and the connection settings page. */
-export const BAUD_PRESETS = ['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600', '1000000'].map((b) => ({ value: b, label: b }));
 
 export function DevicesScreen() {
   const { t } = useTranslation();
@@ -41,17 +40,22 @@ export function DevicesScreen() {
 
   if (!workspace || workspace.connections.length === 0) {
     return (
-      <EmptyState
-        title={t('devices.emptyNoConnTitle')}
-        message={t('devices.emptyNoConnMessage')}
-        actions={
-          <>
-            <Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-connection' })}>{t('devices.addFirstConnection')}</Button>
-            <Button onClick={async () => { const res = await command<string>({ type: 'dialog.openFile', accept: ['json'] }); if (res.ok) await command({ type: 'workspace.open', path: res.value }); }}>{t('devices.importWorkspace')}</Button>
-            <Button onClick={async () => { const file = await command<string>({ type: 'dialog.openFile', accept: ['json'] }); if (!file.ok) return; const res = await command<string>({ type: 'template.importFile', path: file.value }); if (res.ok) { select({ templateId: res.value }); setModule('templates'); } }}>{t('devices.importTemplate')}</Button>
-          </>
-        }
-      />
+      <div className="px-6 pt-24 lg:px-16 lg:pt-40 xl:px-28 xl:pt-48">
+        <h1 className="text-2xl font-bold text-ink">{t('devices.emptyNoConnTitle')}</h1>
+        <p className="mt-3 max-w-[700px] text-sm text-ink2">{t('devices.emptyNoConnMessage')}</p>
+        <div className="mt-8 flex max-w-[700px] flex-wrap gap-3">
+          <Button className="h-12 min-w-[180px] flex-1" variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-connection' })}>{t('devices.addFirstConnection')}</Button>
+          <Button className="h-12 min-w-[180px] flex-1" onClick={async () => { const res = await command<string>({ type: 'dialog.openFile', accept: ['json'] }); if (res.ok) await command({ type: 'workspace.open', path: res.value }); }}>{t('devices.importWorkspace')}</Button>
+          <Button className="h-12 min-w-[180px] flex-1" onClick={async () => { const file = await command<string>({ type: 'dialog.openFile', accept: ['json'] }); if (!file.ok) return; const res = await command<string>({ type: 'template.importFile', path: file.value }); if (res.ok) { select({ templateId: res.value }); setModule('templates'); } }}>{t('devices.importTemplate')}</Button>
+        </div>
+        <section className="mt-12 max-w-[700px] rounded-card bg-surface2 p-6" aria-label={t('devices.recommendedFlow')}>
+          <h2 className="font-semibold text-ink">{t('devices.recommendedFlow')}</h2>
+          <ol className="mt-4 grid grid-cols-1 gap-x-6 gap-y-4 text-sm text-accent sm:grid-cols-2 xl:grid-cols-3">
+            {(['devices.recommendedStep1', 'devices.recommendedStep2', 'devices.recommendedStep3', 'devices.recommendedStep4', 'devices.recommendedStep5'] as const)
+              .map((key) => <li key={key}>{t(key)}</li>)}
+          </ol>
+        </section>
+      </div>
     );
   }
 
@@ -499,7 +503,8 @@ function ConnectionSettingsView(props: { connectionId: string }) {
       logLevel,
       interFrameMs: Number(interFrame) || 0,
     };
-    await command({ type: 'workspace.apply', workspace: { ...workspace, connections: workspace.connections.map((c) => (c.id === conn.id ? updated : c)) } });
+    const result = await command({ type: 'connection.upsert', connection: updated });
+    if (!result.ok) return;
     toast({ kind: 'success', title: t('devices.toastConnUpdated'), message: t('devices.toastConnUpdatedMsg') });
   };
 

@@ -23,7 +23,8 @@ const scanState = (phase: ScanStateView['phase']): ScanStateView => ({
   found: [{ unitId: 1, responseMs: 3, exceptionCode: 2 }], elapsedMs: 100,
 });
 const publish = (scan: ScanStateView) => useApp.getState().applyDelta({
-  revision: 1, connections: { c1: { state: 'online', detail: null, lastResponseUtc: null, scan } },
+  revision: (useApp.getState().snapshot?.revision ?? 0) + 1,
+  connections: { c1: { state: 'online', detail: null, lastResponseUtc: null, scan } },
 });
 let calls: Command[];
 beforeEach(() => {
@@ -47,6 +48,22 @@ function selectSetting(label: string, optionText: RegExp): void {
 }
 
 describe('device tools', () => {
+  it('range presets only update the draft until Start sends the selected range', async () => {
+    render(<ScanView connectionId="c1" />);
+    for (const [label, end] of [['1~16', '16'], ['1~32', '32'], ['1~64', '64'], ['1~247', '247']] as const) {
+      fireEvent.click(screen.getByRole('button', { name: label }));
+      expect(screen.getByTestId('scan-from')).toHaveValue(1);
+      expect(screen.getByTestId('scan-to')).toHaveValue(Number(end));
+      expect(calls).toHaveLength(0);
+    }
+    fireEvent.click(screen.getByRole('button', { name: '1~64' }));
+    fireEvent.click(screen.getByRole('button', { name: '开始扫描' }));
+    await waitFor(() => expect(calls).toEqual([expect.objectContaining({
+      type: 'device.scan', connectionId: 'c1', from: 1, to: 64,
+      options: { fc: 3, start: 0, timeoutMs: 150, retries: undefined },
+    })]));
+  });
+
   it('keeps advanced settings collapsed by default and sends the default probe', async () => {
     render(<ScanView connectionId="c1" />);
     expect(screen.getByText('高级扫描配置').closest('details')?.open).toBe(false);

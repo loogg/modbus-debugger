@@ -1,17 +1,19 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { useApp, useBlocks, usePoints, useWorkspace } from '../store/app';
-import { Button, Checkbox, ComboInput, Dialog, Drawer, Field, InfoBand, Select, TextInput } from '../components/ui';
+import { Button, Checkbox, Dialog, Drawer, Field, InfoBand, Select, TextInput } from '../components/ui';
 import { AREAS } from '../../domain/address';
-import { BAUD_PRESETS } from './devices';
 import { findBlockOverlaps } from '../../domain/overlap';
 import { registersForType, type RawType } from '../../domain/mapping';
 import { engineeringToRaw } from '../../domain/scale';
+import { DEFAULT_DECIMAL_PLACES, MAX_DECIMAL_PLACES } from '../../domain/point-format';
 import type { BlockDef, PointDef } from '../../domain/model';
 import { useTranslation } from '../i18n';
 import { pointKey } from '../../shared/point-key';
 import { decodeRaw, type RawMemory } from '../../domain/mapping';
 
-const uid = (p: string) => `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+import { uid } from '../uid';
+import { AddConnectionDialog } from '../features/devices/connection-dialog';
+import { AddSlaveDialog } from '../features/devices/slave-dialog';
 
 export function Overlays() {
   const overlay = useApp((s) => s.overlay);
@@ -35,217 +37,6 @@ export function Overlays() {
   }
 }
 
-function AddConnectionDialog(props: { connectionId?: string }) {
-  const { t } = useTranslation();
-  const workspace = useWorkspace();
-  const existingConn = workspace?.connections.find((c) => c.id === props.connectionId);
-  const command = useApp((s) => s.command);
-  const close = useApp((s) => s.closeOverlay);
-  const toast = useApp((s) => s.toast);
-  const [name, setName] = useState(existingConn?.name ?? t('overlays.defaultConnName'));
-  const [protocol, setProtocol] = useState<'rtu' | 'tcp'>(existingConn?.transport ?? 'rtu');
-  const [port, setPort] = useState(existingConn?.rtu?.port ?? '');
-  const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
-  const portTouched = useRef(false);
-  const [baud, setBaud] = useState(String(existingConn?.rtu?.baudRate ?? 115200));
-  const [rts, setRts] = useState<'none' | 'toggle'>(existingConn?.rtsControl ?? 'none');
-  const [logLevel, setLogLevel] = useState<'info' | 'debug'>(existingConn?.logLevel ?? 'info');
-  const [interFrame, setInterFrame] = useState(String(existingConn?.interFrameMs ?? 0));
-  const applyPorts = (ports: Array<{ path: string; manufacturer: string | null }>) => {
-    setPortOptions(ports.map((p) => ({ value: p.path, label: p.manufacturer ? `${p.path} · ${p.manufacturer}` : p.path })));
-    // A brand-new connection defaults to the first port the machine actually has.
-    if (!portTouched.current && !existingConn && ports.length > 0) setPort(ports[0]!.path);
-  };
-  const refreshPorts = () => {
-    void command<{ path: string; manufacturer: string | null }[]>({ type: 'serial.list' }).then((res) => {
-      if (res.ok) applyPorts(res.value);
-    });
-  };
-  // enumerate once on open so the field shows a real port before the dropdown is touched
-  useEffect(() => {
-    void command<{ path: string; manufacturer: string | null }[]>({ type: 'serial.list' }).then((res) => {
-      if (res.ok) applyPorts(res.value);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  // Editing an existing connection must seed every field from it, otherwise saving
-  // would silently reset the frame format back to the dialog defaults.
-  const [dataBits, setDataBits] = useState(String(existingConn?.rtu?.dataBits ?? 8));
-  const [parity, setParity] = useState<'none' | 'even' | 'odd'>(existingConn?.rtu?.parity ?? 'none');
-  const [stopBits, setStopBits] = useState(String(existingConn?.rtu?.stopBits ?? 1));
-  const [host, setHost] = useState(existingConn?.tcp?.host ?? '192.168.1.50');
-  const [tcpPort, setTcpPort] = useState(String(existingConn?.tcp?.port ?? 502));
-  const [timeout, setTimeoutMs] = useState(String(existingConn?.timeoutMs ?? 500));
-  const [retries, setRetries] = useState(String(existingConn?.retries ?? 1));
-  const [reconnect, setReconnect] = useState<'auto' | 'manual'>(existingConn?.reconnect ?? 'auto');
-
-  const create = async () => {
-    if (!workspace) return;
-    const id = existingConn?.id ?? uid('conn');
-    const conn = {
-      id,
-      name,
-      transport: protocol,
-      rtu: protocol === 'rtu' ? { port, baudRate: Number(baud), dataBits: Number(dataBits) as 7 | 8, parity, stopBits: Number(stopBits) as 1 | 2 } : undefined,
-      tcp: protocol === 'tcp' ? { host, port: Number(tcpPort) } : undefined,
-      timeoutMs: Number(timeout),
-      retries: Number(retries),
-      reconnect,
-      interFrameMs: Number(interFrame) || 0,
-      rtsControl: rts,
-      logLevel,
-    };
-    const connections = existingConn
-      ? workspace.connections.map((c) => (c.id === existingConn.id ? conn : c))
-      : [...workspace.connections, conn];
-    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, connections } })).ok) return;
-    toast({ kind: 'success', title: existingConn ? t('overlays.toastConnUpdated') : t('overlays.toastConnCreated'), message: existingConn ? t('overlays.toastConnUpdatedMsg') : t('overlays.toastConnCreatedMsg') });
-    close();
-  };
-
-  return (
-    <Dialog title={existingConn ? t('overlays.editConnTitle') : t('overlays.addConnTitle')} subtitle={t('overlays.connSubtitle')} width={660} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={() => void create()}>{existingConn ? t('overlays.saveChanges') : t('overlays.createConn')}</Button></>}>
-      <Field label={t('overlays.fieldName')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
-      <div className="mt-4">
-        <div className="text-xs text-ink2 mb-1.5">{t('overlays.protocol')}</div>
-        <div className="grid grid-cols-2 rounded-ctl bg-accentsoft p-1 text-sm">
-          {(['rtu', 'tcp'] as const).map((p) => (
-            <button key={p} className={`focus-ring cursor-pointer rounded py-2 font-medium ${protocol === p ? 'bg-surface text-accent shadow-sm' : 'text-ink2'}`} onClick={() => setProtocol(p)}>
-              {p.toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </div>
-      {protocol === 'rtu' ? (
-        <>
-          <div className="mt-4 grid grid-cols-2 gap-4">
-            <Field label={t('overlays.fieldPort')} hint={t('overlays.portHint')}>
-              <ComboInput
-                testId="port-combo"
-                value={port}
-                onChange={(v) => {
-                  portTouched.current = true;
-                  setPort(v);
-                }}
-                options={portOptions}
-                onOpen={refreshPorts}
-                placeholder="COM1"
-              />
-            </Field>
-            <Field label={t('overlays.fieldBaud')} hint={t('overlays.baudHint')}>
-              <ComboInput testId="baud-combo" value={baud} onChange={(v) => setBaud(v)} options={BAUD_PRESETS} />
-            </Field>
-          </div>
-          <div className="mt-4 grid grid-cols-3 gap-4">
-            <Field label={t('overlays.fieldDataBits')}><Select value={dataBits} onChange={setDataBits} options={[{ value: '8', label: '8' }, { value: '7', label: '7' }]} /></Field>
-            <Field label={t('overlays.fieldParity')}><Select value={parity} onChange={(v) => setParity(v as typeof parity)} options={[{ value: 'none', label: 'None' }, { value: 'even', label: 'Even' }, { value: 'odd', label: 'Odd' }]} /></Field>
-            <Field label={t('overlays.fieldStopBits')}><Select value={stopBits} onChange={setStopBits} options={[{ value: '1', label: '1' }, { value: '2', label: '2' }]} /></Field>
-          </div>
-        </>
-      ) : (
-        <div className="mt-4 grid grid-cols-2 gap-4">
-          <Field label={t('overlays.fieldHost')}><TextInput value={host} onChange={(e) => setHost(e.target.value)} /></Field>
-          <Field label={t('overlays.fieldTcpPort')}><TextInput value={tcpPort} onChange={(e) => setTcpPort(e.target.value)} /></Field>
-        </div>
-      )}
-      <div className="mt-4 grid grid-cols-3 gap-4">
-        <Field label={t('overlays.fieldTimeout')}><TextInput data-testid="timeout-input" value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
-        <Field label={t('overlays.retries')}><TextInput value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
-        <Field label={t('overlays.fieldReconnect')}><Select value={reconnect} onChange={(v) => setReconnect(v as typeof reconnect)} options={[{ value: 'auto', label: t('overlays.reconnectAuto') }, { value: 'manual', label: t('overlays.reconnectManual') }]} /></Field>
-      </div>
-      <InfoBand tone="blue" className="mt-5">
-        <div className="text-sm font-bold text-accent mb-1">{t('overlays.afterCreate')}</div>
-        <div className="text-sm">{t('overlays.afterCreateBody')}</div>
-      </InfoBand>
-      <div className="mt-5 grid grid-cols-3 gap-4">
-        <Field label={t('overlays.fieldInterFrame')}><TextInput type="number" value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
-        <Field label={t('overlays.fieldRts')}><Select value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
-        <Field label={t('overlays.fieldLogLevel')}><Select value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
-      </div>
-    </Dialog>
-  );
-}
-function AddSlaveDialog(props: { connectionId: string; slaveId?: string; unitId?: number }) {
-  const { t } = useTranslation();
-  const workspace = useWorkspace();
-  const command = useApp((s) => s.command);
-  const close = useApp((s) => s.closeOverlay);
-  const select = useApp((s) => s.select);
-  const setModule = useApp((s) => s.setModule);
-  const existing = workspace?.slaves.find((s) => s.id === props.slaveId);
-  // Default to the first free Unit ID on this connection so a new slave never starts in conflict.
-  const nextUnit = (() => {
-    const used = new Set((workspace?.slaves ?? []).filter((s) => s.connectionId === props.connectionId).map((s) => s.unitId));
-    let n = 1;
-    while (used.has(n) && n < 247) n += 1;
-    return n;
-  })();
-  const [name, setName] = useState(existing?.name ?? t('overlays.slaveDefaultName', { unit: String(props.unitId ?? nextUnit) }));
-  const [unit, setUnit] = useState(String(existing?.unitId ?? props.unitId ?? nextUnit));
-  const [templateId, setTemplateId] = useState(existing?.templateId ?? workspace?.templates[0]?.id ?? '');
-  const [enabled, setEnabled] = useState(existing?.enabled ?? true);
-  const conn = workspace?.connections.find((c) => c.id === props.connectionId);
-  const template = workspace?.templates.find((t) => t.id === templateId);
-  const conflict = workspace?.slaves.some((s) => s.connectionId === props.connectionId && s.unitId === Number(unit) && s.id !== props.slaveId);
-
-  const save = async () => {
-    if (!workspace) return;
-    const ws = workspace;
-    if (existing) {
-      if (!(await command({ type: 'workspace.apply', workspace: { ...ws, slaves: ws.slaves.map((s) => (s.id === existing.id ? { ...s, name, unitId: Number(unit), templateId, enabled } : s)) } })).ok) return;
-    } else {
-      if (!(await command({ type: 'workspace.apply', workspace: { ...ws, slaves: [...ws.slaves, { id: uid('slave'), connectionId: props.connectionId, unitId: Number(unit), name, templateId, enabled }] } })).ok) return;
-    }
-    close();
-  };
-
-  return (
-    <Dialog title={existing ? t('overlays.editSlaveTitle') : t('overlays.addSlaveTitle')} subtitle={conn?.name ?? ''} width={660} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={conflict} onClick={() => void save()}>{existing ? t('overlays.saveSlave') : t('overlays.addSlaveTitle')}</Button></>}>
-      <Field label={t('overlays.fieldOwnerConn')}><TextInput readOnly value={`${conn?.name ?? ''} · ${conn?.transport === 'rtu' ? `${conn.rtu?.baudRate} ${conn.rtu?.dataBits}${conn.rtu?.parity.charAt(0).toUpperCase()}${conn.rtu?.stopBits}` : conn?.tcp?.host}`} /></Field>
-      <div className="mt-4 grid grid-cols-2 gap-4">
-        <Field label={t('overlays.fieldDeviceName')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
-        <Field label={t('overlays.fieldSlaveAddr')}><TextInput type="number" value={unit} onChange={(e) => setUnit(e.target.value)} /></Field>
-      </div>
-      <div className="mt-4">
-        <div className="text-xs text-ink2 mb-1.5">{t('overlays.deviceTemplate')}</div>
-        <Select value={templateId} onChange={setTemplateId} options={[{ value: '', label: t('overlays.noTemplateOption') }, ...(workspace?.templates.map((t) => ({ value: t.id, label: t.name })) ?? [])]} />
-      </div>
-      {templateId === '' ? (
-        <InfoBand tone="blue" className="mt-3">{t('overlays.noTemplateHint')}</InfoBand>
-      ) : template ? (
-        <div className="mt-3 rounded-card bg-surface2 p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-bold">{template.name}</span>
-            <span className="flex gap-4 text-xs text-accent">
-              <button className="focus-ring cursor-pointer hover:underline" onClick={() => { select({ templateId: template.id }); setModule('templates'); close(); }}>{t('overlays.viewTemplate')}</button>
-              <button className="focus-ring cursor-pointer hover:underline" onClick={async () => {
-                if (!workspace) return;
-                const copy = { ...template, id: uid('tpl'), name: t('overlays.templateCopyName', { name: template.name }) };
-                if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, copy] } })).ok) return;
-                setTemplateId(copy.id);
-              }}>{t('overlays.copyAsNewTemplate')}</button>
-            </span>
-          </div>
-          <div className="text-xs text-ink2 mt-1">{t('overlays.templateStats', { blocks: String(template.blocks.length), points: String(template.points.length), slaves: String(workspace?.slaves.filter((s) => s.templateId === template.id).length) })}</div>
-          <div className="text-xs text-ink2 mt-1">{template.blocks.map((b) => b.name).join(' · ')}</div>
-          <div className="text-xs text-ink2 mt-2">{t('overlays.templateEditAffectsAll')}</div>
-        </div>
-      ) : null}
-      <div className="mt-4 grid grid-cols-2 gap-6">
-        <div>
-          <div className="text-xs text-ink2 mb-1.5">{t('overlays.instanceOptions')}</div>
-          <Checkbox checked={enabled} onCheckedChange={setEnabled} label={t('overlays.enableSlave')} />
-        </div>
-        <div>
-          <div className="text-xs text-ink2 mb-1.5">{t('overlays.addrConflictCheck')}</div>
-          <div className={`rounded-ctl border px-3 py-2 text-xs ${conflict ? 'border-err text-err' : 'border-line text-ok'}`}>{conflict ? t('overlays.unitTaken', { unit }) : t('overlays.unitFree', { unit })}</div>
-        </div>
-      </div>
-      <InfoBand tone="blue" className="mt-4">{t('overlays.copyTemplateHint')}</InfoBand>
-    </Dialog>
-  );
-}
-
 function EditBlockDialog(props: { templateId: string; blockId?: string }) {
   const { t } = useTranslation();
   const workspace = useWorkspace();
@@ -266,8 +57,7 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
   const bad = overlaps.length > 0;
   const save = async () => {
     const id=existing?.id ?? uid('blk');
-    const blocks = existing ? template.blocks.map((b) => (b.id === existing.id ? { ...candidate, id: existing.id } : b)) : [...template.blocks, { ...candidate, id }];
-    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks } : t)) } })).ok) return;
+    if (!(await command({ type: 'template.upsertBlock', templateId: template.id, block: { ...candidate, id } })).ok) return;
     select({templateId:template.id,templateEditing:true,editBlockId:id});
     close();
   };
@@ -319,6 +109,7 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
   const [access, setAccess] = useState<'ro' | 'rw'>(existing?.access ?? 'rw');
   const [unit, setUnit] = useState(existing?.unit ?? '');
   const [format, setFormat] = useState(existing?.displayFormat ?? 'auto');
+  const [decimalPlaces, setDecimalPlaces] = useState(String(existing?.decimalPlaces ?? DEFAULT_DECIMAL_PLACES));
   const [scale, setScale] = useState(String(existing?.scale ?? 1));
   const [offsetEng, setOffsetEng] = useState(String(existing?.offset ?? 0));
   const [wordOrder, setWordOrder] = useState(existing?.mapping.wordOrder ?? 'ABCD');
@@ -362,12 +153,12 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
       unit,
       access,
       displayFormat: format,
+      decimalPlaces: Number(decimalPlaces),
       enumMap,
       highRisk,
       description: existing?.description ?? '',
     };
-    const points = existing ? template.points.map((p) => (p.id === existing.id ? point : p)) : [...template.points, point];
-    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, points } : t)) } })).ok) return;
+    if (!(await command({ type: 'template.upsertPoint', templateId: template.id, point })).ok) return;
     close();
   };
 
@@ -426,8 +217,9 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
         <Field label={t('overlays.access')}><Select value={access} onChange={(v) => setAccess(v as 'ro' | 'rw')} options={[{ value: 'ro', label: t('overlays.accessRo') }, { value: 'rw', label: t('overlays.accessRw') }]} disabled={block.area === 2 || block.area === 4} /></Field>
       </div>
       <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.displayAndConvert')}</div>
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Field label={t('overlays.format')}><Select value={format} onChange={(v) => setFormat(v as typeof format)} options={[{ value: 'auto', label: t('overlays.formatDec') }, { value: 'hex', label: t('overlays.formatHex') }, { value: 'binary', label: t('overlays.formatBin') }]} /></Field>
+        <Field label={t('overlays.decimalPlaces')}><Select value={decimalPlaces} onChange={setDecimalPlaces} disabled={!showScale || format !== 'auto'} options={Array.from({ length: MAX_DECIMAL_PLACES + 1 }, (_, value) => ({ value: String(value), label: String(value) }))} /></Field>
         <Field label={t('overlays.unit')}><TextInput value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="—" /></Field>
         <Field label={t('overlays.scaleOffset')}><TextInput readOnly value={showScale ? t('overlays.scaleConfigurable') : t('overlays.scaleNA')} /></Field>
       </div>
@@ -485,6 +277,7 @@ function InspectorDrawer(props: { pointId: string }) {
   const raw: RawMemory | null = entry.registers ? { kind: 'registers', registers: new Uint16Array(entry.registers) } : entry.bits ? { kind: 'bits', bits: entry.bits } : null;
   const rawValues = entry.registers ?? entry.bits?.map(value => value ? 1 : 0) ?? [];
   const regs = rawValues.slice(point.mapping.offset, point.mapping.offset + Math.min(4, point.mapping.registerCount));
+  const bytes = regs.flatMap((value) => [(value >> 8) & 0xff, value & 0xff]).map((value) => value.toString(16).toUpperCase().padStart(2, '0')).join(' ');
   return (
     <Drawer title={t('overlays.inspectorTitle')} subtitle={t('overlays.inspectorSubtitle', { point: point.name, type: point.mapping.rawType, offset: String(point.mapping.offset) })} width={500} onClose={close}
       footer={<Button onClick={() => { close(); select({ commView: 'messages' }); setModule('comm'); }}>{t('overlays.viewRecentComm')}</Button>}>
@@ -505,7 +298,7 @@ function InspectorDrawer(props: { pointId: string }) {
             </div>
           ))}
         </div>
-        <div className="text-xs text-ink2 mt-2 mono">{t('overlays.bytesFromCache')}</div>
+        <div className="text-xs text-ink2 mt-2 mono">{t('overlays.bytesFromCache', { bytes: bytes || '—' })}</div>
       </InfoBand>
       <div className="mt-5 text-sm font-bold mb-2">{t('overlays.dataInterpretation')}</div>
       <div className="rounded-card border border-line bg-surface px-4">
@@ -556,7 +349,7 @@ function AddSignalDialog(props: { groupId: string }) {
       const owner = pointOwner(workspace, pointId);
       return { id: uid('sig'), pointRef: { connectionId: owner?.connectionId ?? '', slaveId: owner?.slaveId ?? '', pointId: owner?.pointId ?? '' }, visible: true };
     });
-    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: workspace.trendGroups.map((g) => (g.id === group.id ? { ...g, signals: [...g.signals, ...signals] } : g)) } })).ok) return;
+    if (!(await command({ type: 'trend.addSignals', groupId: group.id, signals })).ok) return;
     close();
   };
   return (
@@ -623,7 +416,7 @@ function NewTrendGroupDialog() {
   const create = async () => {
     if (!workspace) return;
     const id = uid('g');
-    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, trendGroups: [...workspace.trendGroups, { id, name, windowSec: Number(windowSec), description: desc, signals: [] }] } })).ok) return;
+    if (!(await command({ type: 'trend.upsertGroup', group: { id, name, windowSec: Number(windowSec), description: desc, signals: [] } })).ok) return;
     select({ groupId: id });
     close();
     openOverlay({ kind: 'dialog', id: 'add-signal', groupId: id });
@@ -661,21 +454,21 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
   const save = async () => {
     if (!workspace || !template) return;
     const block: BlockDef = { ...candidate, id: uid('blk') };
-    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: [...t.blocks, block] } : t)) } })).ok) return;
+    if (!(await command({ type: 'template.upsertBlock', templateId: template.id, block })).ok) return;
     close();
   };
 
   return (
     <>
-      <Dialog title={t('overlays.saveAsBlockTitle')} subtitle={t('overlays.saveAsBlockSubtitle')} width={720} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={overlap} onClick={() => void save()}>{t('overlays.saveBlock')}</Button></>}>
+      <Dialog title={t('overlays.saveAsBlockTitle')} subtitle={t('overlays.saveAsBlockSubtitle')} width={720} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={!template || overlap} onClick={() => void save()}>{t('overlays.saveBlock')}</Button></>}>
         <Field label={t('overlays.targetTemplate')}>
-          <Select value={templateId} onChange={setTemplateId} options={[{ value: '', label: t('overlays.noTemplateOption') }, ...(workspace?.templates.map((t) => ({ value: t.id, label: t.name })) ?? [])]} />
+          <Select
+            value={templateId}
+            onChange={(value) => value === '__new_template__' ? setNewTemplateOpen(true) : setTemplateId(value)}
+            options={[{ value: '', label: t('overlays.noTemplateOption') }, ...(workspace?.templates.map((item) => ({ value: item.id, label: item.name })) ?? []), { value: '__new_template__', label: t('overlays.newTemplateEllipsis') }]}
+          />
         </Field>
-        <div className="mt-2 -mt-1 mb-3 rounded-ctl border border-line bg-surface px-3 py-2 text-sm">
-          {workspace?.templates.map((t) => (t.id === templateId ? <span key={t.id} className="text-accent">✓ {t.name}</span> : <span key={t.id} className="block text-ink2">{t.name}</span>))}
-          <button className="focus-ring mt-1 cursor-pointer text-xs text-accent hover:underline" onClick={() => setNewTemplateOpen(true)}>{t('overlays.newTemplateEllipsis')}</button>
-        </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="mt-4 grid grid-cols-2 gap-4">
           <Field label={t('overlays.blockName')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
           <Field label={t('overlays.pollPeriod')}><Select value={period} onChange={setPeriod} options={['100', '200', '500', '1000'].map((p) => ({ value: p, label: `${p} ms` }))} /></Field>
         </div>
@@ -692,7 +485,7 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
         <Dialog title={t('overlays.newTemplateTitle')} width={520} onClose={() => setNewTemplateOpen(false)} footer={<><Button onClick={() => setNewTemplateOpen(false)}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={async () => {
           if (!workspace) return;
           const id = uid('tpl');
-          if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: [...workspace.templates, { id, name: newTemplateName, version: '1.0', description: newTemplateDesc, blocks: [], points: [] }] } })).ok) return;
+          if (!(await command({ type: 'template.add', template: { id, name: newTemplateName, version: '1.0', description: newTemplateDesc, blocks: [], points: [] } })).ok) return;
           setTemplateId(id);
           setNewTemplateOpen(false);
         }}>{t('overlays.createAndSelect')}</Button></>}>

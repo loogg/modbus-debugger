@@ -1,5 +1,5 @@
 import type { UpdateService } from './services/updater';
-import { ipcMain, BrowserWindow } from 'electron';
+import { app, ipcMain, BrowserWindow } from 'electron';
 import { IPC_CHANNELS } from '../shared/preload-api';
 import type { CommandResult } from '../shared/commands';
 import type { RuntimeManager } from './runtime/manager';
@@ -13,7 +13,9 @@ export function registerIpc(
   const service =
     managerOrService instanceof AppBackendService
       ? managerOrService
-      : new AppBackendService(managerOrService, updater!, getWindow);
+      : new AppBackendService(managerOrService, updater!, getWindow, {
+        allowWholeWorkspaceApply: !app.isPackaged || Boolean(process.env.MODBUS_E2E_WORKSPACE),
+      });
 
   ipcMain.handle(IPC_CHANNELS.snapshot, () => service.getSnapshot());
   ipcMain.handle(IPC_CHANNELS.versions, () => service.getVersions());

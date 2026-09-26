@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { registersForType, type PointMapping } from './mapping';
 import { findBlockOverlaps } from './overlap';
+import { MAX_DECIMAL_PLACES } from './point-format';
 
 export const areaSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
 export type AreaCodeModel = z.infer<typeof areaSchema>;
@@ -27,6 +28,7 @@ export const pointSchema = z.object({
   unit: z.string().default(''),
   access: z.enum(['ro', 'rw']),
   displayFormat: z.enum(['auto', 'hex', 'binary']).default('auto'),
+  decimalPlaces: z.number().int().min(0).max(MAX_DECIMAL_PLACES).optional(),
   enumMap: z.record(z.string()).default({}),
   highRisk: z.boolean().default(false),
   description: z.string().default(''),

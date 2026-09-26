@@ -17,5 +17,20 @@ module.exports = {
   },
   overrides: [
     { files: ['tests/**/*', '*.config.ts', '*.config.js', '*.config.mjs'], rules: { 'no-console': 'off' } },
+    {
+      files: ['src/domain/**/*.{ts,tsx}', 'src/shared/**/*.{ts,tsx}'],
+      rules: {
+        'no-restricted-imports': ['error', { patterns: [{ group: ['**/main/**', '**/renderer/**', '**/preload/**'], message: 'Domain and shared contracts must not depend on process implementations.' }] }],
+      },
+    },
+    {
+      files: ['src/renderer/**/*.{ts,tsx}'],
+      rules: {
+        'no-restricted-imports': ['error', {
+          paths: [{ name: 'electron', message: 'Renderer must use the typed preload API.' }],
+          patterns: [{ group: ['**/main/**', '**/preload/**', 'node:*'], message: 'Renderer must use shared contracts and the typed preload API.' }],
+        }],
+      },
+    },
   ],
 };

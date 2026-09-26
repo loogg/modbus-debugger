@@ -1,6 +1,7 @@
 import { UpdateService, detectPackageKind } from './services/updater';
 import { prepareInstall, confirmUpdatedBoot, readInstallOutcome } from './services/self-update';
 import path from 'node:path';
+import { clampToWorkAreas } from './window-bounds';
 import fs from 'node:fs';
 import { app, BrowserWindow, dialog, nativeImage, net, protocol, screen, shell } from 'electron';
 import { pathToFileURL } from 'node:url';
@@ -69,21 +70,7 @@ log.info('runtime-paths', JSON.stringify({ ...storage, executable: app.getPath('
 log.info('app starting, userData =', app.getPath('userData'));
 
 function clampToBounds(x: number, y: number, width: number, height: number): Electron.Rectangle {
-  const displays = screen.getAllDisplays();
-  const visible = displays.some((d) => {
-    const b = d.workArea;
-    return x < b.x + b.width && x + width > b.x && y < b.y + b.height && y + height > b.y;
-  });
-  if (!visible && displays.length) {
-    const b = displays[0] as Electron.Display;
-    return {
-      x: b.workArea.x + 40,
-      y: b.workArea.y + 40,
-      width: Math.min(width, b.workArea.width),
-      height: Math.min(height, b.workArea.height),
-    };
-  }
-  return { x, y, width, height };
+  return clampToWorkAreas({ x, y, width, height }, screen.getAllDisplays().map((display) => display.workArea));
 }
 
 async function createWindow(): Promise<void> {

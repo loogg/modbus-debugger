@@ -1,12 +1,33 @@
 import React, { useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
 import { fmtDuration, fmtDurationMs, fmtEpoch, fmtEpochDateTime } from '../time';
+import { formatEngineeringNumber } from '../../domain/point-format';
 
 export interface LineSeries {
   name: string;
   unit?: string;
   color: string;
   data: Array<[number, number]>;
+  decimalPlaces?: number;
+}
+
+interface TooltipItem {
+  seriesIndex?: number;
+  seriesName?: string;
+  value?: [number, number];
+  marker?: string;
+}
+
+export function formatChartTooltip(raw: unknown, series: LineSeries[], formatTime: (time: number) => string): string {
+  const items = raw as TooltipItem[];
+  if (!Array.isArray(items) || items.length === 0) return '';
+  const head = formatTime(items[0]?.value?.[0] ?? 0);
+  return [head, ...items.map((item) => {
+    const index = item.seriesIndex ?? series.findIndex((candidate) => candidate.name === item.seriesName);
+    const value = item.value?.[1];
+    const display = typeof value === 'number' ? formatEngineeringNumber(value, series[index]?.decimalPlaces) : '—';
+    return `${item.marker ?? ''} ${item.seriesName ?? ''}: ${display}`;
+  })].join('<br/>');
 }
 
 export interface NumericChartProps {
@@ -65,13 +86,11 @@ function UnitChart(props: NumericChartProps) {
           grid: { left: 56, right: units.length > 1 ? 56 : 24, top: 40, bottom: 28 },
           tooltip: {
             trigger: 'axis',
+            renderMode: 'html',
+            className: 'modbus-chart-tooltip',
+            confine: true,
             // axis values are epoch ms; format them in the user-configured display timezone
-            formatter: (raw: unknown) => {
-              const list = raw as Array<{ seriesName?: string; value?: [number, number]; marker?: string }>;
-              if (!Array.isArray(list) || list.length === 0) return '';
-              const head = fmtXFull(list[0]?.value?.[0] ?? 0);
-              return [head, ...list.map((it) => `${it.marker ?? ''} ${it.seriesName ?? ''}: ${it.value?.[1] ?? ''}`)].join('<br/>');
-            },
+            formatter: (raw: unknown) => formatChartTooltip(raw, props.series, fmtXFull),
           },
           legend: { top: 4, right: 8, type: 'scroll', textStyle: { fontSize: 11 } },
           xAxis: {

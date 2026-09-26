@@ -3,17 +3,19 @@ import fs from 'node:fs';
 import { templateSchema, workspaceSchema } from '../../domain/model';
 import { copyTemplate } from '../../domain/template-copy';
 import { removeTemplateBlock, removeTemplatePoint } from '../../domain/template-edit';
+import { mutateWorkspace } from '../../domain/workspace-mutations';
 import { BlockCache, blockKey } from './block-cache';
 import { ConnectionRuntime, type ConnectionState } from './connection-runtime';
 import { DiagnosticsStore, type ConnectionHealth } from './diagnostics';
 import { SerialTransport, TcpTransport, type Transport } from './transport';
-import { HistoryStore, type EventRow, type SampleRow, type SessionDetail, type SessionSignalSchema, type SessionSummary } from '../services/history';
+import { HistoryStore, type EventRow, type SampleRow, type SessionDetail, type SessionSignalSchema, type SessionSummary, type TransactionMetadataRow } from '../services/history';
 import { WorkspaceService } from '../services/workspace';
 import type { AppDelta, AppSnapshot, BlockViewState, ConnectionStateView, PointViewState, RecordingView } from '../../shared/snapshot';
 import type { Command, CommandResult } from '../../shared/commands';
 import type { BlockDef, ConnectionDef, DeviceTemplate, PointDef, SlaveDef } from '../../domain/model';
 import { decodeRaw, type DecodedRaw } from '../../domain/mapping';
 import { engineeringToRaw, toEngineering } from '../../domain/scale';
+import { formatEngineeringNumber } from '../../domain/point-format';
 import { systemClock, type Clock } from '../../domain/protocol';
 import { pointKey } from '../../shared/point-key';
 
@@ -33,16 +35,12 @@ export function defaultTransportFactory(config: ConnectionDef): Transport {
   throw new Error(`connection ${config.name} has no transport settings`);
 }
 
-function fmtNumber(v: number): string {
-  if (!Number.isFinite(v)) return 'NaN';
-  const rounded = Math.round(v * 1000) / 1000;
-  return String(rounded);
-}
-
 export class RuntimeManager {
   readonly cache = new BlockCache();
   readonly diagnostics = new DiagnosticsStore();
   private runtimes = new Map<string, ConnectionRuntime>();
+  private shutdownByConnection = new Map<string, Promise<void>>();
+  private stopping = false;
   private clock: Clock;
   private updateState: UpdateState | undefined;
   private updateRevision = 0;
@@ -70,6 +68,7 @@ export class RuntimeManager {
   private recording: { sessionId: string; groupId: string; groupName: string; startedMono: number; startedUtc: string; schema: SessionSignalSchema[]; last: Map<string, DecodedRaw>; sampleCount: number; eventCount: number } | null = null;
   private pendingSamples: SampleRow[] = [];
   private pendingEvents: EventRow[] = [];
+  private recordedTxCursor = 0;
   private sessionsRev = 0;
   private warnings: string[] = [];
 
@@ -94,15 +93,18 @@ export class RuntimeManager {
   /* ---------------- lifecycle ---------------- */
 
   start(): void {
+    this.stopping = false;
     this.rebuildRuntimes();
     this.timer = setInterval(() => this.tick(), 100);
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     if (this.recording) this.stopRecording();
     for (const rt of this.runtimes.values()) await rt.stop();
+    await Promise.all(this.shutdownByConnection.values());
     this.history.close();
     this.runtimes.clear();
     this.workspaceService.flushAutosave();
@@ -121,21 +123,32 @@ export class RuntimeManager {
     if (delta) this.onDelta?.(delta);
   }
 
+  private scheduleRuntimeStop(connectionId: string, runtime: ConnectionRuntime): Promise<void> {
+    const previous = this.shutdownByConnection.get(connectionId) ?? Promise.resolve();
+    const shutdown = previous.catch(() => undefined).then(() => runtime.stop());
+    this.shutdownByConnection.set(connectionId, shutdown);
+    void shutdown.then(() => {
+      if (this.shutdownByConnection.get(connectionId) === shutdown) this.shutdownByConnection.delete(connectionId);
+    }, () => {
+      if (this.shutdownByConnection.get(connectionId) === shutdown) this.shutdownByConnection.delete(connectionId);
+    });
+    return shutdown;
+  }
+
   private rebuildRuntimes(): void {
     const ws = this.workspaceService.current;
     const wanted = new Set(ws.connections.map((c) => c.id));
     for (const [id, rt] of [...this.runtimes.entries()]) {
       if (!wanted.has(id)) {
-        void rt.stop();
+        void this.scheduleRuntimeStop(id, rt);
         this.runtimes.delete(id);
-        this.cache.removeSlave(id);
       }
     }
     for (const conn of ws.connections) {
       let rt = this.runtimes.get(conn.id);
       const configHash = JSON.stringify(conn);
       if (rt && this.connConfigHash.get(conn.id) !== configHash) {
-        void rt.stop();
+        void this.scheduleRuntimeStop(conn.id, rt);
         this.runtimes.delete(conn.id);
         rt = undefined;
       }
@@ -150,6 +163,7 @@ export class RuntimeManager {
           hooks: {
             onChange: () => {
               this.connStateRev++;
+              this.persistTransactions();
             },
             onState: (state: ConnectionState, detail?: string) => {
               this.connStateRev++;
@@ -161,7 +175,15 @@ export class RuntimeManager {
         this.runtimes.set(conn.id, rt);
         // A runtime recreated after a config edit must honour an explicit disconnect:
         // it stays offline until the user presses 连接 again.
-        if (!this.userOffline.has(conn.id)) void rt.start();
+        if (!this.userOffline.has(conn.id)) {
+          const nextRuntime = rt;
+          const shutdown = this.shutdownByConnection.get(conn.id);
+          const startIfCurrent = () => {
+            if (!this.stopping && this.runtimes.get(conn.id) === nextRuntime && !this.userOffline.has(conn.id)) void nextRuntime.start();
+          };
+          if (shutdown) void shutdown.then(startIfCurrent, () => undefined);
+          else startIfCurrent();
+        }
       }
       const targets = ws.slaves
         .filter((s) => s.connectionId === conn.id)
@@ -273,7 +295,7 @@ export class RuntimeManager {
     const eng = toEngineering(raw, { scale: ref.point.scale, offset: ref.point.offset });
     view.engNumber = Number.isFinite(eng) ? eng : null;
     view.finite = Number.isFinite(eng);
-    view.engText = Number.isFinite(eng) ? fmtNumber(eng) : '非有限数值';
+    view.engText = formatEngineeringNumber(eng, ref.point.decimalPlaces);
     if (ref.point.displayFormat === 'hex' && Number.isFinite(eng)) view.engText = view.rawText;
     return view;
   }
@@ -413,6 +435,7 @@ export class RuntimeManager {
 
   private tick(): void {
     this.sampleRecording();
+    this.persistTransactions();
     this.flushRecordingBuffers();
     this.checkWarnings();
     const delta = this.collectDelta();
@@ -602,6 +625,7 @@ export class RuntimeManager {
         unit: ref?.point.unit ?? '',
         scale: ref?.point.scale ?? 1,
         offset: ref?.point.offset ?? 0,
+        decimalPlaces: ref?.point.decimalPlaces,
         enumMap: ref?.point.enumMap ?? {},
         recordMode: numeric ? 'samples' : 'events',
       };
@@ -619,6 +643,7 @@ export class RuntimeManager {
       sampleCount: 0,
       eventCount: 0,
     };
+    this.recordedTxCursor = this.diagnostics.transactionTotal;
     this.recordingViewChanged = true;
     this.sessionsRev++;
     return { ok: true, value: this.recordingView() as RecordingView };
@@ -626,6 +651,7 @@ export class RuntimeManager {
 
   stopRecording(): CommandResult<null> {
     if (!this.recording) return { ok: false, error: '没有正在进行的记录会话' };
+    this.persistTransactions();
     this.flushRecordingBuffers();
     this.history.endSession(this.recording.sessionId);
     this.recording = null;
@@ -675,6 +701,30 @@ export class RuntimeManager {
     if (this.pendingEvents.length) {
       this.history.insertEvents(this.recording.sessionId, this.pendingEvents);
       this.pendingEvents = [];
+    }
+  }
+
+  private persistTransactions(): void {
+    const rec = this.recording;
+    const total = this.diagnostics.transactionTotal;
+    if (!rec) { this.recordedTxCursor = total; return; }
+    const transactions = this.diagnostics.transactionsSince(this.recordedTxCursor);
+    const first = total - transactions.length;
+    if (first > this.recordedTxCursor) throw new Error('记录会话事务积压超过诊断环容量');
+    const rawEnabled = this.workspaceService.getPrefs().persistRawComm;
+    const slaves = this.workspaceService.current.slaves;
+    for (const [index, tx] of transactions.entries()) {
+      const tMs = Math.max(0, Math.round(tx.startMono - rec.startedMono));
+      const row: TransactionMetadataRow = {
+        traceId: tx.traceId, connectionId: tx.connectionId,
+        slaveId: slaves.find(slave => slave.connectionId === tx.connectionId && slave.unitId === tx.unitId)?.id ?? null,
+        unitId: tx.unitId, sourceKind: tx.sourceKind, sourceId: tx.sourceId,
+        functionCode: tx.functionCode, result: tx.result, tMs, startUtc: tx.startUtc,
+        durationMs: tx.durationMs, exceptionCode: tx.exceptionCode,
+        mbapTransactionId: tx.mbapTransactionId, summary: tx.summary,
+      };
+      this.history.insertTransaction(rec.sessionId, row, rawEnabled ? tx : null);
+      this.recordedTxCursor = first + index + 1;
     }
   }
 
@@ -766,10 +816,38 @@ export class RuntimeManager {
         wsSvc.set(cmd.workspace);
         this.workspaceChanged();
         return { ok: true, value: null };
+      case 'connection.upsert':
+      case 'slave.upsert':
+      case 'template.add':
+      case 'template.copy':
+      case 'template.upsertBlock':
+      case 'template.patchBlock':
+      case 'template.importContent':
+      case 'template.upsertPoint':
+      case 'trend.upsertGroup':
+      case 'trend.deleteGroup':
+      case 'trend.addSignals':
+      case 'trend.removeSignal':
+      case 'trend.setSignalVisible':
+      case 'trend.setWindow':
+        try {
+          wsSvc.set(mutateWorkspace(wsSvc.current, cmd));
+          this.workspaceChanged();
+          return { ok: true, value: null };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
       case 'connection.connect': {
+        if (!this.runtimes.has(cmd.connectionId)) return { ok: false, error: 'connection runtime missing' };
+        this.userOffline.delete(cmd.connectionId);
+        // A config edit may have replaced the runtime while its old serial port is
+        // still closing. Never let a manual connect bypass that shutdown barrier.
+        while (this.shutdownByConnection.has(cmd.connectionId)) {
+          await this.shutdownByConnection.get(cmd.connectionId);
+        }
+        if (this.stopping) return { ok: false, error: 'runtime manager is stopping' };
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
-        this.userOffline.delete(cmd.connectionId);
         if (rt.state === 'offline' || rt.state === 'error') await rt.start();
         return { ok: true, value: null };
       }
@@ -826,11 +904,12 @@ export class RuntimeManager {
             detail,
             samples: this.history.readSamples(cmd.sessionId),
             events: this.history.readEvents(cmd.sessionId),
-            rawComm: this.workspaceService.getPrefs().persistRawComm ? this.history.readRawComm(cmd.sessionId) : [],
+            rawComm: this.history.readRawComm(cmd.sessionId),
           },
         };
       }
       case 'prefs.set': {
+        if (cmd.patch.persistRawComm !== undefined) this.persistTransactions();
         const prefs = wsSvc.updatePrefs(cmd.patch as Partial<import('../services/workspace').Prefs>);
         return { ok: true, value: prefs };
       }

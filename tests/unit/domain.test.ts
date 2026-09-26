@@ -37,6 +37,33 @@ describe('Point mapping golden decode', () => {
     const cdab = decodeRaw(regs(0xf2b0, 0x4240), m({ rawType: 'Float32', registerCount: 2, wordOrder: 'CDAB' }));
     expect(Number(cdab)).toBeCloseTo(48.237, 3);
   });
+  it('Float32 byte and word orders decode independent IEEE-754 bytes', () => {
+    const cases = [
+      { order: 'ABCD', words: [0x4240, 0xf2b0] },
+      { order: 'CDAB', words: [0xf2b0, 0x4240] },
+      { order: 'BADC', words: [0x4042, 0xb0f2] },
+      { order: 'DCBA', words: [0xb0f2, 0x4042] },
+    ] as const;
+    for (const { order, words } of cases) {
+      const mapping = m({ rawType: 'Float32', registerCount: 2, wordOrder: order });
+      expect(Number(decodeRaw(regs(...words), mapping))).toBeCloseTo(48.237, 3);
+      expect(Array.from((encodeRaw(regs(0, 0), mapping, 48.237) as { registers: Uint16Array }).registers)).toEqual(words);
+    }
+  });
+  it('Float64 π decodes and encodes the independent IEEE-754 vector in every word order', () => {
+    // 3.141592653589793 = 40 09 21 FB 54 44 2D 18, not bytes produced by the codec under test.
+    const cases = [
+      { order: 'ABCD', words: [0x4009, 0x21fb, 0x5444, 0x2d18] },
+      { order: 'CDAB', words: [0x5444, 0x2d18, 0x4009, 0x21fb] },
+      { order: 'BADC', words: [0x0940, 0xfb21, 0x4454, 0x182d] },
+      { order: 'DCBA', words: [0x182d, 0x4454, 0xfb21, 0x0940] },
+    ] as const;
+    for (const { order, words } of cases) {
+      const mapping = m({ rawType: 'Float64', registerCount: 4, wordOrder: order });
+      expect(Number(decodeRaw(regs(...words), mapping))).toBeCloseTo(Math.PI, 14);
+      expect(Array.from((encodeRaw(regs(0, 0, 0, 0), mapping, Math.PI) as { registers: Uint16Array }).registers)).toEqual(words);
+    }
+  });
   it('UInt8 high / low byte', () => {
     expect(decodeRaw(regs(0x1234), m({ rawType: 'UInt8', byteSelector: 'high' }))).toBe(0x12);
     expect(decodeRaw(regs(0x1234), m({ rawType: 'UInt8', byteSelector: 'low' }))).toBe(0x34);
@@ -50,6 +77,14 @@ describe('Point mapping golden decode', () => {
   it('String ascii and length', () => {
     const value = decodeRaw(regs(0x5632, 0x2e34, 0x0000, 0x0000), m({ rawType: 'String', registerCount: 4, stringLength: 6 }));
     expect(value).toBe('V2.4');
+  });
+  it('UTF-8 String respects byte length and zero padding across odd register boundaries', () => {
+    // UTF-8 "中AB" is E4 B8 AD 41 42: five bytes in three Modbus registers.
+    const mapping = m({ rawType: 'String', registerCount: 3, stringLength: 5, stringEncoding: 'utf8' });
+    const expected = [0xe4b8, 0xad41, 0x4200];
+    expect(decodeRaw(regs(...expected), mapping)).toBe('中AB');
+    expect(Array.from((encodeRaw(regs(0, 0, 0), mapping, '中AB') as { registers: Uint16Array }).registers)).toEqual(expected);
+    expect(registersForType('String', 5)).toBe(3);
   });
   it('bit memory Bool', () => {
     expect(decodeRaw({ kind: 'bits', bits: [false, true] }, m({ rawType: 'Bool', offset: 1 }))).toBe(true);

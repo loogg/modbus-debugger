@@ -7,6 +7,7 @@ import { HistoryStore } from '../../src/main/services/history';
 import { UpdateService } from '../../src/main/services/updater';
 import path from 'node:path';
 import fs from 'node:fs';
+import packageJson from '../../package.json';
 
 const testDir = path.resolve(__dirname, '../../out/test-temp/dev-bridge-test');
 
@@ -25,7 +26,7 @@ describe('DevBridgeServer and AppBackendService', () => {
     history = await HistoryStore.open(path.join(testDir, 'test.db'));
     manager = new RuntimeManager(wsSvc, history);
     updater = new UpdateService({
-      currentVersion: '0.11.0',
+      currentVersion: packageJson.version,
       packageKind: 'zip',
       platform: 'win32',
       arch: 'x64',
@@ -101,6 +102,13 @@ describe('DevBridgeServer and AppBackendService', () => {
       ok: false,
       error: expect.stringContaining('disallowed'),
     });
+  });
+
+  it('does not accept whole-workspace replacement through the ordinary backend', async () => {
+    const original = wsSvc.current;
+    const res = await backend.handleCommand({ type: 'workspace.apply', workspace: { ...original, name: 'stale renderer copy' } });
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('test fixtures') });
+    expect(wsSvc.current).toBe(original);
   });
 
   it('broadcasts delta events to connected clients', async () => {

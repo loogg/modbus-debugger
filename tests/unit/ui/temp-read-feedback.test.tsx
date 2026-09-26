@@ -6,7 +6,7 @@ import { useApp } from '../../../src/renderer/store/app';
 import { emptyWorkspace } from '../../../src/domain/model';
 import { DEFAULT_PREFS } from '../../../src/main/services/workspace';
 import type { AppSnapshot } from '../../../src/shared/snapshot';
-import type { RequestOutcome } from '../../../src/main/runtime/connection-runtime';
+import type { RequestOutcome } from '../../../src/shared/contracts';
 
 const outcome = (result: RequestOutcome['result'], exceptionCode: number | null = null): RequestOutcome => ({
   result, exceptionCode, response: result === 'ok' ? { kind: 'registers', fc: 3, registers: [7, 8] } : null,
@@ -28,7 +28,7 @@ afterEach(cleanup);
 
 describe('temporary read feedback', () => {
   it('distinguishes checked slave addresses from discovered devices in scan progress', () => {
-    useApp.getState().applyDelta({ revision: 1, connections: { c1: {
+    useApp.getState().applyDelta({ revision: (useApp.getState().snapshot?.revision ?? 0) + 1, connections: { c1: {
       state: 'online', detail: null, lastResponseUtc: null,
       scan: { phase: 'running', from: 1, to: 247, currentUnit: 5, checked: 4, found: [], elapsedMs: 1000,
         options: { fc: 3, start: 0, timeoutMs: 150, retries: 1 } },
@@ -107,7 +107,7 @@ describe('temporary read feedback', () => {
     render(<TempReadView connectionId="c1" />);
     expect(screen.getByRole('button', { name: '读取' })).toBeDisabled();
     expect(screen.getByText('连接后才能临时读取')).toBeTruthy();
-    act(() => useApp.getState().applyDelta({ revision: 1, connections: { c1: {
+    act(() => useApp.getState().applyDelta({ revision: (useApp.getState().snapshot?.revision ?? 0) + 1, connections: { c1: {
       state: 'online', detail: null, lastResponseUtc: null,
       scan: { phase: 'running', from: 1, to: 247, currentUnit: 5, checked: 4, found: [], elapsedMs: 500,
         options: { fc: 3, start: 0, timeoutMs: 150, retries: 1 } },

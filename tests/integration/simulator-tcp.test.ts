@@ -11,7 +11,7 @@ import type { BlockDef, ConnectionDef, SlaveDef } from '../../src/domain/model';
 
 const PORT = 50505;
 
-function waitForPort(port: number, ms = 15000): Promise<void> {
+function waitForPort(port: number, ms = 30000): Promise<void> {
   const start = Date.now();
   return new Promise((resolve, reject) => {
     const tryOnce = () => {
@@ -32,9 +32,13 @@ function waitForPort(port: number, ms = 15000): Promise<void> {
 
 describe('interop with the standalone PyModbus simulator', () => {
   it('polls live values, writes with read-back and performs a temporary read', async () => {
-    const sim: ChildProcess = spawn('python', [path.join(__dirname, '..', '..', 'tools', 'simulator', 'modbus_sim.py'), '--port', String(PORT)], { stdio: 'ignore' });
+    const sim: ChildProcess = spawn('python', [path.join(__dirname, '..', '..', 'tools', 'simulator', 'modbus_sim.py'), '--port', String(PORT)], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let startupError = '';
+    sim.stderr?.on('data', (chunk) => { startupError += String(chunk); });
     try {
-      await waitForPort(PORT);
+      await waitForPort(PORT).catch((error: unknown) => {
+        throw new Error(`${String(error)}; simulator exit=${sim.exitCode ?? 'running'}; stderr=${startupError.slice(-1000)}`);
+      });
       const cache = new BlockCache();
       const diag = new DiagnosticsStore();
       const config: ConnectionDef = {

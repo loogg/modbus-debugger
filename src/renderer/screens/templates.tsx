@@ -10,7 +10,6 @@ import { findBlockOverlaps } from '../../domain/overlap';
 import type { BlockDef, PointDef } from '../../domain/model';
 import { buildImportPlan } from '../../domain/import-plan';
 import { useTranslation } from '../i18n';
-import { copyTemplate } from '../../domain/template-copy';
 
 export function TemplatesScreen() {
   const { t } = useTranslation();
@@ -42,10 +41,9 @@ export function TemplatesScreen() {
           <>
             <Button
               onClick={async () => {
-                const ws = workspace;
-                const copy = copyTemplate(template, `tpl-${Date.now().toString(36)}`, t('templates.duplicateName', { name: template.name }));
-                const res = await command({ type: 'workspace.apply', workspace: { ...ws, templates: [...ws.templates, copy] } });
-                if (res.ok) select({ templateId: copy.id, templateEditing: false });
+                const newId = `tpl-${Date.now().toString(36)}`;
+                const res = await command({ type: 'template.copy', sourceTemplateId: template.id, newId, name: t('templates.duplicateName', { name: template.name }) });
+                if (res.ok) select({ templateId: newId, templateEditing: false });
               }}
             >
               {t('templates.duplicate')}
@@ -77,7 +75,7 @@ export function TemplatesScreen() {
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <Button size="sm" onClick={()=>select({templateId:template.id,templateEditing:true,editBlockId:b.id})}>打开数据块</Button>
-              <Button size="sm" onClick={()=>openOverlay({kind:'dialog',id:'confirm',title:'删除数据块',confirmLabel:'删除数据块',danger:true,
+              <Button size="sm" variant="danger" onClick={()=>openOverlay({kind:'dialog',id:'confirm',title:'删除数据块',confirmLabel:'删除数据块',danger:true,
                 message:`删除“${b.name}”将同时删除其中 ${template.points.filter(p=>p.blockId===b.id).length} 个点位及相关趋势引用，影响 ${bound.length} 个绑定从站。历史记录保留。`,
                 onConfirm:()=>{void(async()=>{if(!(await command({type:'template.deleteBlock',templateId:template.id,blockId:b.id})).ok)return;select({templateId:template.id,templateEditing:false,editBlockId:null});if((await command({type:'template.save',templateId:template.id})).ok)toast({kind:'success',title:'数据块已删除'});})();}})}>删除数据块</Button>
             </div>
@@ -176,14 +174,7 @@ function TemplateEdit(props: { templateId: string }) {
   const detail = points.find((p) => p.id === selectedPoint) ?? points[0];
 
   const handleSavePoint = async (updated: PointDef): Promise<boolean> => {
-    const updatedPoints = template.points.map((p) => (p.id === updated.id ? updated : p));
-    const res = await command({
-      type: 'workspace.apply',
-      workspace: {
-        ...workspace,
-        templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, points: updatedPoints } : t)),
-      },
-    });
+    const res = await command({ type: 'template.upsertPoint', templateId: template.id, point: updated });
     if (res.ok) {
       toast({ kind: 'success', title: t('templates.pointSavedToast') });
       return true;
@@ -280,11 +271,11 @@ function TemplateEdit(props: { templateId: string }) {
       {tab === 'memory' && <BlockMemoryLayout key={block.id} block={block} points={template.points} onSelect={id=>{setSelectedPoint(id);setTab('map');}}/>}
       {tab === 'block' && (
         <div className="max-w-xl flex flex-col gap-4">
-          <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.name')}</div><TextInput value={block.name} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, name: e.target.value } : b)) } : t)) } })} /></label>
+          <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.name')}</div><TextInput value={block.name} onChange={(e) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { name: e.target.value } })} /></label>
           <div className="grid grid-cols-3 gap-4">
-            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.startAddress')}</div><TextInput type="number" value={String(block.start)} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, start: Number(e.target.value) } : b)) } : t)) } })} /></label>
-            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.length')}</div><TextInput type="number" value={String(block.length)} onChange={(e) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, length: Number(e.target.value) } : b)) } : t)) } })} /></label>
-            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.period')}</div><Select value={String(block.periodMs)} onChange={(v) => void command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: t.blocks.map((b) => (b.id === block.id ? { ...b, periodMs: Number(v) } : b)) } : t)) } })} options={[{ value: '50', label: '50 ms' }, { value: '100', label: '100 ms' }, { value: '200', label: '200 ms' }, { value: '500', label: '500 ms' }, { value: '1000', label: '1000 ms' }]} /></label>
+            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.startAddress')}</div><TextInput type="number" value={String(block.start)} onChange={(e) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { start: Number(e.target.value) } })} /></label>
+            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.length')}</div><TextInput type="number" value={String(block.length)} onChange={(e) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { length: Number(e.target.value) } })} /></label>
+            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.period')}</div><Select value={String(block.periodMs)} onChange={(v) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { periodMs: Number(v) } })} options={[{ value: '50', label: '50 ms' }, { value: '100', label: '100 ms' }, { value: '200', label: '200 ms' }, { value: '500', label: '500 ms' }, { value: '1000', label: '1000 ms' }]} /></label>
           </div>
           <InfoBand tone="blue">{t('templates.calcRange', { start: block.start, end: block.start + block.length - 1, n: block.length })}</InfoBand>
         </div>
@@ -371,7 +362,7 @@ function ImportRegisters(props: { templateId: string }) {
       toast({ kind: 'error', title: t('templates.importBlockedTitle'), message: t('templates.importBlockedMessage') });
       return;
     }
-    if (!(await command({ type: 'workspace.apply', workspace: { ...workspace, templates: workspace.templates.map((t) => (t.id === template.id ? { ...t, blocks: nextBlocks, points: [...t.points, ...points] } : t)) } })).ok) return;
+    if (!(await command({ type: 'template.importContent', templateId: template.id, blocks, points })).ok) return;
     toast({ kind: 'success', title: t('templates.importedToast', { n: points.length }) });
     closeOverlay();
   };
@@ -466,7 +457,7 @@ function ImportRegisters(props: { templateId: string }) {
           {t('templates.importTargetLabel')}{workspace?.templates.find((tpl) => tpl.id === props.templateId)?.name}{t('templates.importTargetSuffix')}
         </div>
       </InfoBand>
-      <div className="mt-6 flex items-center justify-between">
+      <div className="sticky bottom-0 z-20 mt-6 flex items-center justify-between border-t border-line bg-surface py-3">
         <span className="text-xs text-ink2">{t('templates.supportedFormats')}</span>
         <Button variant="primary" disabled={!preview.plan} onClick={() => void doImport()}>{t('templates.importPoints', { n: parsed.length })}</Button>
       </div>

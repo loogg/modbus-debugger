@@ -2,10 +2,14 @@ import path from 'node:path';
 import fs from 'node:fs';
 import net from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { assertLegacyPreferencesUnchanged, createScratch, removeScratch, setupTestEnvironment, snapshotLegacyPreferences } from './tools/test-paths.mjs';
+import { assertLegacyPreferencesUnchanged, createScratch, removeScratch, setupTestEnvironment, snapshotLegacyPreferences, testRoot } from './tools/test-paths.mjs';
 
 setupTestEnvironment();
-const testRunDir = process.env.MODBUS_TEST_RUN_DIR || createScratch('e2e-');
+const testRunDir = process.env.MODBUS_TEST_RUN_DIR ? path.resolve(process.env.MODBUS_TEST_RUN_DIR) : createScratch('e2e-');
+if (path.dirname(testRunDir) !== testRoot || !/^e2e-[a-z0-9-]+$/i.test(path.basename(testRunDir))) {
+  throw new Error('MODBUS_TEST_RUN_DIR must be an e2e-* directory directly inside out/test-temp');
+}
+fs.mkdirSync(testRunDir, { recursive: true });
 process.env.MODBUS_TEST_RUN_DIR = testRunDir;
 process.env.MODBUS_DATA_DIR = testRunDir;
 const legacyPreferences = snapshotLegacyPreferences();

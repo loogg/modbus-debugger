@@ -4,9 +4,12 @@ import type { Command, CommandResult } from '../../shared/commands';
 import type { AppVersions } from '../../shared/preload-api';
 import { emptyWorkspace, connectionSchema, pointSchema, blockSchema, type Workspace, type BlockDef, type PointDef } from '../../domain/model';
 import { pointKey } from '../../shared/point-key';
-import type { ConnectionHealth } from '../../main/runtime/diagnostics';
+import { formatEngineeringNumber } from '../../domain/point-format';
+import type { ConnectionHealth } from '../../shared/contracts';
+import { mutateWorkspace } from '../../domain/workspace-mutations';
+import packageJson from '../../../package.json';
 
-export type MockFixtureName = 'default' | 'empty' | 'loading' | 'error' | 'timeout' | 'large-data';
+export type MockFixtureName = 'default' | 'empty' | 'loading' | 'error' | 'timeout' | 'large-data' | 'warning';
 
 function mkPoint(id: string, name: string, blockId: string, offset: number, rawType: 'Float32' | 'UInt16' | 'Bool', unit = ''): PointDef {
   return pointSchema.parse({
@@ -244,7 +247,7 @@ export class MockTransport implements AppTransport {
           slaveId: slave.id,
           pointId: p.id,
           rawText: isBool ? '1' : '220.5',
-          engText: isBool ? 'ON' : '220.5 V',
+          engText: isBool ? 'ON' : formatEngineeringNumber(220.5, p.decimalPlaces),
           finite: true,
           hasValue: true,
           rawNumber: 220,
@@ -286,7 +289,7 @@ export class MockTransport implements AppTransport {
       health,
       recording: null,
       sessions: [],
-      warnings: [],
+      warnings: fixture === 'warning' ? ['history.db 已超过 10 GB（当前 10.0 GB），请考虑归档。'] : [],
       prefs: {
         window: { x: 100, y: 100, width: 1440, height: 900 },
         sidebarWidth: 244,
@@ -336,7 +339,7 @@ export class MockTransport implements AppTransport {
               slaveId: slave.id,
               pointId: p.id,
               rawText: String(Math.round(eng * 10)),
-              engText: `${eng} ${p.unit}`,
+              engText: formatEngineeringNumber(eng, p.decimalPlaces),
               finite: true,
               hasValue: true,
               rawNumber: Math.round(eng * 10),
@@ -382,7 +385,7 @@ export class MockTransport implements AppTransport {
     return {
       electron: 'mock',
       node: 'mock',
-      app: '0.11.0-mock',
+      app: `${packageJson.version}-mock`,
     };
   }
 
@@ -395,11 +398,35 @@ export class MockTransport implements AppTransport {
       return { ok: false, error: 'Operation failed (Mock fixture: error)' };
     }
 
-    if (cmd.type === 'workspace.apply') {
-      this.snapshot = { ...this.snapshot, workspace: cmd.workspace, dirty: true };
-      const delta: AppDelta = { revision: ++this.revision, workspace: cmd.workspace, dirty: true };
-      for (const l of this.deltaListeners) l(delta);
-      return { ok: true, value: null as T };
+    if (
+      cmd.type === 'workspace.apply' ||
+      cmd.type === 'connection.upsert' ||
+      cmd.type === 'slave.upsert' ||
+      cmd.type === 'template.add' ||
+      cmd.type === 'template.copy' ||
+      cmd.type === 'template.upsertBlock' ||
+      cmd.type === 'template.patchBlock' ||
+      cmd.type === 'template.importContent' ||
+      cmd.type === 'template.upsertPoint' ||
+      cmd.type === 'trend.upsertGroup' ||
+      cmd.type === 'trend.deleteGroup' ||
+      cmd.type === 'trend.addSignals' ||
+      cmd.type === 'trend.removeSignal' ||
+      cmd.type === 'trend.setSignalVisible' ||
+      cmd.type === 'trend.setWindow'
+    ) {
+      try {
+        const workspace = cmd.type === 'workspace.apply'
+          ? cmd.workspace
+          : mutateWorkspace(this.snapshot.workspace, cmd);
+        const revision = ++this.revision;
+        this.snapshot = { ...this.snapshot, revision, workspace, dirty: true };
+        const delta: AppDelta = { revision, workspace, dirty: true };
+        for (const listener of this.deltaListeners) listener(delta);
+        return { ok: true, value: null as T };
+      } catch (error) {
+        return { ok: false, error: String(error) };
+      }
     }
 
     if (cmd.type === 'connection.connect') {

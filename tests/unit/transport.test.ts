@@ -31,6 +31,12 @@ describe('Renderer Transports', () => {
       mock.dispose();
     });
 
+    it('provides an isolated warning state for real browser review', async () => {
+      const mock = new MockTransport('warning');
+      expect((await mock.getSnapshot()).warnings).toEqual([expect.stringContaining('10 GB')]);
+      mock.dispose();
+    });
+
     it('handles point write and workspace commands in mock', async () => {
       const mock = new MockTransport('default');
       const res = await mock.command({
@@ -43,6 +49,21 @@ describe('Renderer Transports', () => {
       expect(snap.connections['c_tcp']?.state).toBe('online');
 
       mock.dispose();
+    });
+
+    it('uses the same granular template mutation contract as Main', async () => {
+      const mock = new MockTransport('empty');
+      try {
+        const before = await mock.getSnapshot();
+        const template = { id: 'review-template', name: 'Review template', version: '1.0', description: '', blocks: [], points: [] };
+        expect(await mock.command({ type: 'template.add', template })).toMatchObject({ ok: true });
+        const after = await mock.getSnapshot();
+        expect(after.revision).toBeGreaterThan(before.revision);
+        expect(after.workspace.templates.map((item) => item.id)).toContain(template.id);
+        expect(await mock.command({ type: 'template.add', template })).toMatchObject({ ok: false });
+      } finally {
+        mock.dispose();
+      }
     });
 
     it('handles simulated error fixture', async () => {

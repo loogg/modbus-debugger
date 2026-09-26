@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { workspaceSchema } from '../domain/model';
+import { blockSchema, connectionSchema, pointSchema, slaveSchema, templateSchema, trendGroupSchema, trendSignalSchema, workspaceSchema } from '../domain/model';
 import { scanOptionsSchema } from './scan-options';
 
 export const commandSchema = z.discriminatedUnion('type', [
@@ -24,6 +24,20 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('workspace.export') }),
   z.object({ type: z.literal('workspace.importText'), text: z.string() }),
   z.object({ type: z.literal('workspace.apply'), workspace: workspaceSchema }),
+  z.object({ type: z.literal('connection.upsert'), connection: connectionSchema }),
+  z.object({ type: z.literal('slave.upsert'), slave: slaveSchema }),
+  z.object({ type: z.literal('template.add'), template: templateSchema }),
+  z.object({ type: z.literal('template.copy'), sourceTemplateId: z.string(), newId: z.string(), name: z.string().min(1) }),
+  z.object({ type: z.literal('template.upsertBlock'), templateId: z.string(), block: blockSchema }),
+  z.object({ type: z.literal('template.patchBlock'), templateId: z.string(), blockId: z.string(), patch: blockSchema.pick({ name: true, start: true, length: true, periodMs: true }).partial() }),
+  z.object({ type: z.literal('template.importContent'), templateId: z.string(), blocks: z.array(blockSchema), points: z.array(pointSchema) }),
+  z.object({ type: z.literal('template.upsertPoint'), templateId: z.string(), point: pointSchema }),
+  z.object({ type: z.literal('trend.upsertGroup'), group: trendGroupSchema }),
+  z.object({ type: z.literal('trend.deleteGroup'), groupId: z.string() }),
+  z.object({ type: z.literal('trend.addSignals'), groupId: z.string(), signals: z.array(trendSignalSchema).min(1) }),
+  z.object({ type: z.literal('trend.removeSignal'), groupId: z.string(), signalId: z.string() }),
+  z.object({ type: z.literal('trend.setSignalVisible'), groupId: z.string(), signalId: z.string(), visible: z.boolean() }),
+  z.object({ type: z.literal('trend.setWindow'), groupId: z.string(), windowSec: z.number().int().min(5).max(86400) }),
   z.object({ type: z.literal('connection.connect'), connectionId: z.string() }),
   z.object({ type: z.literal('connection.disconnect'), connectionId: z.string() }),
   z.object({

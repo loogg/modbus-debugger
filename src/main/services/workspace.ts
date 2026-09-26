@@ -2,18 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { emptyWorkspace, migrateWorkspace, workspaceSchema, type Workspace } from '../../domain/model';
+import type { Prefs } from '../../shared/contracts';
 
-export interface Prefs {
-  window: { x: number | null; y: number | null; width: number; height: number };
-  sidebarWidth: number;
-  historyDbPath: string | null;
-  persistRawComm: boolean;
-  lastWorkspacePath: string | null;
-  /** 'local' follows the OS; otherwise an IANA name applied to every displayed timestamp. */
-  timezone: string;
-  /** BCP-47 language tag for the UI; only zh-CN is wired today. */
-  language: string;
-}
+export type { Prefs } from '../../shared/contracts';
 
 export const DEFAULT_PREFS: Prefs = {
   window: { x: null, y: null, width: 1440, height: 960 },

@@ -73,7 +73,7 @@ const PointRow = React.memo(
             ? `+${m.offset}${m.bitOffset ? `.${m.bitOffset}:${m.bitOffset + m.bitWidth - 1}` : ''}`
             : `+${m.offset}`}
         </div>
-        <div style={{ width: COL.point }} className="px-3 sticky left-0 bg-inherit z-10 text-sm font-medium truncate">{point.name}</div>
+        <div style={{ width: COL.point }} className={`px-3 sticky left-0 z-10 text-sm font-medium truncate ${checked ? 'bg-accentsoft' : 'bg-surface'}`}>{point.name}</div>
         <div style={{ width: COL.type }} className="px-3 text-xs text-ink2">
           {m.rawType}
           {m.rawType === 'BitField' ? m.bitWidth : ''}
@@ -206,15 +206,10 @@ export function RealtimeScreen() {
     }
     const existing = new Set(group.signals.map((s) => pointKey(s.pointRef.slaveId, s.pointRef.pointId)));
     const added = ids.filter((id) => !existing.has(pointKey(slave.id, id)));
-    const next = {
-      ...ws,
-      trendGroups: ws.trendGroups.map((g) =>
-        g.id === group.id
-          ? { ...g, signals: [...g.signals, ...added.map((pointId) => ({ id: `sig-${Date.now().toString(36)}-${pointId.slice(-4)}`, pointRef: { connectionId: slave.connectionId, slaveId: slave.id, pointId }, visible: true }))] }
-          : g,
-      ),
-    };
-    await command({ type: 'workspace.apply', workspace: next });
+    const signals = added.map((pointId) => ({ id: `sig-${Date.now().toString(36)}-${pointId.slice(-4)}`, pointRef: { connectionId: slave.connectionId, slaveId: slave.id, pointId }, visible: true }));
+    if (!signals.length) return;
+    const result = await command({ type: 'trend.addSignals', groupId: group.id, signals });
+    if (!result.ok) return;
     clearSelection();
     toast({ kind: 'success', title: t('realtime.joinedTrend', { name: group.name }), message: t('realtime.joinedTrendMsg', { count: added.length }) });
   };

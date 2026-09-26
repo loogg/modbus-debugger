@@ -7,6 +7,7 @@ const bytes=Buffer.from('PK\x03\x04 E2E verified update');
 const name='modbus-debugger-99.0.0-win-x64.zip';
 const latest={tag_name:'v99.0.0',draft:false,prerelease:false,published_at:'2026-09-15T00:00:00Z',body:'测试更新说明：多个修复。',assets:[{name,size:bytes.length,state:'uploaded',digest:`sha256:${createHash('sha256').update(bytes).digest('hex')}`,browser_download_url:`https://github.com/loogg/modbus-debugger/releases/download/v99.0.0/${name}`}]};
 interface Fixture { latest:typeof latest; bytes:number[]; mode:'ok'|'error'|'slow'|'corrupt'; requests:string[]; revealed:string|null; opened:string|null }
+interface ReleaseProbe { done:boolean; error:string|null; value:{status:number;host:string|null;prefix:number[]}|null }
 const state=async()=> (await browser.execute(async()=>({update:(await (window as unknown as {modbus:ModbusApi}).modbus.getSnapshot()).update!}))).update;
 const click=(label:string)=>$(`//button[normalize-space(.)="${label}"]`).click();
 const waitText=(text:string)=>browser.waitUntil(async()=> (await $('body').getText()).includes(text));
@@ -41,19 +42,46 @@ describe('关于与 GitHub 更新（真实 UI / Main / 文件 I/O）',()=>{
     await browser.electron.execute((electron)=>{ const ctx=globalThis as unknown as {originalUpdateFetch?:typeof electron.net.fetch}; if(ctx.originalUpdateFetch){electron.net.fetch=ctx.originalUpdateFetch;delete ctx.originalUpdateFetch;} });
     await browser.electron.restoreAllMocks();
   });
-  it('displays the actual application version and checks the real GitHub Releases endpoint',async()=>{
+  it('displays the actual version and handles the real GitHub Releases response',async()=>{
     const versions=await browser.execute(()=>(window as unknown as {modbus:ModbusApi}).modbus.versions());
     expect(await $('[data-testid="app-version"]').getText()).toBe(`v${versions.app}`);
     await check(); await browser.waitUntil(async()=>!['idle','checking'].includes((await state()).phase),{timeout:25000});
-    const update=await state(); expect(['current','available']).toContain(update.phase); expect(update.latest?.url).toContain('https://github.com/loogg/modbus-debugger/releases/tag/');
+    const update=await state();
+    if (update.phase === 'error') {
+      // GitHub's unauthenticated API quota is external state shared across runs.
+      // A rate-limit response is valid only when the actual UI offers recovery.
+      expect(update.error).toContain('GitHub 请求受限');
+      expect(await $('body').getText()).toContain(update.error!);
+      expect(await $('//button[normalize-space(.)="重新检查" or normalize-space(.)="检查更新"]').isExisting()).toBe(true);
+      console.log(`[update] live GitHub endpoint rate-limited: ${update.error}`);
+      return;
+    }
+    expect(['current','available']).toContain(update.phase); expect(update.latest?.url).toContain('https://github.com/loogg/modbus-debugger/releases/tag/');
     const asset=update.latest?.asset;
     expect(asset).not.toBeNull();
-    const probe=await browser.electron.execute(async(electron,url)=>{
-      const response=await electron.net.fetch(url,{redirect:'follow',credentials:'omit'}); const target=response.url;
-      const reader=response.body!.getReader(); const prefix:number[]=[];
-      while(prefix.length<4){const chunk=await reader.read(); if(chunk.done)break; prefix.push(...chunk.value.slice(0,4-prefix.length));}
-      await reader.cancel().catch(()=>{}); return {status:response.status,host:target?new URL(target).hostname:null,prefix};
+    // A real GitHub asset request may exceed Electron Service's 10 s CDP command timeout.
+    // Start it in Main, then poll its result with short CDP calls without faking the response.
+    await browser.electron.execute((electron,url)=>{
+      const ctx=globalThis as unknown as {releaseProbe?:ReleaseProbe};
+      const probe:ReleaseProbe={done:false,error:null,value:null}; ctx.releaseProbe=probe;
+      const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),45000);
+      void (async()=>{
+        try {
+          const response=await electron.net.fetch(url,{redirect:'follow',credentials:'omit',signal:controller.signal});
+          const target=response.url; const reader=response.body!.getReader(); const prefix:number[]=[];
+          while(prefix.length<4){const chunk=await reader.read(); if(chunk.done)break; prefix.push(...chunk.value.slice(0,4-prefix.length));}
+          await reader.cancel().catch(()=>{});
+          probe.value={status:response.status,host:target?new URL(target).hostname:null,prefix};
+        } catch(error) { probe.error=error instanceof Error?error.message:String(error); }
+        finally { clearTimeout(timer); probe.done=true; }
+      })();
     },asset!.url);
+    await browser.waitUntil(async()=>Boolean(await browser.electron.execute(()=>
+      (globalThis as unknown as {releaseProbe?:ReleaseProbe}).releaseProbe?.done)),
+    {timeout:50000,interval:1000,timeoutMsg:'真实 GitHub Release 附件探测在 50 秒内未结束'});
+    const result=await browser.electron.execute(()=>(globalThis as unknown as {releaseProbe?:ReleaseProbe}).releaseProbe);
+    expect(result?.error).toBeNull(); expect(result?.value).not.toBeNull();
+    const probe=result!.value!;
     expect(probe.status).toBe(200); expect(probe.prefix.slice(0,2)).toEqual([80,75]);
     if(probe.host) expect(['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com']).toContain(probe.host);
     await browser.saveScreenshot(path.resolve('out/audit/update-shots/current.png'));

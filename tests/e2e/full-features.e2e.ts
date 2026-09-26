@@ -1,11 +1,17 @@
 import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ModbusApi } from '../../src/shared/preload-api';
 
 const SHOTS = path.resolve('out', 'audit', 'screenshots');
+const FIGMA_SHOTS = path.resolve('out', 'audit', 'figma-current');
 async function shot(name: string): Promise<void> {
   fs.mkdirSync(SHOTS, { recursive: true });
   await browser.saveScreenshot(path.join(SHOTS, `${name}.png`));
+}
+async function figmaShot(name: string): Promise<void> {
+  fs.mkdirSync(FIGMA_SHOTS, { recursive: true });
+  await browser.saveScreenshot(path.join(FIGMA_SHOTS, `${name}.png`));
 }
 
 /** Use real keyboard input so focus and validation paths participate. */
@@ -57,6 +63,7 @@ describe('既有页面操作回归', () => {
     const text = await bodyText();
     expect(text).toContain('从站地址 (Unit ID)');
     expect(text).toMatch(/Unit ID \d+ 可用|已被占用/);
+    await figmaShot('03-add-slave-dialog');
     await clickText('取消');
     await waitGone('从站地址 (Unit ID)');
   });
@@ -123,6 +130,7 @@ describe('既有页面操作回归', () => {
     text = await bodyText();
     expect(text).toContain('记录信号');
     expect(text).toContain('连续样本');
+    await figmaShot('12B-history-signals');
   });
 
   it('通信：连接健康与点位追踪视图', async () => {
@@ -137,6 +145,8 @@ describe('既有页面操作回归', () => {
     text = await bodyText();
     expect(text).toContain('请求来源');
     expect(text).toContain('原始帧');
+    expect(text).toContain('个点位：');
+    await figmaShot('23-point-trace');
   });
 
   it('连接设置：连接时锁定，断开后可编辑保存，再连接恢复锁定', async () => {
@@ -147,7 +157,12 @@ describe('既有页面操作回归', () => {
     expect(text).toContain('连接名称');
     expect(text).toContain('从站');
     const timeoutSel = 'input[data-testid="timeout-input"]';
-    expect(await (await $(timeoutSel)).getValue()).toBe('800');
+    const originalTimeout = await browser.execute(async () => {
+      const api = (window as unknown as { modbus: ModbusApi }).modbus;
+      return (await api.getSnapshot()).workspace.connections.find((connection) => connection.id === 'conn-tcp')?.timeoutMs;
+    });
+    expect(typeof originalTimeout).toBe('number');
+    expect(await (await $(timeoutSel)).getValue()).toBe(String(originalTimeout));
 
     // connected -> parameters locked, disconnect offered
     expect(await (await $(timeoutSel)).isEnabled()).toBe(false);
@@ -176,10 +191,10 @@ describe('既有页面操作回归', () => {
     expect(await (await $(timeoutSel)).getValue()).toBe('700');
     expect(await (await $(timeoutSel)).isEnabled()).toBe(false);
 
-    // restore the fixture value for later specs
+    // Restore the value present at this spec's start for later specs.
     await clickText('断开连接');
     await browser.waitUntil(async () => (await bodyText()).includes('未连接：可编辑参数'), { timeout: 15000 });
-    await setNative(timeoutSel, '800');
+    await setNative(timeoutSel, String(originalTimeout));
     await clickText('保存');
     await browser.pause(400);
     await clickText('连接');

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SHOTS = path.resolve('out', 'audit', 'screenshots');
+const FIGMA_SHOTS = path.resolve('out', 'audit', 'figma-current');
 
 interface PuppeteerBrowser {
   getPuppeteer(): Promise<{ targets(): Array<{ type(): string; page(): Promise<unknown> }> }>;
@@ -32,6 +33,10 @@ async function shot(name: string): Promise<void> {
   fs.mkdirSync(SHOTS, { recursive: true });
   await browser.saveScreenshot(path.join(SHOTS, `${name}.png`));
 }
+async function figmaShot(name: string): Promise<void> {
+  fs.mkdirSync(FIGMA_SHOTS, { recursive: true });
+  await browser.saveScreenshot(path.join(FIGMA_SHOTS, `${name}.png`));
+}
 
 describe('Modbus Debugger packaged app E2E', () => {
   it('launches with the demo workspace and device topology', async () => {
@@ -55,6 +60,13 @@ describe('Modbus Debugger packaged app E2E', () => {
     expect(text).toContain('母线电压');
     expect(text).toContain('后台持续刷新');
     await shot('04A-realtime-1440');
+    // The first slave click selects it and collapses its tree; reopen to choose a block.
+    await $('//button[contains(., "伺服驱动器 A")]').click();
+    await $('//button[normalize-space(.)="控制寄存器"]').waitForDisplayed();
+    await $('//button[normalize-space(.)="控制寄存器"]').click();
+    await browser.waitUntil(async () => (await bodyText()).includes('当前聚焦：控制寄存器'), { timeout: 10000 });
+    expect(await bodyText()).toContain('目标转速');
+    await figmaShot('04B-realtime-block-focus');
   });
 
   it('writes 目标转速 and confirms via read-back', async () => {
