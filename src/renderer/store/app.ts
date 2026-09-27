@@ -218,8 +218,8 @@ export const useApp = create<AppState>((set, get) => ({
           if (tx.result === 'ok') writeStates[writeKey] = { phase: 'writing', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: null };
           else if (tx.result === 'exception') writeStates[writeKey] = { phase: 'rejected', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: tx.exceptionCode };
           else writeStates[writeKey] = { phase: 'unknown', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: null };
-        } else if (tx.sourceKind === 'readback' && tx.result === 'ok') {
-          writeStates[writeKey] = { phase: 'confirmed', attempted: '', at: now, exceptionCode: null };
+        } else if (tx.sourceKind === 'readback') {
+          writeStates[writeKey] = { phase: tx.result === 'ok' ? 'confirmed' : 'unknown', attempted: '', at: now, exceptionCode: null };
         }
       }
       if (hasWriteTx) for (const [k, v] of Object.entries(writeStates)) {

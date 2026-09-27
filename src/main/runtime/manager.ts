@@ -805,6 +805,10 @@ export class RuntimeManager {
       }
       case 'workspace.export':
         return { ok: true, value: wsSvc.exportText() };
+      case 'workspace.exportFile': {
+        const res = wsSvc.exportToFile(cmd.path);
+        return res.ok ? { ok: true, value: res.path } : { ok: false, error: res.error ?? 'export failed' };
+      }
       case 'workspace.importText': {
         const res = wsSvc.importFromBuffer(cmd.text);
         if (!res.ok || !res.workspace) return { ok: false, error: res.error ?? 'import failed' };

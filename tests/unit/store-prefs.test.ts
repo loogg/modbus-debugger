@@ -57,7 +57,7 @@ function snapshot(revision: number): AppSnapshot {
 describe('store applyDelta display prefs', () => {
   beforeEach(() => {
     setDisplayTimeZone('local');
-    useApp.setState({ snapshot: snapshot(1) });
+    useApp.setState({ snapshot: snapshot(1), writeStates: {} });
   });
 
   it('applies a timezone change bundled with polling transactions', () => {
@@ -109,5 +109,12 @@ describe('store applyDelta display prefs', () => {
     expect(getDisplayTimeZone()).toBeUndefined();
     useApp.getState().applyDelta({ revision: 7, prefs: { ...base.prefs, timezone: 'local' } });
     expect(getDisplayTimeZone()).toBeUndefined();
+  });
+
+  it.each(['timeout', 'transport', 'unexpected'] as const)('ends pending write as unknown when read-back returns %s', (result) => {
+    useApp.getState().applyDelta({ revision: 2, transactions: [tx(1, { sourceKind: 'write', sourceId: 'p1', result: 'ok' })] });
+    expect(useApp.getState().writeStates.p1?.phase).toBe('writing');
+    useApp.getState().applyDelta({ revision: 3, transactions: [tx(2, { sourceKind: 'readback', sourceId: 'p1', result })] });
+    expect(useApp.getState().writeStates.p1?.phase).toBe('unknown');
   });
 });

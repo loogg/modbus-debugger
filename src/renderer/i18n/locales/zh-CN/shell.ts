@@ -122,7 +122,7 @@ export const shell = {
       display: '显示',
       importCompat: '导入兼容',
       recordingStorage: '记录与存储',
-      writeSafety: '写入安全',
+      writeSafety: '写入流程',
       log: '日志',
     },
   },

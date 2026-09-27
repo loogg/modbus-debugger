@@ -32,10 +32,12 @@
 ## Write Semantics
 
 - Value 始终是最后一次 confirmed value；Editing 时后台 Poll 不覆盖输入，Writing 时 pending 与 confirmed 分离。
-- Write 成功后立即 Read Back；Exception 保留旧值；Timeout 表示结果未知并立即 Read Back。
+- Read Back 失败必须结束写入中的等待态并显示结果未知；不得把未确认的输入当作设备值。
+- Write 成功后立即 Read Back；Exception 保留旧值；Timeout、Transport Error 或异常响应导致写入结果不明时，不自动重发写请求，尝试 Read Back 确认设备实际值。
 - Coil 单 Bool：FC05 → Read Back。
 - Holding Register 小于 16 bit Point：Read latest → Mask/Merge → FC06/FC16 → Read Back；禁止旧 Cache RMW。
 - Cache 更新后重新 Decode 所有共享受影响 Raw Memory 的 Point。
+- 先读合并和写后回读是内置写入流程，不提供全局开关；高风险二次确认按点位配置。设置页将固定流程作为说明，不以禁用且勾选的复选框伪装成偏好。
 
 ## Scale / Offset
 
@@ -69,7 +71,8 @@
 ## Workspace / Persistence
 
 - 默认配置、数据库、缓存、日志和临时文件跟随选定的可写存储根目录；失败不得静默回退 AppData。具体优先级、Portable / Setup 行为与测试隔离见 [AGENTS.md](../AGENTS.md) 和[开发说明](development.md#数据缓存与测试隔离)。
-- Workspace 使用带 `schemaVersion` 的 `.workspace.json`，自动保存并支持另存为、导入、导出。
+- Workspace 使用带 `schemaVersion` 的 `.workspace.json`，自动保存并支持另存为、导入、导出。导出生成独立文件，不改变当前自动保存路径。
 - Workspace 保存 Connection、Slave、共享 Template 定义/绑定、Trend Group 和可移植布局；本机 Window/Sidebar 偏好放 app `userData`。
 - 自动保存使用临时文件 + 原子替换；导入失败不破坏当前 Workspace。
+- 设置页只有可操作的偏好才显示控件：工作区文件操作、记录期间保存 Raw Communication、时区和清空通信诊断。固定地址规则、写入流程和当前仅有的一种语言以说明呈现；文件操作失败须显示原因，取消文件选择不报错。
 - History 使用独立 SQLite `history.db`；10 GB 只提醒，不自动删除，也不代表已验证的可用容量或回放性能。当前验收目标为单会话 100 万数值样本，实测边界见[容量报告](history-capacity-benchmark.md)。**对 Figma 00“每个事务持久化 source metadata”的明确限定**：每个实时事务都携带来源元数据；仅在主动 Record Session 期间将每笔事务的轻量元数据持久化到 `history.db`，非记录期间的通信诊断保留在有界内存中。Raw ADU/PDU 在 Record Session 中仍由 Raw Communication 开关决定是否持久化，默认关闭，避免默认长期轮询无上限地增长磁盘数据。

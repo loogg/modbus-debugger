@@ -489,6 +489,34 @@ describe('retry policy', () => {
     expect(confirmed?.kind === 'registers' && confirmed.registers[0]).toBe(42);
     await ctx.runtime.stop();
   });
+  it('does not resend an ambiguous transport write and reads the device value back', async () => {
+    const ctx = setup({ ...conn, retries: 2 });
+    let applied = false;
+    ctx.transport.onResponse((adu) => [respRegs([applied ? 42 : 1, 0, 0, 0], tidOf(adu))]);
+    const ordinaryWrite = ctx.transport.write.bind(ctx.transport);
+    ctx.transport.write = async (adu) => {
+      if (fcOf(adu) === 0x06) {
+        // The frame reached the device, but the driver reported an error afterward.
+        ctx.transport.sent.push(adu);
+        applied = true;
+        throw new Error('write callback failed after transmit');
+      }
+      await ordinaryWrite(adu);
+    };
+    await ctx.runtime.start();
+    try {
+      await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
+      const outcome = await ctx.runtime.writePoint({ slave, block, mapping: point.mapping, rawValue: 42, pointId: 'p1', readBackRange: { start: 0, length: 4 } });
+      expect(outcome.result).toBe('transport');
+      expect(outcome.readBack?.result).toBe('ok');
+      expect(ctx.transport.sent.filter((adu) => fcOf(adu) === 0x06)).toHaveLength(1);
+      expect(ctx.diag.recentTransactions(40).filter((tx) => tx.sourceKind === 'readback')).toHaveLength(1);
+      const confirmed = ctx.cache.get(blockKey('s1', 'b1'))?.memory;
+      expect(confirmed?.kind === 'registers' && confirmed.registers[0]).toBe(42);
+    } finally {
+      await ctx.runtime.stop();
+    }
+  });
 });
 
 describe('resource release', () => {

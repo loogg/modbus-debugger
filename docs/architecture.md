@@ -146,8 +146,8 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 ## 重试与日志级别语义
 
 - 重试策略（Connection Scheduler）：
-  - 读类请求（周期轮询 / 临时读取 / 扫描 / 回读 / RMW 读）：仅在 `timeout` 或 `transport`（请求未发出）时追加尝试，默认按 `connection.retries`，扫描可单次覆盖；退避 50 ms，`exception` 不重试（设备已明确拒绝）。
-  - 写请求：`timeout` / `crc` 类失败不重试（写可能已生效，盲重试会双重写入；由强制 Read Back 判定真实状态）；仅 `transport`（未发出）时重试。
+  - 读类请求（周期轮询 / 临时读取 / 扫描 / 回读 / RMW 读）：仅在 `timeout` 或 `transport` 时追加尝试，默认按 `connection.retries`，扫描可单次覆盖；退避 50 ms，`exception` 不重试（设备已明确拒绝）。
+  - 写请求：任何失败均不自动重试；`transport.write()` 报错也可能发生在部分或全部字节发出之后，不能据此认定设备未执行。除明确拒绝的 Exception 外，尝试 Read Back，结果不明时保留“未知”状态。
   - 收到合法 Exception Response **立即结算**，不再等到超时；坏帧 / 不匹配帧仍按超时路径处理。
 - 超时取值：`attemptRequest` 使用 `opts.timeoutMs ?? connection.timeoutMs`，即**连接配置的超时对轮询 / 临时读取 / RMW / 写 / 回读全部生效**；Unit Scanner 显式传入本次探测超时（默认 150 ms，可配置）。
 - 日志级别（连接级 logLevel）：

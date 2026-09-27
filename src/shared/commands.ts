@@ -22,6 +22,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('template.deletePoint'), templateId: z.string(), pointId: z.string() }),
   z.object({ type: z.literal('workspace.saveAs'), path: z.string() }),
   z.object({ type: z.literal('workspace.export') }),
+  z.object({ type: z.literal('workspace.exportFile'), path: z.string().min(1) }),
   z.object({ type: z.literal('workspace.importText'), text: z.string() }),
   z.object({ type: z.literal('workspace.apply'), workspace: workspaceSchema }),
   z.object({ type: z.literal('connection.upsert'), connection: connectionSchema }),

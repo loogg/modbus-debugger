@@ -51,6 +51,24 @@ describe('Renderer Transports', () => {
       mock.dispose();
     });
 
+    it('updates settings and diagnostic state during browser review', async () => {
+      const mock = new MockTransport('default');
+      try {
+        const deltas: number[] = [];
+        mock.onDelta((delta) => deltas.push(delta.revision));
+        const before = await mock.getSnapshot();
+        expect((await mock.command({ type: 'prefs.set', patch: { persistRawComm: true, timezone: 'UTC' } })).ok).toBe(true);
+        expect((await mock.getSnapshot()).prefs).toMatchObject({ persistRawComm: true, timezone: 'UTC' });
+        expect((await mock.command({ type: 'diagnostics.clear' })).ok).toBe(true);
+        const after = await mock.getSnapshot();
+        expect(after.diagRev).toBe(before.diagRev + 1);
+        expect(after.transactions).toEqual([]);
+        expect(deltas).toEqual([before.revision + 1, before.revision + 2]);
+      } finally {
+        mock.dispose();
+      }
+    });
+
     it('uses the same granular template mutation contract as Main', async () => {
       const mock = new MockTransport('empty');
       try {

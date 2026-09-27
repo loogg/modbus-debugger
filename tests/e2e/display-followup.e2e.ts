@@ -12,8 +12,13 @@ const filters = ['成功','超时','Modbus 异常','其他错误'];
 const toggle = (name:string) => $(`//label[normalize-space(.)="${name}"]//button[@role="checkbox"]`).click();
 const resultCells = () => $$('tbody tr td:nth-child(7)').map(el=>el.getText());
 const timezone = async (label:string) => {
-  await rail('设置'); await $('//div[text()="时区"]/following-sibling::button[1]').click();
-  await $(`//*[@role="option"][normalize-space(.)="${label}"]`).click();
+  await rail('设置');
+  const trigger = await $('//div[text()="时区"]/following-sibling::button[1]');
+  await trigger.click();
+  await browser.waitUntil(async()=> (await trigger.getAttribute('data-state')) === 'open', {timeout:5000,timeoutMsg:'时区选项未展开'});
+  const option = await $(`//*[@role="option"][normalize-space(.)="${label}"]`);
+  await option.waitForDisplayed({timeout:5000});
+  await option.click();
 };
 
 describe('字符串、结果筛选、时区与多信号专项回归',()=>{

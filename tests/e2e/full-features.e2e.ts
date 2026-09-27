@@ -291,9 +291,9 @@ describe('既有页面操作回归', () => {
     await shot('21-settings-1440');
     const text = await bodyText();
     expect(text).toContain('工作区文件');
-    expect(text).toContain('协议地址固定为 0-based');
+    expect(text).toContain('协议地址使用 0-based');
     expect(text).toContain('记录与历史');
-    expect(text).toContain('写入安全');
+    expect(text).toContain('写入保护流程');
     // 显示偏好：时区与语言必须可见且已接入当前值
     expect(text).toContain('时区');
     expect(text).toContain('跟随系统');

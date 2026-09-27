@@ -217,9 +217,16 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     const save = await browser.electron.mock('dialog','showSaveDialog'); await save.mockResolvedValue({ canceled: false, filePath: target });
     await click('另存为'); await browser.waitUntil(() => fs.existsSync(target));
     expect(JSON.parse(fs.readFileSync(target,'utf8')).name).toBe(fixture().name);
+    await browser.electron.restoreAllMocks();
+    const exportPath = path.resolve(process.env.MODBUS_TEST_RUN_DIR!, 'audit-export.workspace.json');
+    const exportDialog = await browser.electron.mock('dialog', 'showSaveDialog');
+    await exportDialog.mockResolvedValue({ canceled: false, filePath: exportPath });
     await click('导出工作区');
-    const exported = JSON.parse(await browser.electron.execute(electron => electron.clipboard.readText())) as Workspace;
+    await browser.waitUntil(() => fs.existsSync(exportPath));
+    const exported = JSON.parse(fs.readFileSync(exportPath, 'utf8')) as Workspace;
     expect(exported.templates.map(template => template.id).sort()).toEqual(fixture().templates.map(template => template.id).sort());
+    expect((await snap()).workspacePath).toBe(target);
+    await browser.electron.restoreAllMocks();
     const invalid = path.resolve(process.env.MODBUS_TEST_RUN_DIR!, 'invalid.json'); fs.writeFileSync(invalid,'invalid json');
     await openDialogFile(invalid); await click('导入工作区'); await waitText('操作失败'); expect((await snap()).workspace.name).toBe(fixture().name);
     await click('日志'); await click('清空通信诊断'); await click('取消');

@@ -20,6 +20,7 @@
 - Realtime / Trend / Recorder 复用同一 Block Cache，没有重复 Poll。
 - Renderer 通过共享 DTO 和细粒度 Main 命令编辑工作区；连续编辑不丢失已提交的其他字段，非法引用与重复 ID 不改变当前状态，配置重建不与旧传输关闭重叠。
 - Editing / Pending / Confirmed / Exception / Timeout / Read Back 状态完整。
+- 写请求在传输错误（即使驱动已接收字节）、超时或坏响应后不得自动重发；除设备明确拒绝外须尝试回读。回读失败须结束“写入中”并显示未知，不冒充写成功或设备值。
 - Point Mapping 的 Int/UInt/Float/Bool/Enum/String、Endian、UInt8 高低字节、BitField、String encoding/length 有 Golden Test；数值点位显示精度 0–12、旧工作区默认值、趋势 Tooltip/历史显示及原始样本不舍入有相关测试。
 - Scale/Offset、量化、raw range、bit width、Scale=0、NaN/±∞ 写前校验有测试。
 - RTU / TCP 正式 Transport 已实现；Scheduler 优先级、Scanner 独占、Write→Read Back、RMW 原子序列有 Integration Test。
@@ -62,6 +63,7 @@
 - 12B — 历史 / 信号
 - 13 — 通信 / 诊断
 - 14 — 设置
+- 设置页实际操作须覆盖工作区另存、导出独立文件而不切换当前保存路径、导入及失败保留原工作区、Raw Communication 偏好与时区持久化、诊断清空的取消和确认；固定写入/地址规则不得呈现为可切换选项。Windows 桌面窗口不显示 Electron 默认菜单，文本编辑快捷键仍可用。
 - 15 — 空工作区 / 首次使用
 - 16 — 趋势 / 新建趋势组
 - 17 — 扫描 / 从站

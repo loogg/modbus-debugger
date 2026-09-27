@@ -463,8 +463,8 @@ export class ConnectionRuntime {
    * - reads (poll / temporary / scanner / read-back / RMW read): retry on timeout / transport,
    *   up to config.retries extra attempts with a small backoff. Exception responses are NEVER
    *   retried (the device explicitly refused).
-   * - writes: NEVER retried on timeout / CRC (the write may already have been applied; the
-   *   mandatory read-back resolves the true state). Retried only when nothing was sent (transport).
+   * - writes: NEVER retried automatically. A transport error from write() may occur
+   *   after bytes were queued or transmitted, so delivery cannot be assumed false.
    */
   async executeRequest(
     unitId: number,
@@ -472,13 +472,11 @@ export class ConnectionRuntime {
     opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; retries?: number; signal?: AbortSignal },
   ): Promise<RequestOutcome> {
     const isRead = req.kind === 'read';
-    const maxAttempts = 1 + Math.max(0, opts.retries ?? this.config.retries ?? 0);
+    const maxAttempts = isRead ? 1 + Math.max(0, opts.retries ?? this.config.retries ?? 0) : 1;
     let last: RequestOutcome | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       last = await this.attemptRequest(unitId, req, opts);
-      const retryable = isRead
-        ? last.result === 'timeout' || last.result === 'transport'
-        : last.result === 'transport';
+      const retryable = isRead && (last.result === 'timeout' || last.result === 'transport');
       this.logTrace(`attempt ${attempt + 1}/${maxAttempts} ${summarizeRequest(req)} -> ${last.result}`);
       if (!retryable || attempt === maxAttempts - 1 || opts.signal?.aborted || this.stopped) break;
       this.logTrace(`retrying ${summarizeRequest(req)} after ${last.result}`);
@@ -673,9 +671,9 @@ export class ConnectionRuntime {
       }
 
       box.outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'write', sourceId: opts.pointId });
-      // A timed-out write may have reached the device. Do not send it again; read
-      // back after the transport's recovery window and keep the command result unknown.
-      if (box.outcome.result !== 'ok' && box.outcome.result !== 'timeout') return;
+      // Any failed write may still have reached the device. Only an explicit
+      // exception proves refusal; otherwise read back without resending it.
+      if (box.outcome.result === 'exception') return;
 
       // Read back: confirms the device value and refreshes every shared point.
       const rb = await this.executeRequest(

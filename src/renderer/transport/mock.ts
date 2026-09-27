@@ -453,6 +453,22 @@ export class MockTransport implements AppTransport {
       };
     }
 
+    if (cmd.type === 'prefs.set') {
+      const prefs = { ...this.snapshot.prefs, ...cmd.patch };
+      const revision = ++this.revision;
+      this.snapshot = { ...this.snapshot, revision, prefs };
+      for (const listener of this.deltaListeners) listener({ revision, prefs });
+      return { ok: true, value: prefs as T };
+    }
+
+    if (cmd.type === 'diagnostics.clear') {
+      const revision = ++this.revision;
+      const diagRev = this.snapshot.diagRev + 1;
+      this.snapshot = { ...this.snapshot, revision, diagRev, transactions: [], parseEvents: [] };
+      for (const listener of this.deltaListeners) listener({ revision, diagRev });
+      return { ok: true, value: null as T };
+    }
+
     return { ok: true, value: null as T };
   }
 

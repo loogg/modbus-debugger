@@ -40,6 +40,22 @@ describe('Workspace persistence', () => {
     expect(svc2.current.connections.length).toBe(1);
   });
 
+  it('exports a portable file without changing the active autosave path', () => {
+    const dir = tmpDir();
+    const svc = new WorkspaceService(dir);
+    const active = path.join(dir, 'active.workspace.json');
+    const exported = path.join(dir, 'backup.workspace.json');
+    svc.adopt(emptyWorkspace('export check'), active);
+    expect(svc.saveTo().ok).toBe(true);
+    expect(svc.exportToFile(exported).ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(exported, 'utf8')).name).toBe('export check');
+    expect(svc.currentPath).toBe(active);
+    expect(svc.getPrefs().lastWorkspacePath).toBe(active);
+    expect(svc.exportToFile(dir).ok).toBe(false);
+    expect(svc.currentPath).toBe(active);
+    expect(fs.readdirSync(dir).filter(name => name.includes('.tmp-'))).toEqual([]);
+  });
+
   it('leaves no temp files behind', () => {
     const dir = tmpDir();
     const svc = new WorkspaceService(dir);

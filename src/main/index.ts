@@ -3,7 +3,7 @@ import { prepareInstall, confirmUpdatedBoot, readInstallOutcome } from './servic
 import path from 'node:path';
 import { clampToWorkAreas } from './window-bounds';
 import fs from 'node:fs';
-import { app, BrowserWindow, dialog, nativeImage, net, protocol, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, nativeImage, net, protocol, screen, shell } from 'electron';
 import { pathToFileURL } from 'node:url';
 import log from 'electron-log';
 import { RuntimeManager } from './runtime/manager';
@@ -184,6 +184,7 @@ async function createWindow(): Promise<void> {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   void createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();

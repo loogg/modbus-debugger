@@ -184,4 +184,18 @@ export class WorkspaceService {
     return JSON.stringify(this.workspace, null, 2);
   }
 
+  /** Export a portable copy without changing the active workspace or autosave target. */
+  exportToFile(dest: string): { ok: boolean; error?: string; path?: string } {
+    const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(tmp, this.exportText(), 'utf-8');
+      fs.renameSync(tmp, dest);
+      return { ok: true, path: dest };
+    } catch (error) {
+      try { fs.unlinkSync(tmp); } catch { /* The temp file may not have been created. */ }
+      return { ok: false, error: String(error) };
+    }
+  }
+
 }

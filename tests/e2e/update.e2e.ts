@@ -51,7 +51,7 @@ describe('关于与 GitHub 更新（真实 UI / Main / 文件 I/O）',()=>{
       // GitHub's unauthenticated API quota is external state shared across runs.
       // A rate-limit response is valid only when the actual UI offers recovery.
       expect(update.error).toContain('GitHub 请求受限');
-      expect(await $('body').getText()).toContain(update.error!);
+      await browser.waitUntil(async()=> (await $('body').getText()).includes(update.error!), {timeout:10000,timeoutMsg:'更新失败状态未显示到界面'});
       expect(await $('//button[normalize-space(.)="重新检查" or normalize-space(.)="检查更新"]').isExisting()).toBe(true);
       console.log(`[update] live GitHub endpoint rate-limited: ${update.error}`);
       return;

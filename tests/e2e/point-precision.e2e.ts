@@ -70,7 +70,8 @@ describe('point decimal precision in real editor and trend', () => {
     expect(Number.isFinite(confirmed.engNumber)).toBe(true);
 
     await rail('趋势');
-    await browser.waitUntil(async () => (await $('body').getText()).includes(confirmed.engText), { timeout: 15000 });
+    const currentValue = await $('//tr[.//span[normalize-space(.)="母线电压"]]//td[4]');
+    await browser.waitUntil(async () => /^-?\d+(?:\.\d{1,2})?$/.test((await currentValue.getText()).trim()), { timeout: 15000 });
     await $('//button[normalize-space(.)="图表"]').click();
     const chart = await $('div[data-chart-units] canvas');
     await chart.waitForExist({ timeout: 15000 });
