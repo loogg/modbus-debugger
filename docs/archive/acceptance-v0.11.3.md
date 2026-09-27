@@ -1,9 +1,10 @@
 # v0.11.3 发布验收记录
 
 - 日期：2026-09-27（Asia/Shanghai）
-- 源码提交：`2a56ac2`；发布标签 `v0.11.3` 指向包含本记录的提交。
+- 源码提交：`2a56ac2`；正式发布标签 `v0.11.3` 指向包含本记录的提交。
+- 公开结果：[GitHub Release](https://github.com/loogg/modbus-debugger/releases/tag/v0.11.3)；[Windows 构建与 Smoke 工作流](https://github.com/loogg/modbus-debugger/actions/runs/36306874744)。
 - 环境：Windows x64，ELTIMA 虚拟串口 COM1 ↔ COM2；COM2 运行独立 PyModbus 从站，COM1 运行本项目客户端。测试数据位于 `out/test-temp/`。
-- 对照条件：[现行正式验收清单](acceptance.md)。
+- 对照条件：[现行正式验收清单](../acceptance.md)。
 
 | 范围 | 本版结果 |
 | --- | --- |

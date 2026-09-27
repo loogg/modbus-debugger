@@ -6,7 +6,7 @@
 
 ## 任务读取原则
 
-文档按需读取，已有上下文复用：产品语义见 `docs/project-spec.md`，实现见 `docs/architecture.md` 和 `docs/protocol/`，设计来源见 `docs/design-source.md`，开发命令见 `docs/development.md`，正式验收见 `docs/acceptance.md`。`docs/full-audit.md` 仅为历史证据。
+文档按需读取，已有上下文复用；入口见 `docs/README.md`。产品语义见 `docs/project-spec.md`，实现见 `docs/architecture.md` 和 `docs/protocol/`，设计来源见 `docs/design-source.md`，开发命令见 `docs/development.md`，正式验收见 `docs/acceptance.md`。`docs/archive/` 仅供历史追溯。
 
 ## 固定工程基线
 
@@ -54,7 +54,7 @@
 
 | 改动类型 | 默认验证范围 |
 | --- | --- |
-| 仅文档、规则、注释 | 检查内容一致性与 `git diff --check`；不运行应用测试或构建，不递增版本 |
+| 仅文档、规则、注释 | 检查内容一致性、运行 `node tools/check-doc-links.mjs` 与 `git diff --check`；不运行应用测试或构建，不递增版本 |
 | 局部样式、文案、布局 | 适用时运行相关静态检查；真实界面审查受影响页面与窗口尺寸；不默认跑全量测试 |
 | 局部功能、业务逻辑、Bug 修复 | 相关文件 lint，TypeScript 改动运行 typecheck；运行能覆盖改动的 Unit 或 Integration；定向复现验证 |
 | 公共组件、Domain、Scheduler、IPC、持久化 | 覆盖受影响调用方及边界测试；通信修改跑对应模拟器互操作；UI 审查受影响场景 |

@@ -1,6 +1,8 @@
 # 验证与审计历史
 
-以下记录保留各版本当时的验证结果、失败和边界；不代表当前源码或当前版本已通过同样的检查。现行验收条件见 [验收清单](acceptance.md)。
+本文件记录截至 v0.11.1 的历史迭代，不代表当前版本的验收状态；v0.11.2 起的发布结果见[历史记录索引](README.md)。文中的 `out/` 路径只是当时的本机位置，不要求长期保留，也不能作为 GitHub 上可访问的截图或日志链接。
+
+以下记录保留各版本当时的验证结果、失败和边界；不代表当前源码或当前版本已通过同样的检查。现行验收条件见 [验收清单](../acceptance.md)。
 
 ## 验收证据（2026-09-11）
 
@@ -338,4 +340,4 @@
 
 迭代中保留了失败证据，没有靠重试掩盖：早期 delta 序号、单连接 fixture、抽屉同名输入与 CDP 超时等问题见 `out/audit/v0.11.1-vitest-first.log` 和 `v0.11.1-e2e-first.log`；后续新增导入 spec 暴露测试间工作区串扰，通信 TX/RX 双行使旧导出/筛选断言失效，模板截图钩子误用按钮文案。均按根因修复并在同一最终产物上完整重跑。GitHub 公开 Release API 在最终轮次实际返回限流，E2E 验证了错误文案与重试入口；成功 Release 解析、附件下载及校验仍由隔离测试覆盖，不能把本次限流称为最新版本查询成功。
 
-最终包的 111 个应用/打包输入、ASAR、manifest 与四产物 SHA 见[源码身份清单](../out/audit/v0.11.1-source-identity.json)；ASAR 比最新应用输入晚 174 秒，包内 Vite 文件与构建输出一致。旧 `release/data/` 内 44 个历史备份文件已在相对路径和 SHA-256 核对后原样移到忽略目录 `data/archives/release-root-legacy-2026-09-25/`，故 `release/` 仅有四产物与 manifest。容量边界见[基准报告](history-capacity-benchmark.md)：10 GB 是提醒阈值，不代表该容量性能；100 万样本目标达标，但长期高频轮询的同步 flush 抖动未定量验收。RTU quiet window 后的同 Unit/FC 旧响应无法无歧义识别；虚拟 COM 不等于物理 RS485。最终成功自升级的隔离目录 `out/test-temp/self-update-app-EJ6IIV` 因 Windows `EPERM` 未自动清理；此前同类目录的递归清理被自动审批拒绝，未绕过限制。PR 检查工作流本地等价命令通过，云端 Actions 尚未运行；本轮未提交、推送或发布 GitHub Release。
+最终包的 111 个应用/打包输入、ASAR、manifest 与四产物 SHA 见源码身份清单；ASAR 比最新应用输入晚 174 秒，包内 Vite 文件与构建输出一致。旧 `release/data/` 内 44 个历史备份文件已在相对路径和 SHA-256 核对后原样移到忽略目录 `data/archives/release-root-legacy-2026-09-25/`，故 `release/` 仅有四产物与 manifest。容量边界见[基准报告](../benchmarks/history-capacity-2026-09-25.md)：10 GB 是提醒阈值，不代表该容量性能；100 万样本目标达标，但长期高频轮询的同步 flush 抖动未定量验收。RTU quiet window 后的同 Unit/FC 旧响应无法无歧义识别；虚拟 COM 不等于物理 RS485。最终成功自升级的隔离目录 `out/test-temp/self-update-app-EJ6IIV` 因 Windows `EPERM` 未自动清理；此前同类目录的递归清理被自动审批拒绝，未绕过限制。PR 检查工作流本地等价命令通过，云端 Actions 尚未运行；本轮未提交、推送或发布 GitHub Release。

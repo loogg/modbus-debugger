@@ -32,7 +32,7 @@ npm test -- tests/integration/runtime-tcp.test.ts
 
 `npm test` 执行所有 Vitest 用例；也可传入 `tests/unit` / `tests/integration` 目录。监听修改使用 `npx vitest`。
 
-历史库增长测量使用 `node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs -- '--rows=100000,500000,1000000' --batch=1000`；脚本只在 `out/test-temp/` 建库，现有结果与局限见[容量基准](history-capacity-benchmark.md)。
+历史库增长测量使用 `node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs -- '--rows=100000,500000,1000000' --batch=1000`；脚本只在 `out/test-temp/` 建库，现有结果与局限见[容量基准](benchmarks/history-capacity-2026-09-25.md)。
 
 E2E 通过 WebdriverIO + Electron Service 运行打包版，并自动启动 PyModbus：
 
@@ -42,7 +42,7 @@ npm run package
 npm run test:e2e -- --spec tests/e2e/app.e2e.ts --mochaOpts.grep "launches with"
 ```
 
-需要全部 E2E 时运行 `npm run test:e2e`。固定 fixture 为 `tools/e2e/demo.workspace.json`，测试会复制后使用；测试隔离规则见下文。历史测试截图路径见[验证与审计历史](full-audit.md)，文档截图独立维护于 `docs/images/`。
+需要全部 E2E 时运行 `npm run test:e2e`。固定 fixture 为 `tools/e2e/demo.workspace.json`，测试会复制后使用；测试隔离规则见下文。历史测试截图路径见[验证与审计历史](archive/full-audit.md)，文档截图独立维护于 `docs/images/`。
 
 ## Vite 构建与运行边界
 
@@ -69,6 +69,8 @@ npm run smoke:release
 `make` 已包含 package。Forge 生成程序目录和 ZIP，postMake 使用同一 prepackaged 目录生成 NSIS Setup 和 Portable；四种产物成功后才整理到 `release/`。
 
 Setup 使用安装向导和程序文件清单，支持自选目录，保留用户数据；Portable 使用项目自己的无插件 NSIS 启动脚本。不要修改 `node_modules` 模板来完成定制。
+
+调整发布工具时核对许可：`electron-builder` 为 MIT，仅作为 devDependency；NSIS 主体为 zlib/libpng，自定义 Portable 启动器仅使用其内置 zlib 压缩及文件/进程指令，不加载 7z 或 System 插件。Setup 复用上游向导和 NSIS 插件；本项目不修改工具二进制并保留上游许可证。NSIS 工具包中的 LZMA 模块及其链接例外见 [NSIS License](https://nsis.sourceforge.io/License)，`electron-builder` 许可见其 [LICENSE](https://github.com/electron-userland/electron-builder/blob/master/LICENSE)。`@electron/asar` 和 `cross-zip`（均 MIT）复用 Forge 已有库，分别用于包内版本校验与解压验收。
 
 `smoke:release` 检查目录版、ZIP、Portable、Setup 的真实启动、版本、IPC、serialport 和历史库，同时验证路径、Portable 重启/清理、自定义数据目录，以及 Setup 重装/卸载后保留数据。单独检查安装器可运行 `node tools/smoke-installer.mjs`。
 
@@ -97,10 +99,10 @@ Setup 使用安装向导和程序文件清单，支持自选目录，保留用�
 - **协议与场景覆盖**：覆盖支持的 FC01/02/03/04/05/06/15/16、独立 Unit 和四类地址区、写后读回、非法地址、未知 Unit 静默、动态/静态数据及故障注入。
 - **UI 真实交互验证**：UI 验收通过真实鼠标/键盘触发操作，核对确认设备值、Main 状态、文件或历史库结果；IPC 仅用于搭建 fixture 与观察状态，不得替代被测按钮。Browser Review 的 Mock Transport 可检查布局和状态，通信验收须使用真实 Main 链路与模拟器或设备。
 - **有效断言原则**：断言应能检验相反与边界行为（如扫描取消后不发后续请求、重新扫描替换结果、写入区分从站实例、只读/取消不发写包、写后回读确认、复制模板验证新 ID、导入验证实际地址与宽度等）。
-- **审计记录**：全量验收报告需列出实际通过、失败与明确跳过的项目；无真实串口环境时须明确标注，不可把 TCP/mock 代替为 RTU 硬件通过。审计证据记录于 `docs/full-audit.md`。
+- **审计记录**：全量验收报告需列出实际通过、失败与明确跳过的项目；无真实串口环境时须明确标注，不可把 TCP/mock 代替为 RTU 硬件通过。每次正式发布的记录放入 `docs/archive/acceptance-v<version>.md`；早期审计过程见 [full-audit.md](archive/full-audit.md)。
 
 ## 文档与截图维护
 
-截图使用可复现的示例数据和实际运行的程序，不使用日常工作区。新增功能截图从真实界面采集并放入 `docs/images/`；每张图说明入口、操作和结果。仅改文档时检查链接、图片、示例及命令一致性，不重新构建应用。
+截图使用可复现的示例数据和实际运行的程序，不使用日常工作区。新增功能截图从真实界面采集并放入 `docs/images/`；每张图说明入口、操作和结果。仅改文档时运行 `node tools/check-doc-links.mjs` 和 `git diff --check`，检查图片、示例及命令一致性，不重新构建应用。链接检查拒绝指向未提交的 `out/` 等运行目录。
 
-串口/TCP 参数、完整数据区与故障注入见 [模拟器说明](../tools/simulator/README.md)。实际 COM 对使用 `MODBUS_RTU_MASTER_PORT` / `MODBUS_RTU_SLAVE_PORT` 配置；全量审计必须检查是否发生跳过，参见 [审计记录](full-audit.md)。
+串口/TCP 参数、完整数据区与故障注入见 [模拟器说明](../tools/simulator/README.md)。实际 COM 对使用 `MODBUS_RTU_MASTER_PORT` / `MODBUS_RTU_SLAVE_PORT` 配置；全量审计必须检查是否发生跳过，参见 [版本验收记录](archive/README.md)。

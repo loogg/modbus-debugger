@@ -75,4 +75,4 @@
 - Workspace 保存 Connection、Slave、共享 Template 定义/绑定、Trend Group 和可移植布局；本机 Window/Sidebar 偏好放 app `userData`。
 - 自动保存使用临时文件 + 原子替换；导入失败不破坏当前 Workspace。
 - 设置页只有可操作的偏好才显示控件：工作区文件操作、记录期间保存 Raw Communication、时区和清空通信诊断。固定地址规则、写入流程和当前仅有的一种语言以说明呈现；文件操作失败须显示原因，取消文件选择不报错。
-- History 使用独立 SQLite `history.db`；10 GB 只提醒，不自动删除，也不代表已验证的可用容量或回放性能。当前验收目标为单会话 100 万数值样本，实测边界见[容量报告](history-capacity-benchmark.md)。**对 Figma 00“每个事务持久化 source metadata”的明确限定**：每个实时事务都携带来源元数据；仅在主动 Record Session 期间将每笔事务的轻量元数据持久化到 `history.db`，非记录期间的通信诊断保留在有界内存中。Raw ADU/PDU 在 Record Session 中仍由 Raw Communication 开关决定是否持久化，默认关闭，避免默认长期轮询无上限地增长磁盘数据。
+- History 使用独立 SQLite `history.db`；10 GB 只提醒，不自动删除，也不代表已验证的可用容量或回放性能。当前验收目标为单会话 100 万数值样本，实测边界见[容量报告](benchmarks/history-capacity-2026-09-25.md)。**对 Figma 00“每个事务持久化 source metadata”的明确限定**：每个实时事务都携带来源元数据；仅在主动 Record Session 期间将每笔事务的轻量元数据持久化到 `history.db`，非记录期间的通信诊断保留在有界内存中。Raw ADU/PDU 在 Record Session 中仍由 Raw Communication 开关决定是否持久化，默认关闭，避免默认长期轮询无上限地增长磁盘数据。

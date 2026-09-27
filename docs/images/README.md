@@ -2,15 +2,20 @@
 
 所有图片均来自实际运行的本项目，使用示例设备与本地 PyModbus 模拟器；没有生成或伪造设备数值。
 
+这些图片是不同版本的操作示例，不能单凭旧截图判定当前界面的控件或状态。更新受影响的 README 画面时，重新在真实界面采集并在下表记录版本与场景。
+
 | 图片 | 来源与场景 |
 | --- | --- |
 | realtime.png | 0.8.0 程序，Computer Use 采集；隔离的“Modbus 调试示例”工作区，127.0.0.1:50535 |
 | connection.png | 已有 E2E 截图 `tests/e2e/screenshots/25-combo-open-1440.png`；添加连接的串口选项 |
 | temporary-read.png | 已有 E2E 截图 `tests/e2e/screenshots/18-temp-read-1440.png`；一次读取结果示例 |
 | template.png | 已有 E2E 截图 `tests/e2e/screenshots/12-templates-1440.png`；模板库概览 |
+| template-memory.png | 进入仓库时为 0.10.2；点位内存布局，原采集命令未记录 |
 | trend.png | 已有 E2E 截图 `tests/e2e/screenshots/11-trend-1440.png`；实时趋势 |
+| string-track.png | 进入仓库时为 0.9.1；String 趋势轨道，原采集命令未记录 |
 | history.png | 已有 E2E 截图 `tests/e2e/screenshots/14-history-1440.png`；记录会话历史 |
 | communication.png | 已有 E2E 截图 `tests/e2e/screenshots/13-comm-1440.png`；通信事务与报文 |
+| about.png | 进入仓库时为 0.10.1；关于与更新页，原采集命令未记录 |
 
 本次补充采集时 Windows 锁屏，因此除实时页外复用仓库已有的模拟器截图；它们的连接名称、端口、读取数量属于各自示例。操作说明已对照当前源码核对。扫描高级配置和失败反馈以 README 文字说明为准，不使用缺少这些新控件的旧扫描图。
 

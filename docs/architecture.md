@@ -1,6 +1,6 @@
 # 当前架构
 
-本文件记录现行实现契约；产品语义见 [project-spec.md](project-spec.md)，历史故障与验证过程见 [full-audit.md](full-audit.md)。
+本文件记录现行实现契约；产品语义见 [project-spec.md](project-spec.md)，历史故障与验证过程见 [full-audit.md](archive/full-audit.md)。
 
 ## Runtime
 
@@ -75,7 +75,6 @@ flowchart LR
 ## 构建与打包（Vite）
 
 - Windows 发布由 Forge 完成目录版与 ZIP，再在 `postMake` 中使用 electron-builder 的 `prepackaged` + NSIS 封装 Setup 与 Portable。Setup 使用上游安装向导并启用目录选择；Portable 使用 `build/portable-launcher.nsi` 自定义无安装脚本。同一份 Forge/Vite 目录用于全部产物，不重新编译应用。
-- Portable 工具选型评审：electron-builder 为 MIT，仅作为 devDependency；NSIS 主体为 zlib/libpng。自定义启动器使用 NSIS 内置 zlib 压缩与文件/进程指令，不加载 7z 或 System 等插件；Setup 复用上游向导及 NSIS 插件。工具包中 LZMA 模块为 CPL-1.0，官方附有链接例外；本项目不修改工具二进制，保留上游许可证。`@electron/asar`（MIT）和 `cross-zip`（MIT）复用 Forge 已有库，用于校验包内版本及解压验收。参考：[electron-builder](https://github.com/electron-userland/electron-builder/blob/master/LICENSE)、[NSIS License 与 LZMA 例外](https://nsis.sourceforge.io/License)。
 - `out/` 保存 Forge 产物与 Portable 构建中间文件；`release/` 根目录直接存放四种交付产物，不增加版本/平台子目录。命名统一为 `modbus-debugger-<package.json version>-win-<arch>`，目录版本体不加后缀，另三项分别追加 `.zip`、`-Portable.exe`、`-Setup.exe`。全部构建成功并校验版本后才整理到 release；成功后清理命名匹配的旧版本产物，只保留当前版本，同版本其他架构可并存。替换与旧产物清理共用临时备份，失败回滚；其他文件不清理。
 - Portable 启动器只使用 NSIS 内建文件/进程指令，创建外层 EXE 下 `temp/<独立目录>/app`，通过 `--portable-dir` 把外层目录传给 Main，正常退出后删除本次解压目录；不加载会落到系统 TEMP 的 NSIS 插件。Main 仍兼容旧启动器的 `PORTABLE_EXECUTABLE_DIR`。
 - Setup 使用 current-user NSIS 安装向导（oneClick=false、allowToChangeInstallationDirectory=true），不强制管理员权限；`APP_BUILD_DIR` 直接嵌入已打包文件。`customRemoveFiles` 按打包清单删除程序并保留用户数据；旧 Squirrel 安装不自动卸载或迁移。
@@ -122,11 +121,9 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 - 历史回放的时间轴是**会话内偏移**（`tMs`），不是墙钟：`NumericChart` / `StateTrack` 通过 `xMode="duration"` 用 `fmtDuration` / `fmtDurationMs` 渲染（`00:00:01` 形式），与事件表、回放游标保持一致；实时趋势仍为 `xMode="epoch"`（墙钟，走显示时区）。此前历史图把 `tMs` 当 epoch 渲染，轴上出现 `08:00:00`（epoch 0 + UTC+8）这类无意义刻度。
 - 多语言技术栈：**i18next（核心：插值/复数/回退/词典懒加载）+ react-i18next（绑定）**。词典是类型化 TS 模块（`src/renderer/i18n/locales/<lang>/<area>.ts`，按界面区域分片），通过 i18next 的 `CustomTypeOptions` 声明资源类型，**缺失 key 在编译期报错**；当前仅接入 zh-CN，新增语言 = 新增同形状词典并在 `src/renderer/i18n/index.ts` 注册 + 在 `LANGUAGE_OPTIONS` 暴露。语言偏好存于 `prefs.language`，快照 prefs 变化时 `changeLanguage`。
 
-## 下拉框（ComboInput）真实鼠标语义
+## 下拉框交互
 
-- `Field` 使用 `role="group" + aria-labelledby` 关联标题和控件，不用包裹选项的 `<label>`，避免浏览器将选项文字点击转发到输入框。选中后关闭列表，随后刻意点击仍可立即重开。
-- blur 宽限期（120 ms）只在焦点移到组合框**外部**时排程关闭：`relatedTarget` 落在自身 chevron 上视为未离开，否则「输入框有焦点时点 chevron 展开」会在展开后 120 ms 被宽限期关掉；chevron 的展开分支同时清除未到期的关闭定时器。
-- Radix Select 在 pointerdown 打开；下拉交互的 E2E 使用真实 WDIO 鼠标点击，覆盖选项文字、聚焦时 chevron、失焦和关闭状态。历史故障根因与证据见[验证与审计历史](full-audit.md)的 0.4.2 记录。
+`Field` 用 `role="group" + aria-labelledby` 关联标题和控件，避免包裹选项的 `<label>` 转发点击。`ComboInput` 选择后关闭列表，后续点击可重开；输入框聚焦时点击 chevron 展开，不应因焦点转移而自动关闭。Radix Select 与 ComboInput 均须通过真实鼠标操作验证选项、展开和关闭；旧故障的事件时序见[验证与审计历史](archive/full-audit.md)。
 
 ## Responsive
 
@@ -139,7 +136,7 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 
 - `history.db` 由 sql.js（SQLite WASM）承载，落盘仍为标准 SQLite 文件；写入采用事务和去抖原子落盘。`serialport` 使用 N-API prebuilds。
 - `sql.js` 在 `vite.main.config.ts` 中声明为 external，由 Forge `packageAfterCopy` 复制进包；`sql-wasm.wasm` 通过 `createRequire(...).resolve('sql.js')` 的同目录解析定位。打包版须验证两种运行时模块实际加载。
-- 当前 `flush()` 会同步导出并原子替换整个数据库文件；百万样本的实测成本、方法与适用边界见[容量基准](history-capacity-benchmark.md)。10 GB 是提醒阈值，不代表已验证可在该容量下流畅记录或回放。新增长期记录能力前须先确定容量与响应预算。
+- 当前 `flush()` 会同步导出并原子替换整个数据库文件；百万样本的实测成本、方法与适用边界见[容量基准](benchmarks/history-capacity-2026-09-25.md)。10 GB 是提醒阈值，不代表已验证可在该容量下流畅记录或回放。新增长期记录能力前须先确定容量与响应预算。
 - 主动 Record Session 内的每笔事务将 `traceId`、来源、功能码、结果和耗时写入 `transaction_meta`；Raw Communication 开启时同一数据库事务再写关联 ADU/PDU，否则不保存帧字节。旧库启动时增量补表/列；会话外诊断维持有界内存记录。当前目标容量为单会话 100 万样本，图表显示用极值保留降采样，游标从原始样本精确查找，CSV 仍导出完整样本。
 
 

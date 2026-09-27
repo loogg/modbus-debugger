@@ -9,4 +9,4 @@
 1. 项目硬约束以 [AGENTS.md](../AGENTS.md) 为准；线协议的合法性与尺寸以官方 Modbus 规范为准。工程上不采用 RTU 字符间隔判帧的显式决策见[架构](architecture.md)和[RTU 分帧说明](protocol/02-rtu-framing.md)。
 2. 产品行为以 [project-spec.md](project-spec.md) 的明确补充或 Override 为准；未标明补充或 Override、且与 Figma `00` 重复的内容，以 Figma `00` 为准。
 3. 未被上述来源规定的页面与组件细节，依次参考 Figma `01`、`02`；实现机制见 [architecture.md](architecture.md)。
-4. [acceptance.md](acceptance.md) 是验收条件，[full-audit.md](full-audit.md) 是历史证据，均不替代需求或设计来源；Archive 也不作为当前规范。
+4. [acceptance.md](acceptance.md) 是验收条件，[full-audit.md](archive/full-audit.md) 是历史证据，均不替代需求或设计来源；Archive 也不作为当前规范。

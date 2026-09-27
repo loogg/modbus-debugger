@@ -2,7 +2,7 @@
 
 ## 目的与复现
 
-验证当前 `sql.js` 记录库随样本数增加的写入、全库导出、重开、会话读取、回放和 CSV 导出成本。当前产品目标容量为 **100 万样本**。脚本为 `tools/bench-history.mjs`，每次在 Git 忽略的 `out/test-temp/history-capacity-*` 下新建独立数据库，不触碰日常用户数据。
+验证当前 `sql.js` 记录库随样本数增加的写入、全库导出、重开、会话读取、回放和 CSV 导出成本。当前产品目标容量为 **100 万样本**。脚本为 `tools/bench-history.mjs`，每次在 Git 忽略的 `out/test-temp/history-capacity-*` 下新建独立数据库，不触碰日常用户数据。`out/test-temp/` 可清理；原始 JSON、CSV、日志和截图未纳入仓库，本页保留当日数值、环境与测试边界，复核须重跑相应脚本或测试。
 
 ```powershell
 node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs -- '--rows=100000,500000,1000000' --batch=1000
@@ -16,7 +16,7 @@ node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs --
 | 500,000 | 38,141,952 B（36.38 MiB） | 1,643.4 ms | 54.6 ms | 242 MB |
 | 1,000,000 | 76,316,672 B（72.78 MiB） | 3,046.2 ms | 99.6 ms | 356 MB |
 
-在 100 万行时，关闭并最终写盘花费 107.2 ms；重开花费 40.3 ms，数据库中 `sample_count` 和读取行数均为 100 万。单次完整读取在优化前为 2,276.4 ms、读取后 RSS 494 MB；优化 `readSamples` 后为 846.5 ms、读取后 RSS 443 MB。两次是独立进程运行，不应将其差值解释为稳定的跨机器性能保证。原始 JSON 留在 `out/test-temp/history-capacity-PA2F0X/result.json`（修改前）和 `out/test-temp/history-capacity-urRNeo/result.json`（修改后）。
+在 100 万行时，关闭并最终写盘花费 107.2 ms；重开花费 40.3 ms，数据库中 `sample_count` 和读取行数均为 100 万。单次完整读取在优化前为 2,276.4 ms、读取后 RSS 494 MB；优化 `readSamples` 后为 846.5 ms、读取后 RSS 443 MB。两次是独立进程运行，不应将其差值解释为稳定的跨机器性能保证；原始 JSON 是当次 `out/test-temp/` 临时产物。
 
 ## 对扩展的影响
 
@@ -30,7 +30,7 @@ node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs --
 
 ## 100 万样本的读取、回放与导出（2026-09-25 增补）
 
-使用相同的单信号、1 Hz、100 万行数据，数据库约 76.32 MB。以下主结果来自 `out/test-temp/history-capacity-6huoag/result.json`。`history.sessionData` 是真实的 `RuntimeManager.handleCommand` 路径；`structuredClone` 是同进程 V8 克隆，**只是 Electron IPC 载荷的代理**，不含跨进程传送时间。Renderer 算法调用与产品相同的纯函数，但不含 React 布局或 ECharts 绘制。RSS 包含同一基准进程内的 sql.js、Main 响应、克隆载荷及 Renderer 模拟数据，因此不是某个单独进程的内存。
+使用相同的单信号、1 Hz、100 万行数据，数据库约 76.32 MB。以下主结果来自当次独立基准运行。`history.sessionData` 是真实的 `RuntimeManager.handleCommand` 路径；`structuredClone` 是同进程 V8 克隆，**只是 Electron IPC 载荷的代理**，不含跨进程传送时间。Renderer 算法调用与产品相同的纯函数，但不含 React 布局或 ECharts 绘制。RSS 包含同一基准进程内的 sql.js、Main 响应、克隆载荷及 Renderer 模拟数据，因此不是某个单独进程的内存。
 
 | 阶段 | 100 万样本实测 | 范围 |
 | --- | ---: | --- |
@@ -41,9 +41,9 @@ node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs --
 | CSV 内容组装 | 443 ms；27,888,904 B；结束时 RSS 721 MB | 与 UI 相同的全量内容及转义，分块构造；不含系统剪贴板写入 |
 | 将 CSV 字符串写入本地测试文件 | 26 ms | 只作输出端 I/O 参考，不能代替剪贴板验收 |
 
-优化前同负载的独立运行 `out/test-temp/history-capacity-ZoyERd/result.json` 中，图表输入为 100 万点，游标算法每次 50–72 ms，CSV 后 RSS 约 981 MB。现在图表输入为 4,990 点、游标计算不足 1 ms；分块 CSV 构造后的同进程 RSS 为 721 MB。运行间系统负载不同，这些数值说明量级和内存路径，不是严格的同机性能承诺。原始 CSV 与原始样本内容保持不变，极值保留与精确游标有 [history-data.test.ts](../tests/unit/history-data.test.ts) 覆盖。
+优化前同负载的独立运行中，图表输入为 100 万点，游标算法每次 50–72 ms，CSV 后 RSS 约 981 MB。现在图表输入为 4,990 点、游标计算不足 1 ms；分块 CSV 构造后的同进程 RSS 为 721 MB。运行间系统负载不同，这些数值说明量级和内存路径，不是严格的同机性能承诺。原始 CSV 与原始样本内容保持不变，极值保留与精确游标有 [history-data.test.ts](../../tests/unit/history-data.test.ts) 覆盖。
 
-另外在 **Browser Review Mode 的真实 Chrome 界面**中，将 100 万条同样形状的样本直接注入 Mock 会话：历史图表可绘制、回放打开、鼠标拖动到中点后显示正确工程值；无 `pageerror`。该次浏览器内数据创建后到图表出现为 336 ms，回放点击到游标区出现为 48 ms；Renderer JS heap 约 142–147 MB。截图在 `out/test-temp/history-capacity-browser-1m.png` 和 `out/test-temp/history-capacity-browser-replay-1m.png`。这些时间**不含 sql.js、Main、Electron IPC 或系统剪贴板**。
+另外在 **Browser Review Mode 的真实 Chrome 界面**中，将 100 万条同样形状的样本直接注入 Mock 会话：历史图表可绘制、回放打开、鼠标拖动到中点后显示正确工程值；无 `pageerror`。该次浏览器内数据创建后到图表出现为 336 ms，回放点击到游标区出现为 48 ms；Renderer JS heap 约 142–147 MB。当次截图是未纳入仓库的 `out/test-temp/` 临时产物。这些时间**不含 sql.js、Main、Electron IPC 或系统剪贴板**。
 
 为补齐正式交付路径，新增 opt-in `wdio.capacity.conf.ts` 和 `tests/capacity/history-capacity.e2e.ts`：它在独立 `out/test-temp` 根目录预置真实 100 万样本数据库，然后在打包版通过真实界面打开会话、点击回放和滑块、导出并检查 Electron 剪贴板。普通 `tests/e2e/**/*.e2e.ts` 不包含此 spec。运行前先按当前源码 `npm run package`，然后串行执行：
 
@@ -51,4 +51,4 @@ node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs --
 npx wdio run wdio.capacity.conf.ts
 ```
 
-**打包版全链路结果：PASS。** [最终日志](../out/audit/v0.11.1-capacity-e2e-visual.log)与[指标 JSON](../out/audit/capacity-1m-smoke.json)记录 100 万样本会话打开 4,698 ms、回放启动 98 ms、滑块游标及曲线重绘 300 ms、完整 CSV 写入系统剪贴板 753 ms；剪贴板读回 1,000,000 行、28,888,904 字符（Windows CRLF），首末行正确。测试检查真实 Electron IPC、图表 Canvas 中约 99,493 个蓝色曲线像素、回放确认值和 CSV；均满足 [验收预算](acceptance.md) 的 30 秒/5 秒上限。测试结束时 Renderer JS heap 约 154 MB、Main RSS 约 405 MB，属于瞬时快照，不是峰值保证。数据库持续增长时的 Main 同步写盘约 0.1 秒，长时间高频轮询抖动尚未定量验收；10 GB 仍只代表提醒阈值。
+**打包版全链路结果：PASS。** 当次临时日志与指标 JSON 记录 100 万样本会话打开 4,698 ms、回放启动 98 ms、滑块游标及曲线重绘 300 ms、完整 CSV 写入系统剪贴板 753 ms；剪贴板读回 1,000,000 行、28,888,904 字符（Windows CRLF），首末行正确。测试检查真实 Electron IPC、图表 Canvas 中约 99,493 个蓝色曲线像素、回放确认值和 CSV；均满足 [验收预算](../acceptance.md) 的 30 秒/5 秒上限。测试结束时 Renderer JS heap 约 154 MB、Main RSS 约 405 MB，属于瞬时快照，不是峰值保证。数据库持续增长时的 Main 同步写盘约 0.1 秒，长时间高频轮询抖动尚未定量验收；10 GB 仍只代表提醒阈值。

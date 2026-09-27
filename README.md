@@ -6,7 +6,7 @@
 
 ![实时查看从站的数据块、点位与确认值](docs/images/realtime.png)
 
-*截图使用本地 PyModbus 模拟器和示例工作区，数据来自实际 TCP 通信。说明与当前主分支同步；已发布版本可能早于文档中的功能。*
+*截图使用本地 PyModbus 模拟器和示例工作区，采集版本见[截图来源](docs/images/README.md)。部分画面早于当前版本；功能与操作以当前文字说明和实际程序为准。*
 
 当前提供 Windows x64 构建。直接使用软件不需要安装 Node.js 或 Python：
 
@@ -308,4 +308,4 @@ String 轨道显示初始状态及后续变化。0.9.1 起，相同初始值与�
 
 提交问题时，请附上版本号、RTU/TCP 类型、复现步骤、异常提示和必要的通信记录；可先移除设备地址、名称等不希望公开的信息。
 
-开发实现与验证命令：[开发说明](docs/development.md) · [架构](docs/architecture.md) · [协议说明](docs/protocol/01-application-protocol.md)。
+开发实现与验证命令：[文档索引](docs/README.md) · [开发说明](docs/development.md) · [架构](docs/architecture.md) · [协议说明](docs/protocol/01-application-protocol.md)。
