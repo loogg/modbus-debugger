@@ -81,8 +81,16 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await browser.waitUntil(async () => (await snap()).points[`${slave.id}::pt-speed`]?.hasValue === true, { timeout: 15000 });
     await writeValue('目标转速', '2345');
     await browser.waitUntil(async () => (await snap()).points[`${slave.id}::pt-speed`]?.engNumber === 2345);
-    expect((await snap()).points['slave-1::pt-speed']?.engNumber).not.toBe(2345);
     expect((await snap()).transactions.some(tx => tx.connectionId === conn.id && tx.functionCode === 6 && tx.result === 'ok' && tx.responseAduHex)).toBe(true);
+    const confirmed = await snap();
+    const tcpPeer = confirmed.points['slave-1::pt-speed'];
+    expect(tcpPeer?.hasValue).toBe(true);
+    expect(tcpPeer?.engNumber).not.toBe(2345);
+    const transactions = confirmed.transactions.filter(tx => tx.connectionId === conn.id);
+    expect(transactions.some(tx => tx.sourceKind === 'readback' && tx.sourceId === 'pt-speed' && tx.result === 'ok' && tx.responseAduHex)).toBe(true);
+    fs.mkdirSync('out/audit/rtu', { recursive: true });
+    fs.writeFileSync('out/audit/rtu/ui-write-readback.json', JSON.stringify({ connection: conn, slave, point: confirmed.points[`${slave.id}::pt-speed`], tcpPeer, transactions }, null, 2));
+    await browser.saveScreenshot(path.resolve('out/audit/rtu/ui-write-readback.png'));
   });
   it('读取：默认10、真实原始数据、异常原因、输入校验、保存非重叠块', async () => {
     await click('临时读取');
