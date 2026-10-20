@@ -5,6 +5,7 @@ import { useApp } from '../store/app';
 import { useTranslation } from '../i18n';
 import { Select } from './ui';
 import { pointKey } from '../../shared/point-key';
+import type { PointWriteResult } from '../../shared/contracts';
 
 function Spinner() {
   return (
@@ -32,7 +33,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
   const [markerFresh, setMarkerFresh] = useState(true);
   useEffect(() => {
     setMarkerFresh(true);
-    if (!writeState || writeState.phase === 'writing') return;
+    if (!writeState || writeState.phase === 'writing' || writeState.phase === 'not-sent') return;
     const ttl = writeState.phase === 'confirmed' ? 2500 : 10000;
     const timer = setTimeout(() => setMarkerFresh(false), Math.max(0, ttl - (Date.now() - writeState.at)));
     return () => clearTimeout(timer);
@@ -81,14 +82,22 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
     useApp.setState((s) => ({
       writeStates: { ...s.writeStates, [writeKey]: { phase: 'writing', attempted: text, at: Date.now(), exceptionCode: null } },
     }));
-    const slaveId = useApp.getState().selection.slaveId;
-    const res = await command({ type: 'point.write', slaveId: slaveId ?? '', pointId: props.point.id, engineering, boolValue, stringValue });
+    const slaveId = props.view?.slaveId ?? useApp.getState().selection.slaveId;
+    const res = await command<PointWriteResult>({ type: 'point.write', slaveId: slaveId ?? '', pointId: props.point.id, engineering, boolValue, stringValue });
     if (!res.ok) {
       useApp.setState((s) => {
         const ws = { ...s.writeStates };
         delete ws[writeKey];
         return { writeStates: ws };
       });
+    } else if (res.value && res.value.phase !== 'confirmed') {
+      // Successful markers arrive with Main's read-back delta, alongside its confirmed value.
+      const outcome = res.value;
+      const reason = outcome.result === 'exception'
+        ? t('ui.valueCell.preReadException', { code: `0x${(outcome.exceptionCode ?? 0).toString(16).toUpperCase().padStart(2, '0')}` })
+        : t(outcome.result === 'timeout' ? 'ui.valueCell.preReadTimeout' : 'ui.valueCell.preReadTransport');
+      useApp.setState(s => ({ writeStates: { ...s.writeStates, [writeKey]: {phase:outcome.phase,attempted:text,at:Date.now(),exceptionCode:outcome.exceptionCode,reason:outcome.phase === 'not-sent' ? reason : undefined} } }));
+      if (outcome.phase === 'not-sent') toast({kind:'error',title:t('ui.valueCell.preReadFailed'),message:reason});
     }
   };
 
@@ -103,6 +112,8 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
         {confirmedText} → {writeState.attempted} <Spinner />
       </span>
     );
+  } else if (writeState?.phase === 'not-sent') {
+    marker = <span role="status" aria-label={writeState.reason} title={writeState.reason} className="shrink-0 text-xs text-warn">{t('ui.valueCell.notSent')}</span>;
   } else if (writeState?.phase === 'rejected') {
     marker = <span title={t('ui.valueCell.rejectedTitle', { code: writeState.exceptionCode ?? '?' })} className="text-warn">⚠</span>;
   } else if (writeState?.phase === 'unknown') {
@@ -133,7 +144,9 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
     valueNode = writable ? (
       <button
         className="focus-ring cursor-pointer text-accent font-medium"
+        disabled={writeState?.phase === 'writing'}
         onDoubleClick={() => {
+          if (writeState?.phase === 'writing') return;
           setDraft(view.enumLabel ?? '');
           setEditing(true);
         }}
@@ -150,7 +163,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
     <span
       className="inline-flex w-full min-w-0 items-center gap-1.5"
       onDoubleClick={() => {
-        if (!writable) return;
+        if (!writable || writeState?.phase === 'writing') return;
         setDraft(isBool ? (view?.boolValue ? 'ON' : 'OFF') : confirmedText);
         setEditing(true);
       }}

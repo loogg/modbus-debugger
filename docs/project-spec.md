@@ -33,6 +33,7 @@
 
 - Value 始终是最后一次 confirmed value；Editing 时后台 Poll 不覆盖输入，Writing 时 pending 与 confirmed 分离。
 - Read Back 失败必须结束写入中的等待态并显示结果未知；不得把未确认的输入当作设备值。
+- 写入前的最新值读取失败时，不发送写请求，结束等待并明确显示“未发送”及预读失败原因；允许检查连接后重新尝试。
 - Write 成功后立即 Read Back；Exception 保留旧值；Timeout、Transport Error 或异常响应导致写入结果不明时，不自动重发写请求，尝试 Read Back 确认设备实际值。
 - Coil 单 Bool：FC05 → Read Back。
 - Holding Register 小于 16 bit Point：Read latest → Mask/Merge → FC06/FC16 → Read Back；禁止旧 Cache RMW。

@@ -1,15 +1,21 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Socket } from 'node:net';
 import type { AppBackendService } from './backend-service';
 import type { BridgeClientMessage, BridgeServerMessage } from '../../shared/preload-api';
 import type { AppDelta } from '../../shared/snapshot';
+import { validateBridgeCommand } from './dev-bridge-access';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 
 export interface DevBridgeOptions {
   port?: number;
   host?: string;
+  allowedOrigins?: string[];
+  fileRoots?: string[];
 }
 
 export class DevBridgeServer {
@@ -18,6 +24,10 @@ export class DevBridgeServer {
   private unsubscribeDelta: (() => void) | null = null;
   readonly host: string;
   readonly port: number;
+  readonly sessionProtocol = `modbus-review.${crypto.randomBytes(32).toString('base64url')}`;
+  private boundPort: number;
+  private readonly allowedOrigins: Set<string>;
+  private readonly fileRoots: string[];
 
   constructor(
     private readonly backend: AppBackendService,
@@ -25,24 +35,31 @@ export class DevBridgeServer {
   ) {
     this.host = options?.host ?? '127.0.0.1';
     this.port = options?.port ?? 5174;
+    if (!['127.0.0.1','::1','localhost'].includes(this.host)) throw new Error('开发 Bridge 只能绑定回环地址');
+    this.boundPort = this.port;
+    this.allowedOrigins = new Set(options?.allowedOrigins ?? ['http://localhost:5173','http://127.0.0.1:5173']);
+    this.fileRoots = options?.fileRoots ?? [];
+  }
+
+  writeSessionFile(file: string, rendererUrl = 'http://localhost:5173/'): void {
+    const url = new URL(rendererUrl);
+    if (!this.allowedOrigins.has(url.origin)) throw new Error('审查页面来源不在白名单内');
+    url.searchParams.set('transport', 'bridge');
+    const bridgeUrl = `ws://127.0.0.1:${this.boundPort}`;
+    url.searchParams.set('bridgeUrl', bridgeUrl);
+    url.hash = new URLSearchParams({bridgeToken:this.sessionProtocol.slice('modbus-review.'.length)}).toString();
+    fs.mkdirSync(path.dirname(file), {recursive:true});
+    fs.writeFileSync(file, JSON.stringify({reviewUrl:url.toString(),bridgeUrl}, null, 2), {mode:0o600});
   }
 
   start(): Promise<number> {
     return new Promise((resolve, reject) => {
-      const server = http.createServer((_req, res) => {
-        // Simple health/info check for dev review
+      const server = http.createServer((req, res) => {
+        if (req.headers.origin && !this.allowedOrigins.has(req.headers.origin)) { res.writeHead(403);res.end();return; }
         res.writeHead(200, {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
         });
-        res.end(
-          JSON.stringify({
-            status: 'ok',
-            bridge: 'Modbus Debugger Dev Bridge',
-            clients: this.clients.size,
-            versions: this.backend.getVersions(),
-          }),
-        );
+        res.end(JSON.stringify({status:'ok',bridge:'Modbus Debugger Dev Bridge'}));
       });
 
       server.on('upgrade', (req, socket: Socket) => {
@@ -60,6 +77,7 @@ export class DevBridgeServer {
         });
         const addr = server.address();
         const actualPort = typeof addr === 'object' && addr ? addr.port : this.port;
+        this.boundPort = actualPort;
         resolve(actualPort);
       });
     });
@@ -97,6 +115,16 @@ export class DevBridgeServer {
   }
 
   private handleUpgrade(req: http.IncomingMessage, socket: Socket): void {
+    socket.on('error', () => socket.destroy());
+    const origin = req.headers.origin;
+    const protocols = req.headers['sec-websocket-protocol']?.split(',').map(value=>value.trim()) ?? [];
+    const offered = protocols.find(value=>value.startsWith('modbus-review.'));
+    const credential = Buffer.from(offered ?? '');
+    const expected = Buffer.from(this.sessionProtocol);
+    if (!origin || !this.allowedOrigins.has(origin) || credential.length !== expected.length || !crypto.timingSafeEqual(credential,expected)) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
     const key = req.headers['sec-websocket-key'];
     if (!key || typeof key !== 'string') {
       socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
@@ -110,6 +138,7 @@ export class DevBridgeServer {
       'Upgrade: websocket',
       'Connection: Upgrade',
       `Sec-WebSocket-Accept: ${accept}`,
+      `Sec-WebSocket-Protocol: ${this.sessionProtocol}`,
       '',
       '',
     ].join('\r\n');
@@ -147,6 +176,7 @@ export class DevBridgeServer {
 
       const opcode = firstByte & 0x0f;
       const isMasked = (secondByte & 0x80) !== 0;
+      if (!isMasked || !(firstByte & 0x80) || (firstByte & 0x70)) { socket.destroy();return Buffer.alloc(0); }
       let payloadLen = secondByte & 0x7f;
       let offset = 2;
 
@@ -158,13 +188,15 @@ export class DevBridgeServer {
         if (buffer.length < 10) return buffer;
         // Read 64-bit integer
         const bigLen = buffer.readBigUInt64BE(2);
-        if (bigLen > BigInt(Number.MAX_SAFE_INTEGER)) {
+        if (bigLen > BigInt(MAX_FRAME_BYTES)) {
           socket.destroy();
           return Buffer.alloc(0);
         }
         payloadLen = Number(bigLen);
         offset = 10;
       }
+
+      if (payloadLen > MAX_FRAME_BYTES) { socket.destroy();return Buffer.alloc(0); }
 
       const maskLen = isMasked ? 4 : 0;
       const totalLen = offset + maskLen + payloadLen;
@@ -246,7 +278,8 @@ export class DevBridgeServer {
 
     if (msg.type === 'command') {
       try {
-        const result = await this.backend.handleCommand(msg.command);
+        const command = validateBridgeCommand(msg.command,this.fileRoots,this.backend.manager);
+        const result = await this.backend.handleCommand(command);
         if (result.ok) {
           this.sendJson(socket, {
             type: 'response',

@@ -2,10 +2,12 @@ import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readReviewUrl } from './dev-review-url.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
+  const reviewUrl = readReviewUrl();
   const outDir = path.resolve(__dirname, '../out/browser-review/expert');
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -20,8 +22,8 @@ async function main() {
   const page = (await browser.pages())[0] || (await browser.newPage());
   await page.setViewport({ width: 1440, height: 900 });
 
-  console.log('[ExpertReview] Navigating to http://localhost:5173/?transport=bridge ...');
-  await page.goto('http://localhost:5173/?transport=bridge', { waitUntil: 'networkidle2' });
+  console.log('[ExpertReview] Opening the authenticated review session...');
+  await page.goto(reviewUrl, { waitUntil: 'networkidle2' });
   await new Promise((r) => setTimeout(r, 2000));
 
   // --- Step 1: Devices Screen (Dual TCP + RTU COM1 Inspection) ---

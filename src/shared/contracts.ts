@@ -10,6 +10,13 @@ export type ResultKind =
   | 'malformed'
   | 'transport';
 
+/** A completed write operation; delivery and read-back are separate from the last confirmed value. */
+export interface PointWriteResult {
+  phase: 'not-sent' | 'confirmed' | 'rejected' | 'unknown';
+  result: ResultKind;
+  exceptionCode: number | null;
+}
+
 export type SourceKind = 'poll' | 'write' | 'readback' | 'temporary-read' | 'scanner' | 'rmw-read' | 'rmw-write';
 
 export interface TransactionRecord {

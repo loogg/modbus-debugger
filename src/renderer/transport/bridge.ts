@@ -7,6 +7,7 @@ export interface BridgeTransportOptions {
   url?: string;
   timeoutMs?: number;
   autoReconnect?: boolean;
+  sessionToken?: string;
 }
 
 export class WebSocketBridgeTransport implements AppTransport {
@@ -29,11 +30,13 @@ export class WebSocketBridgeTransport implements AppTransport {
   readonly url: string;
   readonly timeoutMs: number;
   readonly autoReconnect: boolean;
+  private readonly sessionToken: string;
 
   constructor(options?: BridgeTransportOptions) {
     this.url = options?.url ?? 'ws://127.0.0.1:5174';
     this.timeoutMs = options?.timeoutMs ?? 10000;
     this.autoReconnect = options?.autoReconnect ?? true;
+    this.sessionToken = options?.sessionToken ?? '';
     this.state = {
       type: 'bridge',
       status: 'connecting',
@@ -63,9 +66,15 @@ export class WebSocketBridgeTransport implements AppTransport {
 
   private connect(): void {
     if (this.disposed) return;
+    if (!this.sessionToken) {
+      this.updateStatus('error','缺少开发会话凭据，请使用本机 temp/dev-bridge-session.json 中的 reviewUrl 打开审查页面。');
+      return;
+    }
     try {
+      const target = new URL(this.url);
+      if (!['ws:','wss:'].includes(target.protocol) || !['localhost','127.0.0.1','[::1]'].includes(target.hostname)) throw new Error('开发 Bridge 目标必须是回环地址');
       this.updateStatus('connecting', `Connecting to Dev Bridge at ${this.url}...`);
-      const ws = new WebSocket(this.url);
+      const ws = new WebSocket(this.url, `modbus-review.${this.sessionToken}`);
       this.ws = ws;
 
       ws.onopen = () => {
@@ -148,6 +157,7 @@ export class WebSocketBridgeTransport implements AppTransport {
   }
 
   private async waitForOpen(timeoutMs = 5000): Promise<WebSocket> {
+    if (!this.sessionToken) throw new Error(this.state.message ?? '缺少开发会话凭据');
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return this.ws;
     }

@@ -99,7 +99,7 @@ it('an RTU write timeout drains its late ack, reads back once and still reports 
   const block = { id: 'b1', name: 'B', area: 3 as const, start: 0, length: 1, periodMs: 1000 };
   const mapping = { rawType: 'Int16' as const, offset: 0, registerCount: 1, wordOrder: 'ABCD' as const,
     byteSelector: 'low' as const, bitOffset: 0, bitWidth: 16, stringLength: 0, stringEncoding: 'ascii' as const };
-  cache.ensure(slave, block);
+  runtime.configure([{ slave, block }]);
   const ack = buildRtuAdu(1, encodeResponsePdu({ kind: 'writeAck', fc: 6, address: 0, extra: 42 }));
   const read = buildRtuAdu(1, encodeResponsePdu({ kind: 'registers', fc: 3, registers: [42] }));
   transport.onResponse((request) => request[1] === 6 ? null : [read]);

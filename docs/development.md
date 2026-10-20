@@ -59,6 +59,27 @@ npm run test:e2e -- --spec tests/e2e/app.e2e.ts --mochaOpts.grep "launches with"
 - 被 bundle 的依赖使用 ESM import，避免留下运行时无法解析的裸 `require()`。
 - sql.js 为 SQLite WASM 构建，数据库落盘仍是标准 SQLite 文件；串口使用 serialport 的 N-API prebuilds。WASM 与原生模块必须在打包版中验证，不能只看开发环境成功。
 
+## Browser Review Mode
+
+使用内置浏览器操作共享 Renderer，并连接真实 Main / Backend，不以 Mock 代替通信验收。开发 Bridge 只在回环地址启动；完整审查入口由本机 `temp/dev-bridge-session.json` 的 `reviewUrl` 提供，包含每次启动随机生成的会话凭据。直接打开不带凭据的 `?transport=bridge` 会明确失败。
+
+原生开发模式：先设置独立的 `MODBUS_DATA_DIR`，执行 `npm start`，从该数据根目录的会话文件读取 `reviewUrl`。页面使用相同 Main 会话；不要同时运行第二个服务来占用相同设备或数据根目录。
+
+独立审查服务可以与 `npm run review` 的 Renderer 组合：
+
+```powershell
+npm run review
+npm run review:bridge -- --data-dir="D:\Learning\AI\modbus-debugger\out\test-temp\my-review"
+# 可选：显式指定待审查工作区，服务先复制文件再使用；先确认其中连接属于测试设备。
+npm run review:bridge -- --data-dir="D:\Learning\AI\modbus-debugger\out\test-temp\my-review" --workspace="D:\TestInputs\device.workspace.json"
+```
+
+`--data-dir` 优先于 `MODBUS_DATA_DIR`；两者均未指定时新建 `out/test-temp/review-*`。独立服务不接管已有日常数据根目录，不探测串口或自动加载仓库夹具。空工作区也会在隔离目录建立自己的保存文件；已明确导入的工作区只自动保存副本。错误或不可写路径启动失败，不回退到 AppData。
+
+启动日志只显示会话文件位置，不打印凭据。使用会话文件中的完整 `reviewUrl`；需要不同 Renderer 端口时应同步服务 Origin 白名单。浏览器可访问的文件必须位于当前审查根目录，原生文件选择器及安装更新等能力在真实桌面验证。`?transport=mock&fixture=empty` 等入口仅补充视觉状态，仍须显式选择。
+
+已有审查驱动脚本也从同一会话文件读取地址：可设置 `MODBUS_DEV_BRIDGE_SESSION_FILE` 为会话文件的绝对路径，或使用 `MODBUS_DATA_DIR` 下的 `temp/dev-bridge-session.json`。缺少文件时直接失败，不再使用无凭据的硬编码 URL。项目要求的真实界面审查仍通过内置浏览器执行。
+
 ## 打包与分发验证
 
 ```powershell

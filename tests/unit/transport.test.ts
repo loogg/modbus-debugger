@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { WebSocketBridgeTransport } from '../../src/renderer/transport/bridge';
 import { MockTransport } from '../../src/renderer/transport/mock';
 import { resolveAppTransport } from '../../src/renderer/transport';
 
@@ -94,6 +95,19 @@ describe('Renderer Transports', () => {
   });
 
   describe('resolveAppTransport', () => {
+    it('fails clearly without credentials and never opens a socket or falls back to mock',async()=>{
+      const construct=vi.fn();vi.stubGlobal('WebSocket',construct);
+      const transport=resolveAppTransport('http://localhost:5173/?transport=bridge');
+      try {expect(transport.transportType).toBe('bridge');expect(transport.getStatus()).toMatchObject({status:'error',message:expect.stringContaining('会话凭据')});await expect(transport.getSnapshot()).rejects.toThrow('会话凭据');expect(construct).not.toHaveBeenCalled();}
+      finally {transport.dispose?.();vi.unstubAllGlobals();}
+    });
+    it('passes the fragment credential as a subprotocol and never sends it to a non-loopback target',()=>{
+      const construct=vi.fn(function(this:{close:()=>void}){this.close=()=>{};});vi.stubGlobal('WebSocket',construct);
+      const transport=resolveAppTransport('http://localhost:5173/?transport=bridge#bridgeToken=review-token');
+      const outside=new WebSocketBridgeTransport({url:'ws://example.invalid:5174',sessionToken:'review-token',autoReconnect:false});
+      try {expect(construct).toHaveBeenCalledTimes(1);expect(construct).toHaveBeenCalledWith('ws://127.0.0.1:5174','modbus-review.review-token');expect(outside.getStatus().status).toBe('error');}
+      finally {transport.dispose?.();outside.dispose();vi.unstubAllGlobals();}
+    });
     it('resolves MockTransport when ?transport=mock is set', () => {
       const transport = resolveAppTransport('http://localhost:5173/?transport=mock&fixture=empty');
       expect(transport.transportType).toBe('mock');

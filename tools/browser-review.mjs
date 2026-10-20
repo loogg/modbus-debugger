@@ -2,6 +2,7 @@ import puppeteer from 'puppeteer-core';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { readReviewUrl } from './dev-review-url.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.resolve(__dirname, '../out/browser-review');
@@ -10,6 +11,7 @@ fs.mkdirSync(outDir, { recursive: true });
 const chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
 async function review() {
+  const reviewUrl = readReviewUrl();
   console.log('[BrowserReview] Launching Chrome:', chromePath);
   const browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -34,7 +36,7 @@ async function review() {
   // --- Step 1: Real Dev Bridge Review ---
   console.log('\n--- Step 1: Real Dev Bridge Review ---');
   await page.setViewport({ width: 1440, height: 900 });
-  await page.goto('http://localhost:5173/?transport=bridge', { waitUntil: 'networkidle0' });
+  await page.goto(reviewUrl, { waitUntil: 'networkidle0' });
 
   // Wait for review badge
   await new Promise((r) => setTimeout(r, 2000)); // Allow delta/state update

@@ -56,6 +56,7 @@ export class ConnectionRuntime {
   private hooks: RuntimeHooks;
 
   private targets: PollTarget[] = [];
+  private targetVersions = new Map<string, { owner: object; generation: number }>();
   private due = new Map<string, number>();
   private queue: Array<{ priority: number; seq: number; label: string; run: () => Promise<void>; cancel: (error: Error) => void }> = [];
   private queueSeq = 0;
@@ -109,15 +110,30 @@ export class ConnectionRuntime {
   configure(targets: PollTarget[]): void {
     const previous = new Map(this.targets.map(t => [blockKey(t.slave.id, t.block.id), t]));
     this.targets = targets;
+    const versions = new Map<string, { owner: object; generation: number }>();
     const now = this.clock.now();
     for (const t of targets) {
       const key = blockKey(t.slave.id, t.block.id);
       const old = previous.get(key);
       if (!this.due.has(key) || old?.block.periodMs !== t.block.periodMs || old?.slave.enabled !== t.slave.enabled || old?.slave.unitId !== t.slave.unitId || old?.block.start !== t.block.start) this.due.set(key, now + t.block.periodMs);
-      this.cache.ensure(t.slave, t.block);
+      const owner = this.targetVersions.get(key)?.owner ?? {};
+      const entry = this.cache.ensure(t.slave, t.block, owner);
+      versions.set(key, { owner, generation: entry.generation });
     }
+    this.targetVersions = versions;
     const keys = new Set(targets.map((t) => blockKey(t.slave.id, t.block.id)));
     for (const key of [...this.due.keys()]) if (!keys.has(key)) this.due.delete(key);
+  }
+
+  private targetIsCurrent(key: string, generation: number | undefined): boolean {
+    return !this.stopped && generation !== undefined
+      && this.targetVersions.get(key)?.generation === generation
+      && this.cache.get(key)?.generation === generation
+      && this.targets.some(target => blockKey(target.slave.id, target.block.id) === key && target.slave.enabled);
+  }
+
+  private requireCurrentTarget(key: string, generation: number | undefined): void {
+    if (!this.targetIsCurrent(key, generation)) throw new Error('设备或数据块配置已改变，旧操作已取消；请核对当前设备后重试');
   }
 
   async start(): Promise<void> {
@@ -323,13 +339,15 @@ export class ConnectionRuntime {
   private async attemptRequest(
     unitId: number,
     req: ModbusRequest,
-    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number },
+    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; guard?: () => void },
   ): Promise<RequestOutcome> {
     // Every path (including retry and write/read-back groups) must observe RTU recovery.
     while (this.clock.now() < this.drainUntil) await new Promise(resolve => setTimeout(resolve, 2));
     if (this.drainUntil) { this.drainUntil = 0; this.recoveryContext = null; this.framer.reset(); }
     const gap = this.config.interFrameMs - (this.clock.now() - this.lastRequestEnd);
     if (gap > 0) await new Promise(resolve => setTimeout(resolve, gap));
+    if (this.stopped) throw new Error('Connection stopped before the request was sent');
+    opts.guard?.();
     const startedMono = this.clock.now();
     const startedUtc = new Date().toISOString();
     const traceId = this.diagnostics.nextTraceId();
@@ -469,7 +487,7 @@ export class ConnectionRuntime {
   async executeRequest(
     unitId: number,
     req: ModbusRequest,
-    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; retries?: number; signal?: AbortSignal },
+    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; retries?: number; signal?: AbortSignal; guard?: () => void },
   ): Promise<RequestOutcome> {
     const isRead = req.kind === 'read';
     const maxAttempts = isRead ? 1 + Math.max(0, opts.retries ?? this.config.retries ?? 0) : 1;
@@ -535,27 +553,31 @@ export class ConnectionRuntime {
     if (!best) return null;
     const target = best;
     const key = blockKey(target.slave.id, target.block.id);
+    const generation = this.targetVersions.get(key)?.generation;
     this.due.set(key, now + target.block.periodMs);
     return {
       priority: PRIORITY.poll,
       seq: this.queueSeq++,
       label: `poll ${target.block.name}`,
       run: async () => {
-        await this.pollBlock(target);
+        await this.pollBlock(target, generation);
       },
     };
   }
 
-  private async pollBlock(target: PollTarget): Promise<void> {
+  private async pollBlock(target: PollTarget, generation: number | undefined): Promise<void> {
     const { slave, block } = target;
+    const key = blockKey(slave.id, block.id);
+    this.requireCurrentTarget(key, generation);
     const req: ModbusRequest = {
       kind: 'read',
       fc: block.area as ReadFC,
       address: block.start,
       quantity: block.length,
     };
-    const outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'poll', sourceId: block.id });
-    const key = blockKey(slave.id, block.id);
+    const outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'poll', sourceId: block.id, guard:()=>this.requireCurrentTarget(key,generation) });
+    // A legitimate response still belongs to the old binding after a configuration edit.
+    if (!this.targetIsCurrent(key, generation)) return;
     if (outcome.result === 'ok' && outcome.response) {
       this.cache.applyReadResult(key, outcome.response, outcome.durationMs);
     } else if (outcome.result === 'exception') {
@@ -591,10 +613,11 @@ export class ConnectionRuntime {
 
   async refresh(slaveId: string, blockId?: string): Promise<void> {
     if (this.state !== 'online' || this.stopped) throw new Error('Connection is offline');
-    const targets = this.targets.filter(target => target.slave.id === slaveId && target.slave.enabled && (!blockId || target.block.id === blockId));
+    const targets = this.targets.filter(target => target.slave.id === slaveId && target.slave.enabled && (!blockId || target.block.id === blockId))
+      .map(target => ({ target, generation: this.targetVersions.get(blockKey(target.slave.id, target.block.id))?.generation }));
     if (!targets.length) throw new Error('No enabled blocks to refresh');
     await this.enqueue(PRIORITY.manual, 'refresh', async () => {
-      for (const target of targets) await this.pollBlock(target);
+      for (const { target, generation } of targets) await this.pollBlock(target, generation);
     });
   }
 
@@ -629,16 +652,20 @@ export class ConnectionRuntime {
     rawValue: number | boolean | string;
     pointId: string;
     readBackRange: { start: number; length: number };
-  }): Promise<{ result: ResultKind; exceptionCode: number | null; readBack: RequestOutcome | null }> {
+  }): Promise<{ result: ResultKind; exceptionCode: number | null; readBack: RequestOutcome | null; writeSent: boolean }> {
+    const key = blockKey(opts.slave.id, opts.block.id);
+    const generation = this.targetVersions.get(key)?.generation;
+    const guard = () => this.requireCurrentTarget(key, generation);
+    let writeSent = false;
     const box: { outcome: RequestOutcome | null; readBack: RequestOutcome | null } = { outcome: null, readBack: null };
     await this.enqueue(PRIORITY.write, `write ${opts.pointId}`, async () => {
       const { slave, block, mapping } = opts;
-      const key = blockKey(slave.id, block.id);
+      this.requireCurrentTarget(key, generation);
       const needsRmw = block.area === 3 && mapping.rawType !== 'Float32' && mapping.rawType !== 'Float64' && mapping.registerCount === 1 && (mapping.rawType === 'Bool' || mapping.rawType === 'BitField' || mapping.rawType === 'Int8' || mapping.rawType === 'UInt8');
       let baseMemory: RawMemory | null = null;
       if (needsRmw) {
         // Read latest register; never RMW from stale cache.
-        const read = await this.executeRequest(slave.unitId, { kind: 'read', fc: 0x03, address: block.start + mapping.offset, quantity: 1 }, { sourceKind: 'rmw-read', sourceId: opts.pointId });
+        const read = await this.executeRequest(slave.unitId, { kind: 'read', fc: 0x03, address: block.start + mapping.offset, quantity: 1 }, { sourceKind: 'rmw-read', sourceId: opts.pointId, guard });
         if (read.result === 'ok' && read.response && read.response.kind === 'registers') {
           baseMemory = placeAt(read.response.registers, mapping.offset, mapping.registerCount);
         } else {
@@ -646,7 +673,7 @@ export class ConnectionRuntime {
           return;
         }
       } else if (block.area === 3 && mapping.registerCount > 1) {
-        const read = await this.executeRequest(slave.unitId, { kind: 'read', fc: 0x03, address: block.start + mapping.offset, quantity: mapping.registerCount }, { sourceKind: 'rmw-read', sourceId: opts.pointId });
+        const read = await this.executeRequest(slave.unitId, { kind: 'read', fc: 0x03, address: block.start + mapping.offset, quantity: mapping.registerCount }, { sourceKind: 'rmw-read', sourceId: opts.pointId, guard });
         if (read.result === 'ok' && read.response && read.response.kind === 'registers') {
           baseMemory = placeAt(read.response.registers, mapping.offset, mapping.registerCount);
         } else {
@@ -655,6 +682,7 @@ export class ConnectionRuntime {
         }
       }
 
+      this.requireCurrentTarget(key, generation);
       let req: ModbusRequest;
       if (block.area === 1) {
         req = { kind: 'writeCoil', fc: 0x05, address: block.start + mapping.offset, value: opts.rawValue === true };
@@ -670,10 +698,12 @@ export class ConnectionRuntime {
         req = { kind: 'writeRegisters', fc: 0x10, address: block.start + mapping.offset, values: regs };
       }
 
-      box.outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'write', sourceId: opts.pointId });
+      writeSent = true;
+      box.outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'write', sourceId: opts.pointId, guard });
       // Any failed write may still have reached the device. Only an explicit
       // exception proves refusal; otherwise read back without resending it.
       if (box.outcome.result === 'exception') return;
+      this.requireCurrentTarget(key, generation);
 
       // Read back: confirms the device value and refreshes every shared point.
       const rb = await this.executeRequest(
@@ -681,15 +711,16 @@ export class ConnectionRuntime {
         block.area === 1 || block.area === 2
           ? { kind: 'read', fc: block.area as ReadFC, address: opts.readBackRange.start, quantity: opts.readBackRange.length }
           : { kind: 'read', fc: 0x03, address: opts.readBackRange.start, quantity: opts.readBackRange.length },
-        { sourceKind: 'readback', sourceId: opts.pointId },
+        { sourceKind: 'readback', sourceId: opts.pointId, guard },
       );
       box.readBack = rb;
+      this.requireCurrentTarget(key, generation);
       if (rb.result === 'ok' && rb.response) {
         this.cache.applyReadResult(key, rb.response, rb.durationMs);
         this.hooks.onChange();
       }
     });
-    return { result: box.outcome?.result ?? 'transport', exceptionCode: box.outcome?.exceptionCode ?? null, readBack: box.readBack };
+    return { result: box.outcome?.result ?? 'transport', exceptionCode: box.outcome?.exceptionCode ?? null, readBack: box.readBack, writeSent };
   }
 
   get scan(): ScanStateView | null {

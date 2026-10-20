@@ -169,10 +169,16 @@ async function createWindow(): Promise<void> {
   const backend = registerIpc(manager, () => mainWindow, updater);
   if (!app.isPackaged) {
     const bridgePort = Number(process.env.MODBUS_DEV_BRIDGE_PORT || 5174);
-    devBridge = new DevBridgeServer(backend, { port: bridgePort, host: '127.0.0.1' });
+    const rendererUrl = MAIN_WINDOW_VITE_DEV_SERVER_URL ?? 'http://localhost:5173/';
+    const origin = new URL(rendererUrl).origin;
+    devBridge = new DevBridgeServer(backend, { port: bridgePort, host: '127.0.0.1', allowedOrigins:[origin,origin.replace('localhost','127.0.0.1')],fileRoots:[storage.root] });
     devBridge
       .start()
-      .then((port) => log.info(`Dev Bridge server listening on ws://127.0.0.1:${port}`))
+      .then((port) => {
+        const sessionFile = path.join(storage.temp,'dev-bridge-session.json');
+        devBridge!.writeSessionFile(sessionFile,rendererUrl);
+        log.info(`Dev Bridge listening on ws://127.0.0.1:${port}; review session: ${sessionFile}`);
+      })
       .catch((err) => log.error('Failed to start Dev Bridge server', err));
   }
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {

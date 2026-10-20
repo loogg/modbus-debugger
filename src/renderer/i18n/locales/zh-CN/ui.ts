@@ -20,5 +20,10 @@ export const ui = {
     rejectedTitle: '设备拒绝（异常码 {{code}}），保留旧值',
     unknownTitle: '写结果未知，请检查回读结果或通信诊断',
     doubleClickEdit: '双击编辑',
+    notSent: '未发送',
+    preReadFailed: '写入前读取失败',
+    preReadException: '预读返回设备异常 {{code}}，未发送写请求。可在通信诊断中查看详情。',
+    preReadTimeout: '预读超时，未发送写请求。请检查设备和通信诊断后重试。',
+    preReadTransport: '预读传输或协议失败，未发送写请求。请检查连接和通信诊断后重试。',
   },
 } as const;

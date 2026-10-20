@@ -77,7 +77,7 @@ export function DevReviewIndicator({ transport }: DevReviewIndicatorProps): Reac
           {state.type === 'bridge' ? 'Bridge' : `Mock (${state.fixture ?? 'default'})`}
         </span>
 
-        <span className="text-[11px] text-slate-500">
+        <span className="text-[11px] text-slate-500" title={state.message}>
           {state.status === 'connected' ? '已连接' : state.status === 'connecting' ? '连接中…' : '未连接'}
         </span>
 
@@ -105,6 +105,7 @@ export function DevReviewIndicator({ transport }: DevReviewIndicatorProps): Reac
           ✕
         </button>
       </div>
+      {state.status === 'error' && state.message ? <div role="alert" className="mt-2 max-w-[min(92vw,560px)] rounded border border-red-200 bg-white p-3 text-xs text-red-800">{state.message}</div> : null}
 
       {menuOpen && (
         <div className="mt-1.5 w-64 rounded-lg border border-slate-200 bg-white p-2.5 text-slate-800 shadow-xl">

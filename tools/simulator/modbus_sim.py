@@ -66,7 +66,7 @@ class Faults:
             return pdu
         matches = (args.fault_unit is None or pdu.dev_id == args.fault_unit) and (
             args.fault_fc is None or pdu.function_code == args.fault_fc
-        )
+        ) and (args.fault_quantity is None or getattr(pdu, 'count', None) == args.fault_quantity)
         if args.fault == 'none' or not matches or (args.fault_count and self.used >= args.fault_count):
             return pdu
         self.used += 1
@@ -159,6 +159,7 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument('--fault', choices=['none', 'timeout', 'exception', 'delay', 'bad-crc', 'malformed'], default='none')
     cli.add_argument('--fault-unit', type=ranged_int(1, 247))
     cli.add_argument('--fault-fc', type=int, choices=[1, 2, 3, 4, 5, 6, 15, 16])
+    cli.add_argument('--fault-quantity', type=ranged_int(1, 2000), help='only fault requests with this decoded item count (e.g. an RMW pre-read)')
     cli.add_argument('--fault-count', type=ranged_int(0, 100000), default=0, help='0 means unlimited')
     cli.add_argument('--delay-ms', type=ranged_int(0, 60000), default=500)
     cli.add_argument('--exception-code', type=ranged_int(1, 11), default=2)

@@ -1,5 +1,6 @@
 import puppeteer from 'puppeteer-core';
 import http from 'node:http';
+import { readReviewUrl } from './dev-review-url.mjs';
 
 function getWebSocketDebuggerUrl() {
   return new Promise((resolve, reject) => {
@@ -19,6 +20,7 @@ function getWebSocketDebuggerUrl() {
 }
 
 async function main() {
+  const reviewUrl = readReviewUrl();
   console.log('[LiveDrive] Connecting to user Chrome on 9222...');
   const browserWSEndpoint = await getWebSocketDebuggerUrl();
   const browser = await puppeteer.connect({
@@ -29,9 +31,9 @@ async function main() {
   const pages = await browser.pages();
   const page = pages.find((p) => p.url().includes('5173')) || pages[0] || (await browser.newPage());
 
-  console.log('[LiveDrive] Active page URL:', page.url());
-  if (!page.url().includes('http://localhost:5173/?transport=bridge')) {
-    await page.goto('http://localhost:5173/?transport=bridge', { waitUntil: 'domcontentloaded' });
+  console.log('[LiveDrive] Existing page selected; opening authenticated review session.');
+  if (page.url() !== reviewUrl) {
+    await page.goto(reviewUrl, { waitUntil: 'domcontentloaded' });
     await new Promise((r) => setTimeout(r, 2000));
   }
 

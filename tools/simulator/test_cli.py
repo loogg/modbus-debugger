@@ -9,7 +9,7 @@ class SimulatorCli(unittest.TestCase):
     def test_help_documents_ports_and_functions(self):
         result = subprocess.run([sys.executable, str(SCRIPT), '--help'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
-        for flag in ['--serial-port', '--transport', '--host', '--port', '--units', '--fault', '--static']:
+        for flag in ['--serial-port', '--transport', '--host', '--port', '--units', '--fault', '--fault-quantity', '--static']:
             self.assertIn(flag, result.stdout)
     def test_invalid_configuration_never_starts(self):
         cases = [(['--transport','rtu'], '--serial-port is required'),
@@ -20,7 +20,8 @@ class SimulatorCli(unittest.TestCase):
                  (['--units','248'], '247'),
                  (['--fault','bad-crc'], 'requires RTU'),
                  (['--transport','rtu','--serial-port','PORT_FROM_CLI','--fault','malformed'], 'TCP'),
-                 (['--bytesize','7'], 'invalid choice')]
+                 (['--bytesize','7'], 'invalid choice'),
+                 (['--fault-quantity','0'], '1..2000')]
         for args, expected in cases:
             with self.subTest(args=args):
                 result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, timeout=10)

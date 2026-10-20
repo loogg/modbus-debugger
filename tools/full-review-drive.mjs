@@ -3,6 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { readReviewUrl } from './dev-review-url.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.resolve(__dirname, '../out/browser-review');
@@ -26,6 +27,7 @@ function getWebSocketDebuggerUrl() {
 }
 
 async function main() {
+  const reviewUrl = readReviewUrl();
   console.log('[FullReview] Connecting to visible Chrome on 9222...');
   const browserWSEndpoint = await getWebSocketDebuggerUrl();
   const browser = await puppeteer.connect({
@@ -36,8 +38,8 @@ async function main() {
   const pages = await browser.pages();
   const page = pages.find((p) => p.url().includes('5173')) || pages[0] || (await browser.newPage());
 
-  console.log('[FullReview] Current Page URL:', page.url());
-  await page.goto('http://localhost:5173/?transport=bridge', { waitUntil: 'networkidle0' });
+  console.log('[FullReview] Existing page selected; opening authenticated review session.');
+  await page.goto(reviewUrl, { waitUntil: 'networkidle0' });
   await new Promise((r) => setTimeout(r, 2000));
 
   // --- Step 1: Devices Screen & Real Modbus Topology ---

@@ -46,10 +46,11 @@ export type Overlay =
   | { kind: 'screen'; id: 'import-registers'; templateId: string };
 
 export interface PointWriteState {
-  phase: 'writing' | 'rejected' | 'unknown' | 'confirmed';
+  phase: 'writing' | 'not-sent' | 'rejected' | 'unknown' | 'confirmed';
   attempted: string;
   at: number;
   exceptionCode: number | null;
+  reason?: string;
 }
 
 export interface Toast {

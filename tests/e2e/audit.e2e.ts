@@ -134,12 +134,19 @@ describe('审计：实际按钮到持久化/通信结果', () => {
   });
   it('实时点位通过可见入口打开原始数据检查器并展示设备确认寄存器', async () => {
     await realtime();
-    const confirmed = (await snap()).blocks['slave-1::blk-ctrl']?.registers?.slice(0, 2);
-    expect(confirmed).toHaveLength(2);
     await $('//div[text()="母线电压"]/following-sibling::div[2]//button[normalize-space(.)="原始数据"]').click();
     await waitText('原始数据检查器');
     const drawer = await $('div.fixed.inset-0.z-40 > div.absolute.right-0');
-    const content = await drawer.getText();
+    let confirmed: number[] | undefined;
+    let content = '';
+    // Main and Renderer stream independently while the Float32 simulator continues changing.
+    // Retain a matching observed pair instead of comparing a pre-click, already stale sample.
+    await browser.waitUntil(async () => {
+      confirmed = (await snap()).blocks['slave-1::blk-ctrl']?.registers?.slice(0, 2);
+      content = await drawer.getText();
+      return confirmed?.length === 2 && confirmed.every(register => content.includes(`0x${register.toString(16).toUpperCase().padStart(4, '0')}`));
+    }, { timeout: 10000, interval: 100, timeoutMsg: 'Raw Inspector did not converge to a confirmed Main cache sample' });
+    expect(confirmed).toHaveLength(2);
     expect(content).toContain('原始寄存器');
     expect(content).toContain('Float32 · ABCD');
     for (const register of confirmed!) expect(content).toContain(`0x${register.toString(16).toUpperCase().padStart(4, '0')}`);

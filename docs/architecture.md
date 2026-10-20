@@ -25,6 +25,15 @@ flowchart LR
 - `src/shared/contracts.ts`、`commands.ts` 和 `snapshot.ts` 定义跨 Main / Preload / Renderer 的类型与命令；Main 内部类型不得被 Renderer 或 Shared 反向引用，ESLint 对此设边界检查。
 - 连接、从站、模板、数据块、点位和趋势编辑通过细粒度命令进入 Main。`mutateWorkspace()` 基于 Main 当前 Workspace 生成并验证新状态；生产界面不提交完整 Workspace。`workspace.apply` 只保留给隔离的测试 fixture 和内部工具，正式打包的 IPC 默认拒绝此命令。
 - 工作区变更发布 Snapshot / delta；连接配置替换须等旧传输关闭后才启动新传输。历史记录、Block Cache 与 Scheduler 仍由 Main 统一维护。
+- Block Cache 为每次目标绑定维护独立 generation 和 Runtime 所有权。地址区、地址、长度、Unit 或 Runtime 变化及删除重建会使旧操作失效；排队操作、轮询成功/错误、RMW 预读后发写及写后回读均核对代次。名称等非寻址属性修改不丢弃合法读结果。
+- Main 的 `PointWriteResult` 区分 `not-sent`（预读失败、未发写包）、`rejected`、`unknown` 和 `confirmed`。Renderer 消费命令终态以结束等待，设备确认值仍仅来自 Block Cache；不伪造 write 事务表示预读失败。
+
+## 开发 Browser Review
+
+- 原生 IPC 与独立审查服务复用 `AppBackendService`。Bridge 只绑定回环地址，WebSocket 握手校验准确 Origin 白名单和每次启动随机生成的会话凭据；鉴权前不提供 Snapshot、版本或事件。普通健康检查不披露会话信息。
+- 本机 `temp/dev-bridge-session.json` 保存带凭据 fragment 的 `reviewUrl`；Renderer 用 WebSocket subprotocol 提交凭据，拒绝向非回环目标发送凭据。凭据不出现在 HTTP 查询参数或启动日志中；缺少凭据时明确失败，不回退 Mock。
+- Bridge 使用命令白名单，并将显式及隐式文件读写约束在本次数据根目录；校验真实父目录以拒绝 junction / 符号链接越界。原生文件选择器、安装更新、完整工作区替换等能力只走相应桌面或隔离测试入口。
+- 独立 `review:bridge` 默认使用 `out/test-temp/review-*`；显式数据目录须专用于审查，不接管已有日常程序数据。仅显式 `--workspace` 来源会先复制到根目录内再加载；不自动打开仓库夹具、探测 COM1。启动方式见[开发说明](development.md#browser-review-mode)。
 
 ## Modbus Client Core
 

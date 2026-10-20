@@ -48,6 +48,14 @@ async function harness(transport: 'tcp' | 'rtu', extra: string[] = [], dynamic =
 
 for (const transport of ['tcp', 'rtu'] as const) {
   describe.skipIf(transport === 'rtu' && (!masterPort || !slavePort))(`${transport.toUpperCase()} independent slave, real wire transport`, () => {
+    if (transport === 'tcp') it('targets a one-register RMW pre-read without breaking larger periodic reads',async()=>{
+      const h=await harness('tcp',['--fault','exception','--fault-fc','3','--fault-quantity','1']);
+      try {
+        expect((await h.request({kind:'read',fc:3,address:0,quantity:12})).result).toBe('ok');
+        expect(await h.request({kind:'read',fc:3,address:4,quantity:1})).toMatchObject({result:'exception',exceptionCode:2});
+        expect((await h.request({kind:'read',fc:3,address:0,quantity:2})).result).toBe('ok');
+      } finally {await h.close();}
+    });
     it('supports all eight project function codes, maximum quantities, unit isolation and missing/invalid addresses', async () => {
       const h = await harness(transport);
       try {
@@ -121,7 +129,7 @@ for (const transport of ['tcp', 'rtu'] as const) {
       try {
         const block = { id: 'holding', name: 'Holding', area: 3 as const, start: 0, length: 12, periodMs: 1000 };
         const slave = { id: 'unit-1', connectionId: 'wire', unitId: 1, name: 'Unit 1', templateId: 'template', enabled: true };
-        h.cache.ensure(slave, block); // starts at zero; RMW must read the simulator's actual 0x0011.
+        h.runtime.configure([{ slave, block }]); // starts at zero; RMW must read the simulator's actual 0x0011.
         const common = { wordOrder: 'ABCD' as const, byteSelector: 'low' as const, bitOffset: 0, bitWidth: 16,
           stringLength: 0, stringEncoding: 'ascii' as const };
         const control = await h.request({ kind: 'read', fc: 3, address: 4, quantity: 1 });

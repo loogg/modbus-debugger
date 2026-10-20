@@ -18,6 +18,7 @@ export function resolveAppTransport(customUrl?: string): AppTransport {
   const transportParam = url?.searchParams.get('transport')?.toLowerCase();
   const fixtureParam = (url?.searchParams.get('fixture')?.toLowerCase() ?? 'default') as MockFixtureName;
   const bridgeUrlParam = url?.searchParams.get('bridgeUrl') ?? undefined;
+  const sessionToken = new URLSearchParams(url?.hash.slice(1)).get('bridgeToken') ?? undefined;
   const electronApi = typeof window !== 'undefined' ? (window as unknown as { modbus?: ModbusApi }).modbus : undefined;
 
   // Query parameters can switch review transports only in development. A packaged
@@ -34,7 +35,7 @@ export function resolveAppTransport(customUrl?: string): AppTransport {
 
   // 2. Explicit bridge
   if (transportParam === 'bridge') {
-    return new WebSocketBridgeTransport({ url: bridgeUrlParam });
+    return new WebSocketBridgeTransport({ url: bridgeUrlParam, sessionToken });
   }
 
   // 3. Electron native preload if present
@@ -43,5 +44,5 @@ export function resolveAppTransport(customUrl?: string): AppTransport {
   }
 
   // 4. Default in browser without preload: auto-connect to Dev Bridge
-  return new WebSocketBridgeTransport({ url: bridgeUrlParam });
+  return new WebSocketBridgeTransport({ url: bridgeUrlParam, sessionToken });
 }

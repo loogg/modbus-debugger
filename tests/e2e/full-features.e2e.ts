@@ -255,12 +255,22 @@ describe('既有页面操作回归', () => {
     expect(await readFirstSessionTime()).toBe(before);
   });
 
-  it('添加连接：串口默认第一个可用口，选中选项后下拉自动关闭', async () => {
+  it('添加连接：有串口时默认首个并关闭选项，无串口时保持空白且可手动输入', async () => {
     await rail('设备');
+    const available = await browser.execute(() => (window as unknown as { modbus: ModbusApi }).modbus.command<Array<{path:string}>>({type:'serial.list'}));
+    expect(available.ok).toBe(true);
     await clickText('添加连接');
     await browser.pause(900); // mount-time enumeration
     const portSel = 'input[data-testid="port-combo"]';
     const prefilled = await (await $(portSel)).getValue();
+    if (available.ok && available.value.length === 0) {
+      expect(prefilled).toBe('');
+      await setNative(portSel, 'COM71');
+      expect(await $(portSel).getValue()).toBe('COM71');
+      await clickText('取消');
+      await waitGone('配置 RTU / TCP 通信参数');
+      return;
+    }
     expect(prefilled).toMatch(/^COM\d+$/);
 
     await (await $(portSel)).click();

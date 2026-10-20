@@ -5,6 +5,8 @@ import type { ModbusResponse } from '../../domain/protocol';
 export type BlockStatus = 'idle' | 'ok' | 'timeout' | 'exception' | 'transport-error' | 'disabled';
 
 export interface BlockCacheEntry {
+  /** Identity of this binding, independent of value revisions (including A→B→A). */
+  generation: number;
   sourceKey: string;
   key: string;
   slaveId: string;
@@ -36,16 +38,19 @@ function emptyMemory(block: BlockDef): RawMemory {
 export class BlockCache {
   private entries = new Map<string, BlockCacheEntry>();
   private revision = 0;
+  private generation = 0;
+  private owners = new Map<string, object>();
 
   get globalRevision(): number {
     return this.revision;
   }
 
-  ensure(slave: SlaveDef, block: BlockDef): BlockCacheEntry {
+  ensure(slave: SlaveDef, block: BlockDef, owner?: object): BlockCacheEntry {
     const key = blockKey(slave.id, block.id);
     let entry = this.entries.get(key);
     if (!entry) {
       entry = {
+        generation: ++this.generation,
         key,
         slaveId: slave.id,
         sourceKey: `${slave.connectionId}:${slave.unitId}`,
@@ -59,7 +64,8 @@ export class BlockCache {
         revision: 0,
       };
       this.entries.set(key, entry);
-    } else if (entry.block.length !== block.length || entry.block.area !== block.area || entry.block.start !== block.start || entry.sourceKey !== `${slave.connectionId}:${slave.unitId}`) {
+    } else if ((owner !== undefined && this.owners.get(key) !== owner) || entry.block.length !== block.length || entry.block.area !== block.area || entry.block.start !== block.start || entry.sourceKey !== `${slave.connectionId}:${slave.unitId}`) {
+      entry.generation = ++this.generation;
       entry.sourceKey = `${slave.connectionId}:${slave.unitId}`;
       entry.block = block;
       entry.memory = emptyMemory(block);
@@ -67,23 +73,26 @@ export class BlockCache {
       entry.lastUpdateUtc = null;
       entry.lastDurationMs = null;
       entry.exceptionCode = null;
+      entry.consecutiveErrors = 0;
       this.bump(entry);
     } else {
       const changed = JSON.stringify(entry.block) !== JSON.stringify(block);
       entry.block = block;
       if (changed) this.bump(entry);
     }
+    if (owner !== undefined) this.owners.set(key, owner);
     return entry;
   }
 
   remove(slaveId: string, blockId: string): void {
     this.entries.delete(blockKey(slaveId, blockId));
+    this.owners.delete(blockKey(slaveId, blockId));
     this.revision++;
   }
 
   removeSlave(slaveId: string): void {
     for (const key of [...this.entries.keys()]) {
-      if (key.startsWith(`${slaveId}::`)) this.entries.delete(key);
+      if (key.startsWith(`${slaveId}::`)) { this.entries.delete(key); this.owners.delete(key); }
     }
     this.revision++;
   }

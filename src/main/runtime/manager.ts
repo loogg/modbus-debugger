@@ -18,6 +18,7 @@ import { engineeringToRaw, toEngineering } from '../../domain/scale';
 import { formatEngineeringNumber } from '../../domain/point-format';
 import { systemClock, type Clock } from '../../domain/protocol';
 import { pointKey } from '../../shared/point-key';
+import type { PointWriteResult } from '../../shared/contracts';
 
 export interface PointRef {
   slave: SlaveDef;
@@ -964,12 +965,14 @@ export class RuntimeManager {
       pointId: ref.point.id,
       readBackRange: { start: ref.block.start, length: ref.block.length },
     });
-    this.recordWriteEvent(`${ref.slave.name} / ${ref.point.name} ← ${cmd.boolValue !== null ? cmd.boolValue : cmd.stringValue ?? cmd.engineering} · ${outcome.result}${outcome.exceptionCode === null ? '' : ` (0x${outcome.exceptionCode.toString(16)})`}`);
+    this.recordWriteEvent(`${ref.slave.name} / ${ref.point.name} ← ${cmd.boolValue !== null ? cmd.boolValue : cmd.stringValue ?? cmd.engineering} · ${outcome.result}${outcome.exceptionCode === null ? '' : ` (0x${outcome.exceptionCode.toString(16)})`}${outcome.writeSent ? '' : ' · 预读失败，未发送写请求'}`);
     this.healthDirty = true;
-    if (outcome.result === 'ok') return { ok: true, value: { result: 'ok' } };
-    if (outcome.result === 'exception') return { ok: true, value: { result: 'exception', exceptionCode: outcome.exceptionCode } };
-    if (outcome.result === 'timeout') return { ok: true, value: { result: 'timeout' } };
-    return { ok: true, value: { result: outcome.result } };
+    const value: PointWriteResult = {
+      phase: !outcome.writeSent ? 'not-sent' : outcome.result === 'exception' ? 'rejected' : outcome.readBack?.result === 'ok' ? 'confirmed' : 'unknown',
+      result: outcome.result,
+      exceptionCode: outcome.exceptionCode,
+    };
+    return { ok: true, value };
   }
 
   sessions(): SessionSummary[] {
