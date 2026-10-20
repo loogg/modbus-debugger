@@ -29,6 +29,11 @@ const futureApp=path.join(futureRoot,'out',`${pkg.productName}-win32-x64`);
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const freePort=async()=>{const server=net.createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));return port};
 const exists=file=>fs.access(file).then(()=>true,()=>false);
+function installationRegistrations() {
+  const result=spawnSync('powershell.exe',['-NoProfile','-Command',"Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Modbus Debugger*' } | Select-Object -ExpandProperty UninstallString"],{encoding:'utf8',windowsHide:true});
+  assert(!result.error && result.status===0,'Cannot inspect existing installation registration');
+  return result.stdout.trim();
+}
 async function cdpEval(port,expression) {
   const endpoints=await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const socket=new WebSocket(endpoints[0].webSocketDebuggerUrl);
@@ -134,8 +139,7 @@ async function transition(kind) {
   }
 }
 try {
-  const existing=spawnSync('powershell.exe',['-NoProfile','-Command',"Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Modbus Debugger*' } | Select-Object -ExpandProperty UninstallString"],{encoding:'utf8',windowsHide:true});
-  assert(!existing.error && !existing.stdout.trim(),'Existing user installation found; cannot run Setup update test');
+  assert(!installationRegistrations(),'Existing user installation found; cannot run Setup update test');
   if(!await exists(path.join(futureRoot,'out',futureBase+'.zip'))) {
   await fs.cp(path.join(release,base),futureApp,{recursive:true});
   const unpacked=path.join(scratch,'asar-source');extractAll(path.join(futureApp,'resources/app.asar'),unpacked);
@@ -153,7 +157,14 @@ try {
   console.log('[self-update] PASS selected runtime forms:',kinds.join(', '));
   passed=true;
 } finally {
-  if(installedDir && await exists(path.join(installedDir,'Uninstall modbus-debugger.exe'))){await run(path.join(installedDir,'Uninstall modbus-debugger.exe'),['/S',`_?=${installedDir}`]);assert(await exists(path.join(installedDir,'resources','user-file.txt')),'Uninstaller removed an unknown nested file');}
+  if(installedDir && await exists(path.join(installedDir,'Uninstall modbus-debugger.exe'))){
+    await run(path.join(installedDir,'Uninstall modbus-debugger.exe'),['/S',`_?=${installedDir}`]);
+    // NSIS cleanup can outlive the launcher; finish it before another isolated Setup run.
+    await waitFor(()=>!installationRegistrations(),30000);
+    await waitFor(async()=>!await exists(path.join(installedDir,'modbus-debugger.exe')),30000);
+    assert(await exists(path.join(installedDir,'resources','user-file.txt')),'Uninstaller removed an unknown nested file');
+    console.log('[self-update] PASS Setup cleanup: registration and program removed, unknown user file retained');
+  }
   assertLegacyPreferencesUnchanged(legacy);
   // Preserve failed-run evidence; this directory is isolated beneath out/test-temp.
   if(passed && kinds.length===3) { try { removeScratch(scratch) } catch(error){console.error('Scratch retained:',scratch,String(error));} }

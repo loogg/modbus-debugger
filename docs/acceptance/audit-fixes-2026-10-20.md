@@ -49,7 +49,7 @@
 
 ### 候选与证据
 
-最终目录：`out/Modbus Debugger-win32-x64/`，`resources/app.asar` SHA-256：`B31A09D6B071E49ACA5C93B5387B4B318506AA39B4A9A2A854083C084736AA41`。正式 `release/` 旧产物未替换。
+增量验收目录：`out/Modbus Debugger-win32-x64/`，`resources/app.asar` SHA-256：`B31A09D6B071E49ACA5C93B5387B4B318506AA39B4A9A2A854083C084736AA41`。增量阶段没有替换正式 `release/` 旧产物；用户后续要求发布后的构建与交付结果见正式发布验收记录。
 
 可重建的原始证据位于 `out/test-temp/audit-fixes-20261020/`：`vitest-final.log`、`package-final.log`、`native-e2e-final.log`、`bridge-final-probe.json`，以及 Browser / Native 截图和实际事务 JSON。Bridge 为独立 Backend 会话，Native 为打包版 IPC 会话，各自使用不同隔离根目录；不争用历史库或设备。原始证据含本机路径，不作为正式发布资料。
 
