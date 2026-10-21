@@ -108,10 +108,10 @@ export const config = {
       });
     }
   },
-  onComplete: () => {
+  onComplete: (exitCode: number) => {
     sim?.kill();
     rtuSim?.kill();
     assertLegacyPreferencesUnchanged(legacyPreferences);
-    if (workspaceCopyDir) removeScratch(workspaceCopyDir);
+    if (workspaceCopyDir && exitCode === 0) removeScratch(workspaceCopyDir);
   },
 };

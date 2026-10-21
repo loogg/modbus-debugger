@@ -99,15 +99,16 @@ const PointRow = React.memo(
     a.view?.stringValue === b.view?.stringValue,
 );
 
-const GroupRow = React.memo(function GroupRow(props: { block: BlockDef; state: BlockViewState | undefined }) {
+const GroupRow = React.memo(function GroupRow(props: { block: BlockDef; state: BlockViewState | undefined; local?: boolean }) {
   const st = props.state;
+  const { t } = useTranslation();
   const statusLabels = useStatusLabels();
   return (
     <div className="flex h-full w-full items-center justify-between bg-accentsoft/70 px-3">
       <span className="text-sm font-bold">{props.block.name}</span>
       <span className="flex items-center gap-6">
         <span className="text-xs text-ink2 mono">
-          {AREAS[props.block.area]} · {props.block.start}–{props.block.start + props.block.length - 1} · {props.block.periodMs} ms
+          {AREAS[props.block.area]} · {props.block.start}–{props.block.start + props.block.length - 1} · {props.local ? t('slave.actualMemory') : `${props.block.periodMs} ms`}
         </span>
         <StatusDot tone={statusTone(st?.status)} label={statusLabel(statusLabels, st?.status)} />
       </span>
@@ -128,6 +129,7 @@ export function RealtimeScreen() {
   const command = useApp((s) => s.command);
   const toast = useApp((s) => s.toast);
   const select = useApp((s) => s.select);
+  const setModule = useApp((s) => s.setModule);
 
   React.useEffect(() => {
     if (!selection.slaveId && workspace?.slaves && workspace.slaves.length > 0) {
@@ -143,6 +145,7 @@ export function RealtimeScreen() {
 
   const slave = workspace?.slaves.find((s) => s.id === selection.slaveId);
   const template = workspace?.templates.find((t) => t.id === slave?.templateId);
+  const local = workspace?.connections.find(connection => connection.id === slave?.connectionId)?.role === 'slave';
   const blocks = template?.blocks ?? EMPTY_BLOCKS_LIST;
   const scopeBlock = selection.realtimeScope === 'block' ? blocks.find((b) => b.id === selection.blockId) : undefined;
 
@@ -221,10 +224,10 @@ export function RealtimeScreen() {
         subtitle={scopeBlock ? t('realtime.subtitleBlock', { slave: slave.name, block: scopeBlock.name }) : t('realtime.subtitleAll', { unitId: slave.unitId, template: template.name, blocks: blocks.length, points: template.points.length })}
         actions={
           <>
-            {scopeBlock ? (
+            {scopeBlock && !local ? (
               <span className="inline-flex h-10 items-center rounded-ctl bg-accentsoft px-4 text-sm text-accent font-medium">● {scopeBlock.periodMs} ms</span>
             ) : null}
-            <Button onClick={async () => { const res = await command({ type: 'device.refresh', slaveId: slave.id, blockId: scopeBlock?.id }); if (res.ok) toast({ kind: 'info', title: t('realtime.refreshTriggered') }); }}>{scopeBlock ? t('realtime.refreshOnce') : t('realtime.refreshAll')}</Button>
+            {local ? <Button onClick={() => { select({ deviceView: 'memory' }); setModule('devices'); }}>{t('slave.openMemory')}</Button> : <Button onClick={async () => { const res = await command({ type: 'device.refresh', slaveId: slave.id, blockId: scopeBlock?.id }); if (res.ok) toast({ kind: 'info', title: t('realtime.refreshTriggered') }); }}>{scopeBlock ? t('realtime.refreshOnce') : t('realtime.refreshAll')}</Button>}
             {!scopeBlock ? <Button variant="primary" onClick={() => void joinTrend()}>{t('realtime.joinTrend')}</Button> : null}
           </>
         }
@@ -245,7 +248,7 @@ export function RealtimeScreen() {
         ) : (
           <span className="text-xs text-ink2">{t('realtime.lastUpdate', { time: formatClock(focusState?.lastUpdateUtc) })}</span>
         )}
-        <StatusDot tone={statusTone(focusState?.status ?? 'ok')} label={scopeBlock ? statusLabel(statusLabels, focusState?.status) : t('realtime.bgContinuous')} />
+        <StatusDot tone={statusTone(focusState?.status ?? 'ok')} label={local ? t('slave.actualMemory') : scopeBlock ? statusLabel(statusLabels, focusState?.status) : t('realtime.bgContinuous')} />
       </div>
 
       <div ref={scrollRef} className="overflow-auto rounded-card border border-line bg-surface" style={{ maxHeight: 'calc(100vh - 320px)', minHeight: 260 }}>
@@ -266,7 +269,7 @@ export function RealtimeScreen() {
               if (row.type === 'group' && row.block) {
                 return (
                   <div key={vi.key} className="absolute left-0 w-full" style={{ top: vi.start, height: vi.size }}>
-                    <GroupRow block={row.block} state={blockStates[`${slave.id}::${row.block.id}`]} />
+                    <GroupRow block={row.block} state={blockStates[`${slave.id}::${row.block.id}`]} local={local} />
                   </div>
                 );
               }
@@ -282,7 +285,7 @@ export function RealtimeScreen() {
       </div>
       <div className="mt-2 text-right text-xs text-ink2">{t('realtime.footerFirstScreen', { shown: Math.min(pointCount, 10), total: pointCount })}{compact ? t('realtime.footerCompactSuffix') : ''}</div>
 
-      <InfoBand tone="blue" className="mt-6">
+      {local ? <InfoBand tone="blue" className="mt-6">{t('slave.localDataHint')}</InfoBand> : <InfoBand tone="blue" className="mt-6">
         <div className="text-sm font-bold text-accent mb-1.5">{scopeBlock ? t('realtime.runStatus') : t('realtime.pollStatus')}</div>
         <div className="text-sm">
           {scopeBlock
@@ -293,7 +296,7 @@ export function RealtimeScreen() {
           {t('realtime.focusPrefix')}{scopeBlock ? t('realtime.focusBlock', { name: scopeBlock.name, points: template.points.filter((p) => p.blockId === scopeBlock.id).length, writable: template.points.filter((p) => p.blockId === scopeBlock.id && p.access === 'rw').length }) : t('realtime.focusAllBlocks', { name: slave.name })}
           {' · '}{t('realtime.bgPollingPrefix')}{blocks.map((b) => `${b.name} ${b.periodMs} ms`).join(' · ')}
         </div>
-      </InfoBand>
+      </InfoBand>}
     </>
   );
 }

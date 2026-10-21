@@ -33,6 +33,7 @@ export interface CommunicationMessageRow {
   transaction: TransactionRecord;
   direction: 'TX' | 'RX';
   timeUtc: string;
+  response: boolean;
 }
 
 /** Newest first, capped by visible messages rather than by request/response pairs. */
@@ -40,14 +41,16 @@ export function transactionMessageRows(transactions: TransactionRecord[], limit 
   if (limit <= 0) return [];
   const rows: CommunicationMessageRow[] = [];
   for (const transaction of transactions) {
-    rows.push({ key: `${transaction.traceId}:TX`, transaction, direction: 'TX', timeUtc: transaction.startUtc });
+    const requestDirection = transaction.sourceKind === 'slave' ? 'RX' : 'TX';
+    const responseDirection = transaction.sourceKind === 'slave' ? 'TX' : 'RX';
+    rows.push({ key: `${transaction.traceId}:${requestDirection}`, transaction, direction: requestDirection, timeUtc: transaction.startUtc, response: false });
     if (transaction.responseAduHex) {
       const started = Date.parse(transaction.startUtc);
       const elapsed = transaction.durationMs;
       const timeUtc = Number.isFinite(started) && elapsed !== null && Number.isFinite(elapsed)
         ? new Date(started + Math.max(0, elapsed)).toISOString()
         : transaction.startUtc;
-      rows.push({ key: `${transaction.traceId}:RX`, transaction, direction: 'RX', timeUtc });
+      rows.push({ key: `${transaction.traceId}:${responseDirection}`, transaction, direction: responseDirection, timeUtc, response: true });
     }
   }
   return rows.slice(-Math.max(0, limit)).reverse();
@@ -93,10 +96,10 @@ export function CommScreen() {
     { id: 'conn', header: t('comm.colConnection'), width: 90, render: () => <span className="text-xs">{connectionName}</span> },
     { id: 'slave', header: t('comm.colSlave'), width: 80, render: (r) => <span className="text-xs">{t('comm.slaveUnit', { id: r.transaction.unitId })}</span> },
     { id: 'dir', header: t('comm.colDirection'), width: 60, render: (r) => <span className={`text-xs font-medium ${r.direction === 'RX' ? 'text-ok' : 'text-accent'}`}>{r.direction}</span> },
-    { id: 'fc', header: t('comm.colFunctionCode'), width: 80, render: (r) => <span className="text-xs text-accent mono">FC{(r.direction === 'RX' && r.transaction.result === 'exception' ? r.transaction.functionCode | 0x80 : r.transaction.functionCode).toString(16).toUpperCase().padStart(2, '0')}</span> },
-    { id: 'range', header: t('comm.colRangeValue'), width: 180, render: (r) => <span className="text-xs">{r.direction === 'RX' ? `${(r.transaction.responseAduHex?.length ?? 0) / 2} bytes` : r.transaction.summary}</span> },
-    { id: 'result', header: t('comm.colResult'), width: 90, render: (r) => <span className={`text-xs ${r.direction === 'TX' && r.transaction.responseAduHex ? 'text-ink2' : RESULT_COLOR[r.transaction.result]}`}>{r.direction === 'TX' && r.transaction.responseAduHex ? t('comm.sent') : resultLabel(r.transaction.result)}</span> },
-    { id: 'dur', header: t('comm.colDuration'), width: 90, render: (r) => <span className="text-xs text-ink2">{(r.direction === 'RX' || !r.transaction.responseAduHex) && r.transaction.durationMs !== null ? `${r.transaction.durationMs.toFixed(1)} ms` : '—'}</span> },
+    { id: 'fc', header: t('comm.colFunctionCode'), width: 80, render: (r) => <span className="text-xs text-accent mono">FC{(r.response && r.transaction.result === 'exception' ? r.transaction.functionCode | 0x80 : r.transaction.functionCode).toString(16).toUpperCase().padStart(2, '0')}</span> },
+    { id: 'range', header: t('comm.colRangeValue'), width: 180, render: (r) => <span className="text-xs">{r.response ? `${(r.transaction.responseAduHex?.length ?? 0) / 2} bytes` : r.transaction.summary}</span> },
+    { id: 'result', header: t('comm.colResult'), width: 90, render: (r) => <span className={`text-xs ${!r.response && r.transaction.responseAduHex ? 'text-ink2' : RESULT_COLOR[r.transaction.result]}`}>{!r.response && r.transaction.responseAduHex ? r.direction === 'TX' ? t('comm.sent') : t('slave.source') : resultLabel(r.transaction.result)}</span> },
+    { id: 'dur', header: t('comm.colDuration'), width: 90, render: (r) => <span className="text-xs text-ink2">{(r.response || !r.transaction.responseAduHex) && r.transaction.durationMs !== null ? `${r.transaction.durationMs.toFixed(1)} ms` : '—'}</span> },
   ], [connectionName, resultLabel, t]);
 
   const handleRowClick = useCallback((r: CommunicationMessageRow) => setSelectedRowKey(r.key), []);
@@ -123,10 +126,10 @@ export function CommScreen() {
   const exportLog = () => {
     const text = messageRows.map((row) => {
       const tx = row.transaction;
-      const result = row.direction === 'TX' && tx.responseAduHex ? t('comm.sent') : resultLabel(tx.result);
-      const functionCode = row.direction === 'RX' && tx.result === 'exception' ? tx.functionCode | 0x80 : tx.functionCode;
-      const range = row.direction === 'RX' ? `${tx.responseAduHex!.length / 2} bytes` : tx.summary;
-      const duration = row.direction === 'RX' || !tx.responseAduHex ? (tx.durationMs === null ? '—' : `${tx.durationMs.toFixed(1)} ms`) : '—';
+      const result = !row.response && tx.responseAduHex ? row.direction === 'TX' ? t('comm.sent') : t('slave.source') : resultLabel(tx.result);
+      const functionCode = row.response && tx.result === 'exception' ? tx.functionCode | 0x80 : tx.functionCode;
+      const range = row.response ? `${tx.responseAduHex!.length / 2} bytes` : tx.summary;
+      const duration = row.response || !tx.responseAduHex ? (tx.durationMs === null ? '—' : `${tx.durationMs.toFixed(1)} ms`) : '—';
       return `${row.timeUtc} ${row.direction} FC${functionCode.toString(16).toUpperCase().padStart(2, '0')} ${range} ${result} ${duration}`;
     }).join('\n');
     void navigator.clipboard.writeText(text);
@@ -255,8 +258,10 @@ const HEALTH_WINDOW_MS = 300000;
 
 function HealthView(props: { connectionId: string; connectionName: string }) {
   const { t } = useTranslation();
+  const workspace = useWorkspace();
   const healthMap = useHealth();
   const select = useApp((s) => s.select);
+  const setModule = useApp((s) => s.setModule);
   const command = useApp((s) => s.command);
   const connectionId = props.connectionId;
   const [chart, setChart] = useState<HealthChart>({ series: [], startMs: 0, endMs: 0, samples: 0 });
@@ -291,13 +296,18 @@ function HealthView(props: { connectionId: string; connectionName: string }) {
   const health = healthMap[connectionId];
   // Stable identity so DataTable's row memo can bail out between health refreshes.
   const healthCols = useMemo<Array<Column<BlockHealth>>>(() => [
-    { id: 'block', header: t('comm.colSlaveBlock'), width: 240, render: (r) => <span className="text-sm">{t('comm.colSlave')}{r.slaveId.slice(-1)} / {r.blockName}</span> },
+    { id: 'block', header: t('comm.colSlaveBlock'), width: 240, render: (r) => <span className="text-sm">{t('comm.slaveUnit', { id: workspace?.slaves.find(slave => slave.id === r.slaveId)?.unitId ?? '—' })} / {r.blockName}</span> },
     { id: 'cfg', header: t('comm.colConfiguredPeriod'), width: 120, render: (r) => <span className="text-xs">{r.configuredPeriodMs} ms</span> },
     { id: 'act', header: t('comm.colActualPeriod'), width: 120, render: (r) => <span className="text-xs">{r.actualPeriodMs ? `${r.actualPeriodMs.toFixed(1)} ms` : '—'}</span> },
     { id: 'p95', header: t('comm.colP95'), width: 120, render: (r) => <span className="text-xs">{r.p95Ms ? `${r.p95Ms.toFixed(1)} ms` : '—'}</span> },
     { id: 'to', header: t('comm.colTimeoutRate'), width: 100, render: (r) => <span className="text-xs">{(r.timeoutRate * 100).toFixed(1)}%</span> },
-    { id: 'op', header: t('comm.colActions'), width: 100, render: () => <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => select({ commView: 'trace' })}>{t('comm.openTemplate')}</button> },
-  ], [select, t]);
+    { id: 'op', header: t('comm.colActions'), width: 100, render: (r) => <button className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => {
+      const slave = workspace?.slaves.find(item => item.id === r.slaveId);
+      if (!slave?.templateId) return;
+      select({ templateId: slave.templateId, editBlockId: r.blockId, templateEditing: true });
+      setModule('templates');
+    }}>{t('comm.openTemplate')}</button> },
+  ], [select, setModule, t, workspace]);
 
   if (!health) {
     // Health is published once per second; show a placeholder instead of a blank pane.
@@ -345,7 +355,7 @@ function HealthView(props: { connectionId: string; connectionName: string }) {
       <DataTable
         columns={healthCols}
         rows={health.blocks}
-        rowKey={(r) => r.blockId}
+        rowKey={(r) => `${r.slaveId}:${r.blockId}`}
       />
     </>
   );
@@ -367,7 +377,7 @@ function TraceView(props: { connectionId: string }) {
   const selected = txs.find((t) => t.traceId === selectedTrace) ?? txs[0];
   const selectedSlave = workspace?.slaves.find((slave) => slave.connectionId === connectionId && slave.unitId === selected?.unitId);
   const selectedTemplate = workspace?.templates.find((template) => template.id === selectedSlave?.templateId);
-  const relatedPoints = selected?.sourceKind === 'poll'
+  const relatedPoints = selected?.sourceKind === 'poll' || selected?.sourceKind === 'slave'
     ? selectedTemplate?.points.filter((point) => point.blockId === selected.sourceId) ?? []
     : selectedTemplate?.points.filter((point) => point.id === selected?.sourceId) ?? [];
   const traceCols = useMemo<Array<Column<TransactionRecord>>>(
@@ -397,7 +407,7 @@ function TraceView(props: { connectionId: string }) {
         <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
           <div className="rounded-card bg-surface2 p-5">
             <div className="text-xs text-ink2 mb-1">{t('comm.requestSource')}</div>
-            <div className="text-sm font-bold mb-3">{selected.sourceKind === 'poll' ? t('comm.sourcePoll') : selected.sourceKind === 'write' ? t('comm.sourceWrite') : selected.sourceKind === 'readback' ? t('comm.sourceReadback') : selected.sourceKind === 'temporary-read' ? t('comm.sourceTemporaryRead') : selected.sourceKind === 'scanner' ? t('comm.sourceScanner') : 'RMW'}</div>
+            <div className="text-sm font-bold mb-3">{selected.sourceKind === 'slave' ? t('slave.source') : selected.sourceKind === 'poll' ? t('comm.sourcePoll') : selected.sourceKind === 'write' ? t('comm.sourceWrite') : selected.sourceKind === 'readback' ? t('comm.sourceReadback') : selected.sourceKind === 'temporary-read' ? t('comm.sourceTemporaryRead') : selected.sourceKind === 'scanner' ? t('comm.sourceScanner') : 'RMW'}</div>
             <div className="text-xs text-ink2 mb-1">{t('comm.device')}</div>
             <div className="text-sm mb-3">{selectedSlave?.name ?? t('comm.slaveUnit', { id: selected.unitId })} · Unit {selected.unitId}</div>
             <div className="text-xs text-ink2 mb-1">{t('comm.block')}</div>

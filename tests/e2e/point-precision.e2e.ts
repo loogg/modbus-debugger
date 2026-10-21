@@ -8,7 +8,7 @@ const fixture = () => JSON.parse(fs.readFileSync('tools/e2e/demo.workspace.json'
 const snapshot = () => browser.execute(() => (window as unknown as { modbus: ModbusApi }).modbus.getSnapshot());
 const rail = (name: string) => $(`//nav//button[normalize-space(.)="${name}"]`).click();
 const shot = async (name: string) => {
-  const file = path.resolve('out/audit/point-precision', name);
+  const file = path.resolve('out/test-temp/full-e2e/point-precision', name);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   await browser.saveScreenshot(file);
 };

@@ -10,6 +10,7 @@ import { scanOptionsSchema } from '../../shared/scan-options';
 import type { RequestOutcome } from '../../shared/contracts';
 import type { Command } from '../../shared/commands';
 import { BAUD_PRESETS } from '../features/devices/baud-presets';
+import { SlaveMemoryView } from '../features/devices/slave-memory';
 
 
 export function DevicesScreen() {
@@ -33,8 +34,9 @@ export function DevicesScreen() {
   const activeConnection =
     workspace?.connections.find((c) => c.id === selection.connectionId) ?? connection ?? workspace?.connections[0];
 
-  if (selection.deviceView === 'scan' && activeConnection) return <ScanView key={activeConnection.id} connectionId={activeConnection.id} />;
-  if (selection.deviceView === 'temp' && activeConnection) return <TempReadView key={activeConnection.id} connectionId={activeConnection.id} />;
+  if (selection.deviceView === 'scan' && activeConnection && activeConnection.role !== 'slave') return <ScanView key={activeConnection.id} connectionId={activeConnection.id} />;
+  if (selection.deviceView === 'temp' && activeConnection && activeConnection.role !== 'slave') return <TempReadView key={activeConnection.id} connectionId={activeConnection.id} />;
+  if (selection.deviceView === 'memory' && slave && connection?.role === 'slave') return <SlaveMemoryView key={slave.id} slaveId={slave.id} />;
   const template = workspace?.templates.find((t) => t.id === slave?.templateId);
   const connState = slave ? connStates[slave.connectionId] : undefined;
 
@@ -87,7 +89,7 @@ export function DevicesScreen() {
       <PageHeader
         title={slave.name}
         subtitle={t('devices.headerSubtitle', { unit: String(slave.unitId), conn: connection?.name ?? '', template: template?.name ?? t('devices.unboundTemplate') })}
-        actions={<Button onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: slave.connectionId, slaveId: slave.id })}>{t('devices.editSlave')}</Button>}
+        actions={<>{connection?.role === 'slave' ? <Button variant="primary" onClick={() => select({ deviceView: 'memory' })}>{t('slave.openMemory')}</Button> : null}<Button onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: slave.connectionId, slaveId: slave.id })}>{t('devices.editSlave')}</Button></>}
       />
       <InfoColumns
         items={[
@@ -112,8 +114,8 @@ export function DevicesScreen() {
               <div className="text-xs text-accent mt-1">{AREAS[b.area]}</div>
               <div className="mt-4 flex flex-col gap-2 text-xs">
                 <div className="flex"><span className="w-20 text-ink2">{t('devices.blockRangeLabel')}</span><span className="mono">{t('devices.blockRangeValue', { start: String(b.start), end: String(b.start + b.length - 1) })}</span></div>
-                <div className="flex"><span className="w-20 text-ink2">{t('devices.blockLengthLabel')}</span><span>{t('devices.registerCount', { n: String(b.length) })}</span></div>
-                <div className="flex"><span className="w-20 text-ink2">{t('devices.blockPeriodLabel')}</span><span>{t('devices.blockPeriodValue', { ms: String(b.periodMs) })}</span></div>
+                <div className="flex"><span className="w-20 text-ink2">{t('devices.blockLengthLabel')}</span><span>{b.area <= 2 ? t('slave.bitCount', { count: b.length }) : t('devices.registerCount', { n: String(b.length) })}</span></div>
+                <div className="flex"><span className="w-20 text-ink2">{connection?.role === 'slave' ? t('slave.slaveShort') : t('devices.blockPeriodLabel')}</span><span>{connection?.role === 'slave' ? t('slave.actualMemory') : t('devices.blockPeriodValue', { ms: String(b.periodMs) })}</span></div>
               </div>
               <Button
                 variant="quiet"
@@ -463,6 +465,7 @@ function ConnectionSettingsView(props: { connectionId: string }) {
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
   const state = connStates[props.connectionId]?.state ?? 'offline';
   const [name, setName] = useState(conn?.name ?? '');
+  const [role, setRole] = useState<'master' | 'slave'>(conn?.role ?? 'master');
   const [port, setPort] = useState(conn?.rtu?.port ?? '');
   const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [baud, setBaud] = useState(String(conn?.rtu?.baudRate ?? 115200));
@@ -486,7 +489,8 @@ function ConnectionSettingsView(props: { connectionId: string }) {
   // While the link is up the parameters are locked: editing a live serial/TCP session would
   // tear the transport down mid-flight. Disconnect first, edit, save, then connect again.
   const live = state === 'online' || state === 'connecting';
-  const stateLabel = state === 'online' ? t('devices.stateConnected') : state === 'connecting' ? t('devices.stateConnecting') : state === 'error' ? t('devices.stateError') : t('devices.stateDisconnected');
+  const local = conn.role === 'slave';
+  const stateLabel = state === 'online' ? local ? conn.transport === 'tcp' ? t('slave.listening', { count: connStates[conn.id]?.clientCount ?? 0 }) : t('slave.running') : t('devices.stateConnected') : state === 'connecting' ? local ? t('slave.starting') : t('devices.stateConnecting') : state === 'error' ? t('devices.stateError') : local ? t('slave.stopped') : t('devices.stateDisconnected');
   const slaves = workspace.slaves.filter((sl) => sl.connectionId === conn.id);
 
   const save = async () => {
@@ -494,6 +498,7 @@ function ConnectionSettingsView(props: { connectionId: string }) {
     const updated = {
       ...conn,
       name,
+      role,
       rtu: conn.transport === 'rtu' ? { port, baudRate: Number(baud), dataBits: conn.rtu?.dataBits ?? (8 as 7 | 8), parity: conn.rtu?.parity ?? ('none' as 'none' | 'even' | 'odd'), stopBits: conn.rtu?.stopBits ?? (1 as 1 | 2) } : undefined,
       tcp: conn.transport === 'tcp' ? { host, port: Number(tcpPort) } : undefined,
       timeoutMs: Number(timeout),
@@ -527,21 +532,23 @@ function ConnectionSettingsView(props: { connectionId: string }) {
             <span className="inline-flex h-10 items-center rounded-ctl bg-surface2 px-4 text-sm">
               <StatusDot tone={state === 'online' ? 'ok' : state === 'error' ? 'err' : state === 'connecting' ? 'warn' : 'idle'} label={stateLabel} />
             </span>
-            <Button disabled={!live} title={live ? undefined : t('devices.scanRequiresLink')} onClick={() => select({ connectionId: conn.id, deviceView: 'scan' })}>{t('devices.scan')}</Button>
-            <Button disabled={!live} title={live ? undefined : t('devices.tempRequiresLink')} onClick={() => select({ connectionId: conn.id, deviceView: 'temp' })}>{t('devices.tempRead')}</Button>
-            <Button disabled={busy} onClick={() => void toggleLink()}>{live ? t('devices.disconnect') : t('devices.connect')}</Button>
-            <Button variant="primary" disabled={live || busy} title={live ? t('devices.saveRequiresDisconnect') : undefined} onClick={() => void save()}>{t('devices.save')}</Button>
+            {!local ? <><Button disabled={!live} title={live ? undefined : t('devices.scanRequiresLink')} onClick={() => select({ connectionId: conn.id, deviceView: 'scan' })}>{t('devices.scan')}</Button>
+            <Button disabled={!live} title={live ? undefined : t('devices.tempRequiresLink')} onClick={() => select({ connectionId: conn.id, deviceView: 'temp' })}>{t('devices.tempRead')}</Button></> : null}
+            <Button disabled={busy} onClick={() => void toggleLink()}>{local ? live ? t('slave.stop') : t('slave.start') : live ? t('devices.disconnect') : t('devices.connect')}</Button>
+            <Button variant="primary" disabled={live || busy} title={live ? local ? t('slave.liveLock') : t('devices.saveRequiresDisconnect') : undefined} onClick={() => void save()}>{t('devices.save')}</Button>
           </>
         }
       />
       <InfoBand tone="blue">
         {live
-          ? t('devices.liveLockHint')
-          : t('devices.offlineEditHint')}
+          ? local ? t('slave.liveLock') : t('devices.liveLockHint')
+          : local ? t('slave.setupHint') : t('devices.offlineEditHint')}
       </InfoBand>
+      {state === 'error' && connStates[conn.id]?.detail ? <div role="alert" className="my-3 text-sm text-err break-all">{connStates[conn.id]?.detail}</div> : null}
       <InfoBand>
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
           <Field label={t('devices.fieldName')}><TextInput disabled={live} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label={t('slave.role')}><Select disabled={live} value={role} onChange={value => setRole(value as typeof role)} options={[{ value: 'master', label: t('slave.master') }, { value: 'slave', label: t('slave.slave') }]} /></Field>
           {conn.transport === 'rtu' ? (
             <>
               <Field label={t('devices.fieldPort')} hint={live ? undefined : t('devices.portHint')}>
@@ -553,21 +560,21 @@ function ConnectionSettingsView(props: { connectionId: string }) {
             </>
           ) : (
             <>
-              <Field label={t('devices.fieldHost')}><TextInput disabled={live} value={host} onChange={(e) => setHost(e.target.value)} /></Field>
+              <Field label={role === 'slave' ? t('slave.listenHost') : t('devices.fieldHost')} hint={role === 'slave' ? t('slave.listenHint') : undefined}><TextInput disabled={live} value={host} onChange={(e) => setHost(e.target.value)} /></Field>
               <Field label={t('devices.fieldTcpPort')}><TextInput disabled={live} value={tcpPort} onChange={(e) => setTcpPort(e.target.value)} /></Field>
             </>
           )}
-          <Field label={t('devices.fieldTimeoutMs')}><TextInput data-testid="timeout-input" disabled={live} value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
-          <Field label={t('devices.retries')}><TextInput disabled={live} value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
+          {role !== 'slave' ? <><Field label={t('devices.fieldTimeoutMs')}><TextInput data-testid="timeout-input" disabled={live} value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
+          <Field label={t('devices.retries')}><TextInput disabled={live} value={retries} onChange={(e) => setRetries(e.target.value)} /></Field></> : null}
           <Field label={t('devices.fieldReconnect')}><Select disabled={live} value={reconnect} onChange={(v) => setReconnect(v as 'auto' | 'manual')} options={[{ value: 'auto', label: t('devices.reconnectAuto') }, { value: 'manual', label: t('devices.reconnectManual') }]} /></Field>
-          <Field label={t('devices.fieldRts')}><Select disabled={live} value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
+          {conn.transport === 'rtu' ? <Field label={t('devices.fieldRts')}><Select disabled={live} value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field> : null}
           <Field label={t('devices.fieldLogLevel')}><Select disabled={live} value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
-          <Field label={t('devices.fieldInterFrame')}><TextInput disabled={live} value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
+          {role !== 'slave' ? <Field label={t('devices.fieldInterFrame')}><TextInput disabled={live} value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field> : null}
         </div>
       </InfoBand>
       <SectionTitle right={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: conn.id })}>{t('devices.addSlavePlus')}</Button>}>{t('devices.slaveLabel')}</SectionTitle>
       {slaves.length === 0 ? (
-        <InfoBand tone="blue">{t('devices.noSlavesHint')}</InfoBand>
+        <InfoBand tone="blue">{local ? t('slave.noSlaves') : t('devices.noSlavesHint')}</InfoBand>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {slaves.map((sl) => {

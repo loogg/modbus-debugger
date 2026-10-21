@@ -8,6 +8,16 @@ export interface TrackEvent {
 
 const ENUM_COLORS = ['#0078D4', '#C76C00', '#178A4D', '#7A5AF8', '#C42B1C', '#0E7C86'];
 
+function fitCaption(text: string, size: number): string {
+  let width = 0, result = '';
+  for (const character of text) {
+    width += character.codePointAt(0)! > 255 ? size : size * 0.62;
+    if (width > 132 - size) return `${result}…`;
+    result += character;
+  }
+  return result;
+}
+
 function useWidth(): [React.RefObject<HTMLDivElement>, number] {
   const ref = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(600);
@@ -83,14 +93,14 @@ export function StateTrack(props: {
   if (cur !== null) segments.push({ from: curFrom, to: props.endMs, value: cur });
 
   return (
-    <div ref={ref} data-state-track={props.kind} aria-label={props.label} className="w-full">
+    <div ref={ref} data-state-track={props.kind} aria-label={props.sublabel ? `${props.label} · ${props.sublabel}` : props.label} title={props.sublabel ? `${props.label} · ${props.sublabel}` : props.label} className="w-full">
       <svg width={width} height={height} className="block">
         <text x={8} y={18} fontSize={12} fill="#1A1C21" fontWeight={600}>
-          {props.label}
+          {fitCaption(props.label, 12)}
         </text>
         {props.sublabel ? (
           <text x={8} y={34} fontSize={11} fill="#62666F">
-            {props.sublabel}
+            {fitCaption(props.sublabel, 11)}
           </text>
         ) : null}
         <line x1={padL} x2={width - padR} y1={height - 14} y2={height - 14} stroke="#E7EAEE" />

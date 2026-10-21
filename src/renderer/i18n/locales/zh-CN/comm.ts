@@ -65,7 +65,7 @@ export const comm = {
   // Health cards
   cardBusLoad: '总线负载',
   cardRequestRate: '请求速率',
-  cardAvgLatency: '平均延迟',
+  cardAvgLatency: '中位延迟',
   cardTimeouts: '超时',
   cardCrcErrors: 'CRC 错误',
   busLoadHigh: '偏高',

@@ -259,9 +259,9 @@ export class HistoryStore {
       ]);
       if (this.db.getRowsModified() > 0 && raw) {
         if (raw.requestAduHex) this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex, pdu_hex, trace_id) VALUES (?, ?, ?, ?, ?, ?)',
-          [sessionId, row.tMs, 'tx', raw.requestAduHex, raw.requestPduHex ?? null, row.traceId]);
+          [sessionId, row.tMs, row.sourceKind === 'slave' ? 'rx' : 'tx', raw.requestAduHex, raw.requestPduHex ?? null, row.traceId]);
         if (raw.responseAduHex) this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex, pdu_hex, trace_id) VALUES (?, ?, ?, ?, ?, ?)',
-          [sessionId, row.tMs + Math.max(0, Math.round(row.durationMs ?? 0)), 'rx', raw.responseAduHex, raw.responsePduHex ?? null, row.traceId]);
+          [sessionId, row.tMs + Math.max(0, Math.round(row.durationMs ?? 0)), row.sourceKind === 'slave' ? 'tx' : 'rx', raw.responseAduHex, raw.responsePduHex ?? null, row.traceId]);
       }
       this.db.run('COMMIT');
     } catch (error) {

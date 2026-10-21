@@ -189,7 +189,9 @@ export class SerialTransport implements Transport {
         resolve();
         return;
       }
-      port.close(() => resolve());
+      // Windows virtual/USB drivers can release a cancelled overlapped read just after
+      // CloseHandle's callback. Keep the shutdown barrier through that completion turn.
+      port.close(() => { if (process.platform === 'win32') setTimeout(resolve, 20); else resolve(); });
     });
   }
 }

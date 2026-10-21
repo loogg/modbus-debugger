@@ -16,6 +16,8 @@
 | history.png | 已有 E2E 截图 `tests/e2e/screenshots/14-history-1440.png`；记录会话历史 |
 | communication.png | 已有 E2E 截图 `tests/e2e/screenshots/13-comm-1440.png`；通信事务与报文 |
 | about.png | 进入仓库时为 0.10.1；关于与更新页，原采集命令未记录 |
+| slave-memory.png | 0.12.0，2026-10-21；内置浏览器 1440×960，通过真实 Bridge 连接隔离 Electron Main，1234 / 4660 / 43981 为独立 PyModbus 主站实际写入，见[从站任务验收](../acceptance/slave-mode.md) |
+| master-slave-loopback.png | 0.12.1，2026-10-21；内置浏览器 1440×960，真实 Native Main 的 TCP + COM1↔COM2 四连接在线；RTU 主从各记录 Bool、Enum、UTF-8 中文/emoji，展示同一会话的双端状态与文本轨迹 |
 
 本次补充采集时 Windows 锁屏，因此除实时页外复用仓库已有的模拟器截图；它们的连接名称、端口、读取数量属于各自示例。操作说明已对照当前源码核对。扫描高级配置和失败反馈以 README 文字说明为准，不使用缺少这些新控件的旧扫描图。
 

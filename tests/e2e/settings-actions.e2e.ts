@@ -15,7 +15,7 @@ describe('桌面菜单与设置实际操作', () => {
 
   before(async () => {
     if (!runDir) throw new Error('Settings E2E requires isolated test directory');
-    fs.mkdirSync('out/audit/settings-v0.11.3', { recursive: true });
+    fs.mkdirSync('out/test-temp/full-e2e/settings-v0.11.3', { recursive: true });
     originalClipboard = await browser.electron.execute(electron => electron.clipboard.readText());
   });
   after(async () => {
@@ -23,15 +23,15 @@ describe('桌面菜单与设置实际操作', () => {
   });
   afterEach(async function () {
     if (this.currentTest?.state === 'failed') {
-      await browser.saveScreenshot(path.resolve('out/audit/settings-v0.11.3/failure.png'));
-      fs.writeFileSync(path.resolve('out/audit/settings-v0.11.3/failure.txt'), await body());
+      await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/settings-v0.11.3/failure.png'));
+      fs.writeFileSync(path.resolve('out/test-temp/full-e2e/settings-v0.11.3/failure.txt'), await body());
     }
     await browser.electron.restoreAllMocks();
   });
 
   it('removes the default desktop menu while retaining text editing shortcuts', async () => {
     expect(await browser.electron.execute(electron => electron.Menu.getApplicationMenu() === null)).toBe(true);
-    await browser.saveScreenshot(path.resolve('out/audit/settings-v0.11.3/native-no-menu.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/settings-v0.11.3/native-no-menu.png'));
     await rail('设备');
     await click('添加连接');
     const name = await $('//div[normalize-space(.)="连接名称"]/following-sibling::input');
@@ -49,7 +49,7 @@ describe('桌面菜单与设置实际操作', () => {
 
   it('saves, exports and imports a workspace through visible controls and preserves the current one on failure', async () => {
     await rail('设置');
-    await browser.saveScreenshot(path.resolve('out/audit/settings-v0.11.3/settings-1440.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/settings-v0.11.3/settings-1440.png'));
     const savedPath = path.join(runDir!, 'settings-saved.workspace.json');
     const saveDialog = await browser.electron.mock('dialog', 'showSaveDialog');
     await saveDialog.mockResolvedValue({ canceled: false, filePath: savedPath });

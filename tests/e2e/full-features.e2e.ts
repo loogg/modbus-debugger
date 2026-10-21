@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ModbusApi } from '../../src/shared/preload-api';
 
-const SHOTS = path.resolve('out', 'audit', 'screenshots');
-const FIGMA_SHOTS = path.resolve('out', 'audit', 'figma-current');
+const SHOTS = path.resolve('out', 'test-temp', 'full-e2e', 'screenshots');
+const FIGMA_SHOTS = path.resolve('out', 'test-temp', 'full-e2e', 'figma-current');
 async function shot(name: string): Promise<void> {
   fs.mkdirSync(SHOTS, { recursive: true });
   await browser.saveScreenshot(path.join(SHOTS, `${name}.png`));

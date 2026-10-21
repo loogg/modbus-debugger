@@ -41,6 +41,8 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('trend.setWindow'), groupId: z.string(), windowSec: z.number().int().min(5).max(86400) }),
   z.object({ type: z.literal('connection.connect'), connectionId: z.string() }),
   z.object({ type: z.literal('connection.disconnect'), connectionId: z.string() }),
+  z.object({ type: z.literal('slave.setValues'), slaveId: z.string(), blockId: z.string(), offset: z.number().int().min(0), values: z.array(z.number().int().min(0).max(65535)).min(1).max(2000) }),
+  z.object({ type: z.literal('slave.saveInitialValues'), slaveId: z.string() }),
   z.object({
     type: z.literal('point.write'),
     slaveId: z.string(),

@@ -26,7 +26,7 @@ try {
   await fs.cp(path.join(release, base), directory, { recursive: true });
   await verifyManifest(directory);
   assert.deepEqual(await fs.readFile(path.join(release,`${base}-manifest.json`)),await fs.readFile(path.join(directory,'resources','app-files.json')));
-  await smokeApp(path.join(directory, 'modbus-debugger.exe'), 'directory', { screenshotDir: path.join(root, 'out', 'release-smoke-screenshots') });
+  await smokeApp(path.join(directory, 'modbus-debugger.exe'), 'directory', { screenshotDir: path.join(root, 'out', 'test-temp', 'release-smoke-screenshots') });
 
   const extracted = path.join(scratch, 'zip');
   await fs.mkdir(extracted);

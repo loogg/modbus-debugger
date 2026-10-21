@@ -90,6 +90,8 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
         delete ws[writeKey];
         return { writeStates: ws };
       });
+    } else if (res.value?.phase === 'confirmed' && useApp.getState().snapshot?.workspace.connections.some(connection => connection.role === 'slave' && connection.id === useApp.getState().snapshot?.workspace.slaves.find(slave => slave.id === slaveId)?.connectionId)) {
+      useApp.setState(state => ({ writeStates: { ...state.writeStates, [writeKey]: { phase: 'confirmed', attempted: text, at: Date.now(), exceptionCode: null } } }));
     } else if (res.value && res.value.phase !== 'confirmed') {
       // Successful markers arrive with Main's read-back delta, alongside its confirmed value.
       const outcome = res.value;

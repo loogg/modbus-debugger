@@ -32,6 +32,8 @@ export const pointSchema = z.object({
   enumMap: z.record(z.string()).default({}),
   highRisk: z.boolean().default(false),
   description: z.string().default(''),
+}).superRefine((point, context) => {
+  if (point.mapping.rawType === 'String' && point.mapping.stringLength < 1) context.addIssue({ code: z.ZodIssueCode.custom, message: 'String 长度必须为 1–246 字节', path: ['mapping', 'stringLength'] });
 });
 export type PointDef = z.infer<typeof pointSchema>;
 
@@ -74,6 +76,8 @@ export const connectionSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
   transport: z.enum(['rtu', 'tcp']),
+  /** Missing in existing workspaces means master. */
+  role: z.enum(['master', 'slave']).optional(),
   rtu: rtuSettingsSchema.optional(),
   tcp: tcpSettingsSchema.optional(),
   timeoutMs: z.number().int().min(50).max(10000).default(500),
@@ -93,6 +97,12 @@ export const slaveSchema = z.object({
   name: z.string().min(1),
   templateId: z.string(),
   enabled: z.boolean().default(true),
+  initialValues: z.array(z.object({
+    blockId: z.string(),
+    area: areaSchema,
+    start: z.number().int().min(0).max(65535),
+    values: z.array(z.number().int().min(0).max(65535)).min(1).max(2000),
+  })).optional(),
 });
 export type SlaveDef = z.infer<typeof slaveSchema>;
 
@@ -160,6 +170,13 @@ export const workspaceSchema = z.object({
     const key = `${slave.connectionId}:${slave.unitId}`;
     if (unitIds.has(key)) fail('Unit ID is already used on this connection');
     unitIds.add(key);
+    const initialBlocks = new Set<string>();
+    for (const initial of slave.initialValues ?? []) {
+      if (initialBlocks.has(initial.blockId)) fail('Duplicate initial memory block');
+      initialBlocks.add(initial.blockId);
+      if (initial.start + initial.values.length > 65536) fail('Initial memory exceeds address range');
+      if (initial.area <= 2 && initial.values.some(value => value > 1)) fail('Initial bit memory requires 0 or 1');
+    }
   }
 });
 export type Workspace = z.infer<typeof workspaceSchema>;

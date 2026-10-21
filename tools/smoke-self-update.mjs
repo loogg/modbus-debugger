@@ -98,8 +98,8 @@ async function transition(kind) {
     await waitFor(async()=>(await connection.page.evaluate(()=>window.modbus.getSnapshot())).update.phase==='downloaded',120000);
     await click(connection.page,'安装更新并重启');
     assert(await connection.page.$('[role="alertdialog"]'));
-    await fs.mkdir(path.join(root,'out/audit/self-update-shots'),{recursive:true});
-    await connection.page.screenshot({path:path.join(root,`out/audit/self-update-shots/${kind}-confirm.png`)});
+    await fs.mkdir(path.join(root,'out/test-temp/self-update-shots'),{recursive:true});
+    await connection.page.screenshot({path:path.join(root,`out/test-temp/self-update-shots/${kind}-confirm.png`)});
     await click(connection.page,'确认安装并重启');
     await waitFor(async()=>{
       if(child.exitCode!==null)return true;
@@ -124,11 +124,11 @@ async function transition(kind) {
     assert.equal(await fs.readFile(path.join(dataRoot,'data','keep.txt'),'utf8'),'keep user data');
     if(kind!=='portable')assert.equal(await fs.readFile(path.join(install,'resources','user-file.txt'),'utf8'),'keep nested user file');
     assert(await exists(path.join(outcome.backupDirectory,kind==='portable'?'My Modbus Portable.exe':'modbus-debugger.exe')));
-    await click(candidate.page,'关于');await candidate.page.screenshot({path:path.join(root,`out/audit/self-update-shots/${label}-updated.png`)});
+    await click(candidate.page,'关于');await candidate.page.screenshot({path:path.join(root,`out/test-temp/self-update-shots/${label}-updated.png`)});
     await candidate.browser.close();candidate=null;
     await delay(2000);
     const reopened=new SQL.Database(await fs.readFile(historyFile));assert.equal(reopened.exec('SELECT value FROM update_sentinel')[0].values[0][0],'history survives');reopened.close();
-    await fs.writeFile(path.join(root,`out/audit/self-update-${label}-result.json`),JSON.stringify({outcome,currentVersion:pkg.version,observedVersion:state.update.currentVersion,workspacePreserved:true,historySentinelPreserved:true,unknownFilesPreserved:true},null,2));
+    await fs.writeFile(path.join(root,`out/test-temp/self-update-${label}-result.json`),JSON.stringify({outcome,currentVersion:pkg.version,observedVersion:state.update.currentVersion,workspacePreserved:true,historySentinelPreserved:true,unknownFilesPreserved:true},null,2));
     console.log(`[self-update] PASS ${label}: ${pkg.version} -> ${failure?pkg.version:futureVersion}, real download/verification/helper/install/restart, workspace and user data preserved`);
   } finally {
     if(connection)await connection.browser.close().catch(()=>{});

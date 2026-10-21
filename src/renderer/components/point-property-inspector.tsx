@@ -194,7 +194,7 @@ export function PointPropertyInspector({
 
         {/* Memory Mapping Row 1 */}
         <div className="grid grid-cols-2 gap-2">
-          <Field label={t('overlays.registerOffset')}>
+          <Field label={t(block.area <= 2 ? 'templates.addressOffset' : 'overlays.registerOffset')}>
             <TextInput
               className="h-8 text-xs font-mono"
               type="number"
@@ -217,7 +217,7 @@ export function PointPropertyInspector({
           <div className="flex items-center justify-between">
             <span className="text-ink2">{t('templates.detailMemory')}</span>
             <span className="mono font-semibold text-accent">
-              +{offsetNum}{regCount > 1 ? `..+${offsetNum + regCount - 1}` : ''} ({t('templates.registersUnit', { n: regCount })})
+              +{offsetNum}{regCount > 1 ? `..+${offsetNum + regCount - 1}` : ''} ({t(block.area <= 2 ? 'templates.bitsUnit' : 'templates.registersUnit', { n: regCount })})
             </span>
           </div>
           {exceedsBlock ? (
@@ -227,11 +227,11 @@ export function PointPropertyInspector({
           ) : null}
           {shared.length > 0 ? (
             <div className="mt-1 text-[11px] text-ink2">
-              💡 {t('templates.sharedRegistersCount', { count: shared.length })}
+              💡 {t(block.area <= 2 ? 'templates.sharedBitsCount' : 'templates.sharedRegistersCount', { count: shared.length })}
             </div>
           ) : (
             <div className="mt-1 text-[11px] text-ink2/70">
-              ✓ {t('templates.exclusiveRegisters')}
+              ✓ {t(block.area <= 2 ? 'templates.exclusiveBits' : 'templates.exclusiveRegisters')}
             </div>
           )}
         </div>

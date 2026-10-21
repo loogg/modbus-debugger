@@ -118,6 +118,12 @@ export class TcpStreamingFramer implements Framer {
   }
 
   push(chunk: Uint8Array, atMs?: number): FramerEvent[] {
+    // A large recv can contain many valid ADUs. Bound buffering without discarding later frames.
+    if (chunk.length > TCP_MAX_ADU) {
+      const events: FramerEvent[] = [];
+      for (let offset = 0; offset < chunk.length; offset += TCP_MAX_ADU) events.push(...this.push(chunk.subarray(offset, offset + TCP_MAX_ADU), atMs));
+      return events;
+    }
     const at = atMs ?? this.clock.now();
     if (this.buf.length === 0) this.candidateStart = at;
     this.buf = concat(this.buf, chunk);
@@ -169,6 +175,14 @@ export class TcpStreamingFramer implements Framer {
       }
       if (this.buf.length < total) {
         if (at - this.candidateStart > this.incompleteTimeoutMs) {
+          const next = this.findMbapStart(1);
+          if (next !== -1) {
+            const raw = this.buf.slice(0, next);
+            events.push({ type: 'parse-error', kind: 'truncated', reason: `truncated candidate frame (${this.buf.length}/${total} bytes); resync`, raw, discarded: raw.length, recovered: [] });
+            this.buf = this.buf.slice(next);
+            this.candidateStart = at;
+            continue;
+          }
           events.push(this.fail('truncated', `truncated candidate frame (${this.buf.length}/${total} bytes)`, this.buf.length));
         }
         return events;
@@ -210,6 +224,7 @@ export interface RtuFramerOptions extends FramerHooks {
   baudRate?: number;
   maxBuffer?: number;
   incompleteTimeoutMs?: number;
+  requestFrames?: boolean;
 }
 
 export class RtuStreamingFramer implements Framer {
@@ -220,12 +235,14 @@ export class RtuStreamingFramer implements Framer {
   private readonly maxBuffer: number;
   private readonly incompleteTimeoutMs: number;
   private readonly hooks: FramerHooks;
+  private readonly requestFrames: boolean;
 
   constructor(opts: RtuFramerOptions = {}) {
     this.clock = opts.clock ?? systemClock;
     this.maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
     this.incompleteTimeoutMs = opts.incompleteTimeoutMs ?? DEFAULT_INCOMPLETE_TIMEOUT_MS;
     this.hooks = opts;
+    this.requestFrames = opts.requestFrames ?? false;
   }
 
   pendingBytes(): number {
@@ -240,6 +257,11 @@ export class RtuStreamingFramer implements Framer {
   }
 
   push(chunk: Uint8Array, atMs?: number): FramerEvent[] {
+    if (chunk.length > RTU_MAX_ADU) {
+      const events: FramerEvent[] = [];
+      for (let offset = 0; offset < chunk.length; offset += RTU_MAX_ADU) events.push(...this.push(chunk.subarray(offset, offset + RTU_MAX_ADU), atMs));
+      return events;
+    }
     const at = atMs ?? this.clock.now();
     if (this.buf.length === 0) this.candidateStart = at;
     this.buf = concat(this.buf, chunk);
@@ -259,6 +281,19 @@ export class RtuStreamingFramer implements Framer {
     const events: FramerEvent[] = [];
     for (;;) {
       if (this.buf.length > this.maxBuffer) {
+        if (this.requestFrames) {
+          // Keep a split trailing request even after a long noise prefix. A following
+          // valid ADU must not be lost just because its first bytes hit the buffer cap.
+          const hit = this.scanTrustedFrame();
+          const discard = hit ? hit.offset : this.buf.length - RTU_MAX_ADU + 1;
+          if (discard > 0) {
+            const raw = this.buf.slice(0, discard);
+            events.push({ type: 'parse-error', kind: 'overflow', reason: `receive buffer exceeded ${this.maxBuffer} bytes; resync`, raw, discarded: discard, recovered: [] });
+            this.buf = this.buf.slice(discard);
+            this.candidateStart = at;
+            continue;
+          }
+        }
         const raw = this.buf;
         const recovered = recoverRtuFrames(raw);
         events.push({ type: 'parse-error', kind: 'overflow', reason: `receive buffer exceeded ${this.maxBuffer} bytes`, raw, discarded: raw.length, recovered });
@@ -267,9 +302,26 @@ export class RtuStreamingFramer implements Framer {
         continue;
       }
       const expected = this.hooks.expectedAduLength?.() ?? null;
+      // A server knows request lengths without an in-flight client request. Never apply
+      // response-length rules or exception-response framing to incoming master requests.
+      if (this.requestFrames) {
+        const length = this.requestLength(0);
+        if (length !== null && this.buf.length >= length && checkCrc(this.buf.subarray(0, length))) {
+          events.push({ type: 'adu', bytes: this.buf.slice(0, length) });
+          this.buf = this.buf.slice(length);
+          if (this.buf.length) this.candidateStart = at;
+          continue;
+        }
+        if (length !== null && this.buf[0]! <= 247 && this.buf.length >= length && !this.scanTrustedFrame()) {
+          const raw = this.buf.slice(0, length);
+          events.push({ type: 'parse-error', kind: 'crc', reason: 'request CRC mismatch; scan next trusted boundary', raw, discarded: 1, recovered: [] });
+          this.buf = this.buf.slice(1);
+          continue;
+        }
+      }
       // An exception is a complete five-byte ADU, even when the current read expects many registers.
       // Check it before normal expected-length framing, including exception + normal sticky input.
-      if (this.buf.length >= 5 && KNOWN_FC.has(this.buf[1] as number) && ((this.buf[1] as number) & 0x80) && checkCrc(this.buf.subarray(0, 5))) {
+      if (!this.requestFrames && this.buf.length >= 5 && KNOWN_FC.has(this.buf[1] as number) && ((this.buf[1] as number) & 0x80) && checkCrc(this.buf.subarray(0, 5))) {
         events.push({ type: 'adu', bytes: this.buf.slice(0, 5) });
         this.buf = this.buf.slice(5);
         if (this.buf.length) this.candidateStart = at;
@@ -288,7 +340,7 @@ export class RtuStreamingFramer implements Framer {
           if (hit.offset > 0) {
             events.push({
               type: 'parse-error',
-              kind: 'malformed',
+              kind: this.requestFrames && this.requestLength(0) !== null && hit.offset >= this.requestLength(0)! ? 'crc' : 'malformed',
               reason: 'resync: discarded unrecoverable prefix before trusted CRC boundary',
               raw: this.buf.slice(0, hit.offset),
               discarded: hit.offset,
@@ -317,10 +369,25 @@ export class RtuStreamingFramer implements Framer {
   private scanTrustedFrame(): { offset: number; frame: Uint8Array } | null {
     const maxLen = Math.min(RTU_MAX_ADU, this.buf.length);
     for (let o = 0; o + 4 <= this.buf.length; o++) {
+      if (this.requestFrames) {
+        if (this.buf[o]! > 247 || this.buf[o + 1]! < 1 || this.buf[o + 1]! > 127) continue;
+        const expected = this.requestLength(o);
+        if (expected !== null && o + expected <= this.buf.length && checkCrc(this.buf.subarray(o, o + expected))) return { offset: o, frame: this.buf.slice(o, o + expected) };
+      }
       const limit = Math.min(maxLen, this.buf.length - o);
       for (let len = 4; len <= limit; len++) {
         if (checkCrc(this.buf.subarray(o, o + len))) return { offset: o, frame: this.buf.slice(o, o + len) };
       }
+    }
+    return null;
+  }
+
+  private requestLength(offset: number): number | null {
+    const fc = this.buf[offset + 1];
+    if (fc !== undefined && fc >= 1 && fc <= 6) return 8;
+    if ((fc === 15 || fc === 16) && this.buf.length >= offset + 7) {
+      const length = 9 + this.buf[offset + 6]!;
+      return length <= RTU_MAX_ADU ? length : null;
     }
     return null;
   }

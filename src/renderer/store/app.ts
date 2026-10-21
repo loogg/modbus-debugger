@@ -28,7 +28,7 @@ export interface Selection {
   historyTab: 'trend' | 'events' | 'data' | 'signals';
   trendTab: 'signals' | 'chart';
   realtimeScope: 'device' | 'block';
-  deviceView: 'topology' | 'scan' | 'temp';
+  deviceView: 'topology' | 'scan' | 'temp' | 'memory';
   templateEditing: boolean;
   editBlockId: string | null;
 }

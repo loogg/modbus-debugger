@@ -61,6 +61,49 @@ npm run test:e2e -- --spec tests/e2e/app.e2e.ts --mochaOpts.grep "launches with"
 
 ## Browser Review Mode
 
+从站定向验证：
+
+```powershell
+npm test -- tests/unit/slave-protocol.test.ts tests/integration/slave-runtime.test.ts tests/unit/ui/slave-mode.test.tsx
+# 仅在确认配对端口空闲且用于测试时设置；缺少变量时串口互操作用例明确跳过。
+$env:MODBUS_SLAVE_RTU_PORT = 'COM1'
+$env:MODBUS_SLAVE_MASTER_PORT = 'COM2'
+npm test -- tests/integration/slave-runtime.test.ts
+Remove-Item Env:MODBUS_SLAVE_RTU_PORT
+Remove-Item Env:MODBUS_SLAVE_MASTER_PORT
+```
+
+从站 Runtime 不自动监听；通过实际 UI 启动。独立主站脚本 `python tools/simulator/slave_client_check.py --port 15020` 验证八种正式功能码、多 Unit 和异常 02；要求 Unit 1/2 已绑定地址 0–15 的四区模板，Unit 1 离散输入 0 = 1、输入寄存器 0 = 456，Unit 2 保持寄存器初始为 0。RTU 使用 `--serial COM2 --broadcast-check`，通信参数 19200 / 8N1；应用从站使用对应端 COM1。测试说明和边界见 [从站任务验收](acceptance/slave-mode.md)。
+
+### 本软件主从闭环
+
+`tests/support/loopback-workspace.ts` 定义四区、两个 Unit、36 组数据类型/映射与独立预期字节。两端 Runtime 使用各自的 Cache，通过真实 TCP 或 COM1 ↔ COM2 交换数据。串口用例必须有可用的虚拟串口对，不能与其他模拟器同时占用。
+
+```powershell
+$env:MODBUS_SELF_RTU = '1'
+npx vitest run tests/integration/master-slave-loopback.test.ts --maxWorkers=1 --minWorkers=1
+Remove-Item Env:MODBUS_SELF_RTU
+```
+
+完整 Vitest 含真实独立 PyModbus 与本软件闭环时，另设置 `MODBUS_RTU_MASTER_PORT=COM2`、`MODBUS_RTU_SLAVE_PORT=COM1`、`MODBUS_SLAVE_RTU_PORT=COM1`、`MODBUS_SLAVE_MASTER_PORT=COM2`，保持一个 Worker 串行运行。未提供串口环境变量时相关用例明确跳过；不可把跳过计为通过。
+
+打包版 E2E 必须分两次运行，避免外部 RTU 模拟器与本软件从站争用同一串口：
+
+```powershell
+$env:MODBUS_RTU_MASTER_PORT = 'COM1'
+$env:MODBUS_RTU_SLAVE_PORT = 'COM2'
+npm run test:e2e -- --exclude tests/e2e/master-slave-loopback.e2e.ts --logLevel error
+Remove-Item Env:MODBUS_RTU_MASTER_PORT
+Remove-Item Env:MODBUS_RTU_SLAVE_PORT
+$env:MODBUS_SELF_RTU = '1'
+npm run test:e2e -- --spec tests/e2e/master-slave-loopback.e2e.ts --logLevel error
+Remove-Item Env:MODBUS_SELF_RTU
+```
+
+前者运行既有正式主站、模板/导入、历史、设置、更新流程；后者在同一个 Native Main 内运行 TCP/RTU 双端类型、真实中文/emoji 编辑、记录、回放与 CSV。所有 Electron 自动化套件（E2E、容量、产物 Smoke、自升级）串行执行，避免同名应用窗口/调试会话识别相互干扰。证据位于 `out/test-temp/full-e2e/` 和 `out/test-temp/loopback-evidence/native/`；失败时 WDIO 保留对应隔离目录，成功清理应用数据副本。
+
+需要人工审查时运行 `node node_modules/vite-node/vite-node.mjs tools/create-loopback-fixture.ts`，生成 `out/test-temp/loopback-review/loopback.workspace.json`。使用独立 `MODBUS_DATA_DIR` 与该文件设置 `MODBUS_E2E_WORKSPACE`，再 `npm start`；从站连接通过 UI 启动，TCP 使用回环端口 15031，RTU 从站 COM1、主站 COM2，19200 / 8N1。`--tcp-only` 可生成只含 TCP 的审查夹具。不要在日常数据根目录加载测试工作区。
+
 使用内置浏览器操作共享 Renderer，并连接真实 Main / Backend，不以 Mock 代替通信验收。开发 Bridge 只在回环地址启动；完整审查入口由本机 `temp/dev-bridge-session.json` 的 `reviewUrl` 提供，包含每次启动随机生成的会话凭据。直接打开不带凭据的 `?transport=bridge` 会明确失败。
 
 原生开发模式：先设置独立的 `MODBUS_DATA_DIR`，执行 `npm start`，从该数据根目录的会话文件读取 `reviewUrl`。页面使用相同 Main 会话；不要同时运行第二个服务来占用相同设备或数据根目录。
@@ -94,6 +137,8 @@ Setup 使用安装向导和程序文件清单，支持自选目录，保留用�
 调整发布工具时核对许可：`electron-builder` 为 MIT，仅作为 devDependency；NSIS 主体为 zlib/libpng，自定义 Portable 启动器仅使用其内置 zlib 压缩及文件/进程指令，不加载 7z 或 System 插件。Setup 复用上游向导和 NSIS 插件；本项目不修改工具二进制并保留上游许可证。NSIS 工具包中的 LZMA 模块及其链接例外见 [NSIS License](https://nsis.sourceforge.io/License)，`electron-builder` 许可见其 [LICENSE](https://github.com/electron-userland/electron-builder/blob/master/LICENSE)。`@electron/asar` 和 `cross-zip`（均 MIT）复用 Forge 已有库，分别用于包内版本校验与解压验收。
 
 `smoke:release` 检查目录版、ZIP、Portable、Setup 的真实启动、版本、IPC、serialport 和历史库，同时验证路径、Portable 重启/清理、自定义数据目录，以及 Setup 重装/卸载后保留数据。单独检查安装器可运行 `node tools/smoke-installer.mjs`。
+
+正式版本另外运行 `npx wdio run wdio.capacity.conf.ts --logLevel error` 验证 100 万样本打开、游标与完整 CSV；指标在 `out/test-temp/capacity/`。`node --experimental-strip-types tools/smoke-self-update.mjs` 验证目录/ZIP、Portable、Setup 实际升级、重启和数据保留；设置 `SELF_UPDATE_KINDS=setup` 与 `SELF_UPDATE_FAILURE=setup` 可单独验证安装版失败回滚。升级仅使用隔离的本地 Release HTTP 夹具与测试安装目录；Setup 测试启动前拒绝已有日常安装。截图与结果均在 `out/test-temp/`，不能把夹具生成的后续补丁版本发布为正式产品。
 
 ## GitHub Actions
 

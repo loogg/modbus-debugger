@@ -41,6 +41,13 @@ it('keeps a timeout as TX only, and caps the expanded stream at 200 message rows
   expect(transactionMessageRows(many, 0)).toEqual([]);
 });
 
+it('shows slave requests as RX and responses as TX, preserving request/response identity', () => {
+  const tx = { ...transaction('slave', 'exception', '001200000003018302'), sourceKind: 'slave' as const };
+  expect(transactionMessageRows([tx]).map(row => [row.key, row.direction, row.response])).toEqual([
+    ['slave:TX', 'TX', true], ['slave:RX', 'RX', false],
+  ]);
+});
+
 it('renders sent TX and successful RX separately; selecting either opens the same trace detail', () => {
   const success = transaction('success', 'ok', '0012000000070103041234ABCD');
   const timeout = transaction('timeout', 'timeout', null);

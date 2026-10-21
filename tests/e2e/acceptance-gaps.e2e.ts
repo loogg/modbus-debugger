@@ -20,7 +20,7 @@ const fill = async (selector: string, value: string) => {
 };
 const waitText = (fragment: string) => browser.waitUntil(async () => (await $('body').getText()).includes(fragment), { timeout: 15000 });
 const captureFigmaState = async (name: string) => {
-  const file = path.resolve('out/audit/figma-current', name);
+  const file = path.resolve('out/test-temp/full-e2e/figma-current', name);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   await browser.saveScreenshot(file);
 };

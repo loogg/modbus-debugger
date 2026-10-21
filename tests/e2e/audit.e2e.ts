@@ -15,7 +15,7 @@ const field = (label: string) => `//div[normalize-space(.)="${label}"]/following
 const drawerField = (label: string) => `//div[contains(@class,"fixed") and contains(@class,"z-40")]${field(label)}`;
 const savePointDrawer = () => $('//div[contains(@class,"fixed") and contains(@class,"z-40")]//button[normalize-space(.)="保存点位"]').click();
 const waitText = (fragment: string) => browser.waitUntil(async () => (await text()).includes(fragment), { timeout: 15000 });
-const figmaShot = async (name: string) => { fs.mkdirSync('out/audit/figma-current', { recursive: true }); await browser.saveScreenshot(path.resolve('out/audit/figma-current', `${name}.png`)); };
+const figmaShot = async (name: string) => { fs.mkdirSync('out/test-temp/full-e2e/figma-current', { recursive: true }); await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/figma-current', `${name}.png`)); };
 const writeValue = async (name: string, value: string) => { await $(`//div[text()="${name}"]/following-sibling::div[2]`).doubleClick(); await fill('input.w-24', value); await browser.keys('Enter'); };
 // IPC is only used for fixture setup and read-only observation. Actions under test use real pointer/keyboard input.
 async function setup(ws = fixture()) {
@@ -48,10 +48,10 @@ describe('审计：实际按钮到持久化/通信结果', () => {
   afterEach(async function () {
     await browser.electron.restoreAllMocks();
     if (this.currentTest?.state === 'failed') {
-      fs.mkdirSync('out/audit/failures', { recursive: true });
+      fs.mkdirSync('out/test-temp/full-e2e/failures', { recursive: true });
       const name = this.currentTest.title.replace(/[^a-zA-Z0-9一-龥]/g, '_');
-      await browser.saveScreenshot(path.resolve('out/audit/failures', `${name}.png`));
-      fs.writeFileSync(path.resolve('out/audit/failures', `${name}.txt`), await text());
+      await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/failures', `${name}.png`));
+      fs.writeFileSync(path.resolve('out/test-temp/full-e2e/failures', `${name}.txt`), await text());
     }
   });
   it('RTU：通过 UI 新建指定端口连接与从站，实际读写并隔离 TCP', async function () {
@@ -88,9 +88,9 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     expect(tcpPeer?.engNumber).not.toBe(2345);
     const transactions = confirmed.transactions.filter(tx => tx.connectionId === conn.id);
     expect(transactions.some(tx => tx.sourceKind === 'readback' && tx.sourceId === 'pt-speed' && tx.result === 'ok' && tx.responseAduHex)).toBe(true);
-    fs.mkdirSync('out/audit/rtu', { recursive: true });
-    fs.writeFileSync('out/audit/rtu/ui-write-readback.json', JSON.stringify({ connection: conn, slave, point: confirmed.points[`${slave.id}::pt-speed`], tcpPeer, transactions }, null, 2));
-    await browser.saveScreenshot(path.resolve('out/audit/rtu/ui-write-readback.png'));
+    fs.mkdirSync('out/test-temp/full-e2e/rtu', { recursive: true });
+    fs.writeFileSync('out/test-temp/full-e2e/rtu/ui-write-readback.json', JSON.stringify({ connection: conn, slave, point: confirmed.points[`${slave.id}::pt-speed`], tcpPeer, transactions }, null, 2));
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/rtu/ui-write-readback.png'));
   });
   it('读取：默认10、真实原始数据、异常原因、输入校验、保存非重叠块', async () => {
     await click('临时读取');

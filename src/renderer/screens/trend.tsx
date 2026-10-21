@@ -221,7 +221,7 @@ export function TrendScreen() {
                       key={r.signalId}
                       kind={kind}
                       label={r.name}
-                      sublabel={kind === 'bool' ? t('trend.boolSublabel') : kind === 'string' ? t('trend.stringSublabel', { name: r.name }) : undefined}
+                      sublabel={rows.filter(other => other.name === r.name).length > 1 ? r.source : kind === 'bool' ? t('trend.boolSublabel') : kind === 'string' ? t('trend.stringSublabel', { name: r.name }) : undefined}
                       initialValue={initial}
                       events={buf.events.filter((e) => e.t >= start && e.t <= end).map((e) => ({ tMs: e.t, value: e.value }))}
                       startMs={start}

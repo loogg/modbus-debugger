@@ -40,6 +40,16 @@ function ev(i: number): Omit<ParseEventRecord, 'id'> {
 }
 
 describe('DiagnosticsStore absolute cursors', () => {
+  it('does not combine polling periods, latency or failures across Units sharing one block', () => {
+    const diagnostics = new DiagnosticsStore();
+    for (const index of [0, 1, 2]) {
+      diagnostics.recordTransaction(tx(index * 800, { sourceId: 'shared', unitId: 1, durationMs: 2 }));
+      diagnostics.recordTransaction(tx(index * 800 + 400, { sourceId: 'shared', unitId: 2, durationMs: 20, result: index === 2 ? 'timeout' : 'ok' }));
+    }
+    const blocks = diagnostics.health('c1', 2500, [1, 2].map(unitId => ({ unitId, slaveId: `s${unitId}`, blockId: 'shared', blockName: 'shared', configuredPeriodMs: 800 }))).blocks;
+    expect(blocks[0]).toMatchObject({ actualPeriodMs: 800, p95Ms: 2, timeoutRate: 0 });
+    expect(blocks[1]).toMatchObject({ actualPeriodMs: 800, p95Ms: 20, timeoutRate: 1 / 3 });
+  });
   it('streams every record exactly once through transactionsSince()', () => {
     const d = new DiagnosticsStore();
     const seen: string[] = [];

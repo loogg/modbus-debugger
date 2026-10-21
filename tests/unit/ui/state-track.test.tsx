@@ -28,4 +28,12 @@ describe('string change labels', () => {
     expect(container.querySelectorAll('circle')).toHaveLength(2);
     expect(container.textContent).not.toContain('outside'); expect(container.textContent).not.toContain('later');
   });
+  it('keeps source context accessible and clips long captions before the plot', () => {
+    const label = '相同名字的字符串点位和很长的后缀';
+    const sublabel = 'TCP 从站 / Unit 1 / 很长的数据块名称';
+    const { container } = render(<StateTrack {...base} label={label} sublabel={sublabel} events={[]} />);
+    expect(container.querySelector('[data-state-track]')).toHaveAttribute('aria-label', `${label} · ${sublabel}`);
+    expect(container.querySelector('[data-state-track]')).toHaveAttribute('title', `${label} · ${sublabel}`);
+    expect(container.querySelector('svg text')?.textContent).toContain('…');
+  });
 });

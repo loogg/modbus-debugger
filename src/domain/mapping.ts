@@ -56,6 +56,15 @@ export function registersForType(rawType: RawType, stringLength = 0): number {
 
 export type DecodedRaw = number | boolean | string;
 
+/** Fixed-width text writes must never silently drop bytes or split a UTF-8 sequence. */
+export function stringWriteError(mapping: PointMapping, value: string): string | null {
+  if (!Number.isInteger(mapping.stringLength) || mapping.stringLength < 1 || mapping.stringLength > 246) return 'String 长度必须为 1–246 字节';
+  if (value.includes('\0')) return 'String 文本不能包含用作填充的 NUL 字符';
+  if (mapping.stringEncoding === 'ascii' && Array.from(value).some(character => character.codePointAt(0)! > 127)) return 'ASCII 编码仅支持 0–127 字符，请改用 UTF-8';
+  const length = mapping.stringEncoding === 'utf8' ? new TextEncoder().encode(value).length : value.length;
+  return length > mapping.stringLength ? `String 编码后为 ${length} 字节，超过配置的 ${mapping.stringLength} 字节` : null;
+}
+
 function orderWords(regs: number[], order: WordOrder): number[] {
   if (regs.length === 2) {
     const [a, b] = regs as [number, number];
@@ -230,10 +239,12 @@ export function encodeRaw(current: RawMemory, m: PointMapping, value: DecodedRaw
       const count = Math.max(1, Math.ceil(m.stringLength / 2));
       const bytes = new Uint8Array(count * 2);
       const str = String(value);
+      const error = stringWriteError(m, str);
+      if (error) throw new Error(error);
       if (m.stringEncoding === 'ascii') {
-        for (let i = 0; i < str.length && i < m.stringLength; i++) bytes[i] = str.charCodeAt(i) & 0xff;
+        for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
       } else {
-        const enc = new TextEncoder().encode(str).subarray(0, m.stringLength);
+        const enc = new TextEncoder().encode(str);
         bytes.set(enc, 0);
       }
       const words: number[] = [];

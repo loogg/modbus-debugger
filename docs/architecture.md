@@ -2,6 +2,27 @@
 
 本文件记录现行实现契约；产品语义见 [project-spec.md](project-spec.md)，历史故障与验证过程见 [full-audit.md](archive/full-audit.md)。
 
+## 主站 / 从站 Runtime
+
+`ConnectionDef.role` 可选 `master` / `slave`，缺省按主站解释，保持 schema v1 的旧文件兼容。`RuntimeManager` 根据角色创建 `ConnectionRuntime` 或 `SlaveRuntime`，共用现有关闭屏障、Block Cache、DiagnosticsStore、Snapshot/delta 与 Recorder。下文 Scheduler、主动写回读和扫描规则适用于主站。
+
+```text
+Renderer --Command--> RuntimeManager
+                         +-- master: ConnectionRuntime -> Scheduler -> Transport
+                         +-- slave:  SlaveRuntime <- TCP Server / SerialTransport
+                                         |        请求 Framer -> PDU 校验 -> 原子读写
+                                   Block Cache -> 响应 / Snapshot / delta
+                                         +------> Trend / Recorder
+```
+
+请求解码/执行位于纯 TS `domain/protocol/slave.ts`，验证完整 PDU、数量、ByteCount、地址和值后执行；通过同步内存适配器预验证全部连续段，再提交缓存。02/04 的只读语义约束线协议，独立的 `slave.setValues` 命令允许在 Main 设置四类本机内存；未提交草稿不写入 Cache。`point.write` 在从站角色进行本地原子映射编辑，主站仍执行设备写入与回读。
+
+TCP Server 每个客户端独立 Framer，保留请求 TID，最多 32 个客户端，单客户端发送积压上限 64 KiB。RTU 复用正式 SerialTransport，按请求预期长度/CRC/可信边界/有界等待分帧，不依赖字符间隔；响应串行发送，队列最多 128 项。长输入按 ADU 上限分段送入缓冲；截断 TCP 候选超时后保留后续可信帧。
+
+从站连接加载后不自动监听。已启动连接发生错误时按配置恢复，手动停止取消恢复；正常停止等待正在打开的设备，关闭监听和所有客户端，结算串口响应并释放句柄。Windows 串口关闭屏障包含 20 ms 的驱动取消读取完成窗口，避免虚拟串口有活动读取时立即重开报告 Access denied。
+
+`SlaveDef.initialValues` 保存 blockId/area/start/values，只加载与当前块定义完全匹配的初始值。网络写入不改 Workspace；`slave.saveInitialValues` 显式采集当前值并通过 WorkspaceService 原子保存。配置重建通过 owner/generation 失效旧内存，启停同一个 Runtime 保持当前值。
+
 ## Runtime
 
 ```mermaid

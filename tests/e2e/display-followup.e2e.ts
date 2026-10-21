@@ -22,7 +22,7 @@ const timezone = async (label:string) => {
 };
 
 describe('字符串、结果筛选、时区与多信号专项回归',()=>{
-  before(async()=>{ fs.mkdirSync('out/audit/followup-shots',{recursive:true}); });
+  before(async()=>{ fs.mkdirSync('out/test-temp/full-e2e/followup-shots',{recursive:true}); });
   afterEach(async()=>{
     await browser.execute(async()=> (window as unknown as {modbus:ModbusApi}).modbus.command({type:'prefs.set',patch:{timezone:'local'}}));
   });
@@ -52,7 +52,7 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     }
     await toggle('其他错误'); expect(await resultCells()).toHaveLength(0);
     for(const name of filters.slice(0,3)) await toggle(name);
-    await browser.saveScreenshot(path.resolve('out/audit/followup-shots/results.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/followup-shots/results.png'));
   });
   it('同一报文在 UTC 与上海时区显示不同时间，原始时间戳不变',async()=>{
     await browser.waitUntil(async()=> (await snap()).transactions.length>0);
@@ -73,15 +73,15 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     await browser.waitUntil(async()=> (await charts()).reduce((sum,c)=>sum+c.count,0)===6,{timeout:15000});
     expect(await charts()).toHaveLength(5);
     expect((await charts()).find(c=>c.units[0]==='V')?.count).toBe(2);
-    await browser.saveScreenshot(path.resolve('out/audit/followup-shots/many-signals.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/followup-shots/many-signals.png'));
     const enumTrack = await $('[data-state-track="enum"]');
     await enumTrack.waitForDisplayed({ timeout: 15000 });
     expect(await enumTrack.getAttribute('aria-label')).toContain('模式');
     await enumTrack.$('svg rect').waitForExist({ timeout: 15000 });
     await enumTrack.scrollIntoView();
-    fs.mkdirSync('out/audit/figma-current',{recursive:true});
-    await browser.saveScreenshot(path.resolve('out/audit/figma-current/11-trend-chart-enum-track.png'));
-    await enumTrack.saveScreenshot(path.resolve('out/audit/figma-current/11-enum-track-detail.png'));
+    fs.mkdirSync('out/test-temp/full-e2e/figma-current',{recursive:true});
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/figma-current/11-trend-chart-enum-track.png'));
+    await enumTrack.saveScreenshot(path.resolve('out/test-temp/full-e2e/figma-current/11-enum-track-detail.png'));
     await click('信号');
     for(const name of ['电机电流','目标转速','状态字']) await $(`//tbody/tr[.//*[text()="${name}"]]//button[@title="隐藏图表"]`).click();
     await click('图表');
@@ -98,7 +98,7 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
       return {width:svg.clientWidth,labels:[...track.querySelectorAll<SVGTextElement>('[data-string-label],[data-string-time]')].map(t=>{const b=t.getBBox();return {left:b.x,right:b.x+b.width};})};
     });
     expect(bounds.labels.every(b=>b.left>=150 && b.right<=bounds.width-16)).toBe(true);
-    await track.saveScreenshot(path.resolve('out/audit/followup-shots/string-track.png'));
+    await track.saveScreenshot(path.resolve('out/test-temp/full-e2e/followup-shots/string-track.png'));
     const session=(await snap()).sessions[0]!; expect(session.signalCount).toBe(9);
   });
 });

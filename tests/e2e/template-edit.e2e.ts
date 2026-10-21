@@ -8,7 +8,7 @@ const click=async(text:string)=>{const button=$(`//button[normalize-space(.)="${
 const fill=async(selector:string,value:string)=>{await $(selector).click();await browser.keys(['Control','a']);await browser.keys('Backspace');await $(selector).addValue(value);};
 const block=(name:string)=>$(`//nav[@aria-label="设备模板树"]//button[contains(.,"${name}")]`);
 const drawerField=(label:string)=>`//div[contains(@class,"fixed") and contains(@class,"z-40")]//div[@role="group"][div[normalize-space(.)="${label}"]]//input`;
-const shot=async(name:string)=>{fs.mkdirSync('out/audit/template-shots',{recursive:true});await browser.saveScreenshot(path.resolve(`out/audit/template-shots/${name}.png`));};
+const shot=async(name:string)=>{fs.mkdirSync('out/test-temp/full-e2e/template-shots',{recursive:true});await browser.saveScreenshot(path.resolve(`out/test-temp/full-e2e/template-shots/${name}.png`));};
 
 describe('模板与数据块实际交互',()=>{
   beforeEach(async()=>{
@@ -17,7 +17,7 @@ describe('模板与数据块实际交互',()=>{
     await $('//nav//button[normalize-space(.)="模板"]').click();
   });
   afterEach(async function(){
-    if(this.currentTest?.state==='failed'){await shot('failure');fs.writeFileSync('out/audit/template-failure.txt',await $('body').getText());}
+    if(this.currentTest?.state==='failed'){await shot('failure');fs.writeFileSync('out/test-temp/full-e2e/template-failure.txt',await $('body').getText());}
     const cancel=$('//button[normalize-space(.)="取消"]');if(await cancel.isExisting())await cancel.click();
     await browser.electron.restoreAllMocks();
   });
@@ -27,8 +27,8 @@ describe('模板与数据块实际交互',()=>{
     await click('编辑块');
     const existingBlockDialog=await $('[role="dialog"]');await existingBlockDialog.waitForDisplayed();
     expect(await existingBlockDialog.getText()).toContain('计算范围');
-    fs.mkdirSync('out/audit/figma-current',{recursive:true});
-    await browser.saveScreenshot(path.resolve('out/audit/figma-current/07-edit-existing-block-dialog.png'));
+    fs.mkdirSync('out/test-temp/full-e2e/figma-current',{recursive:true});
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/figma-current/07-edit-existing-block-dialog.png'));
     await $('//div[@role="dialog"]//button[normalize-space(.)="取消"]').click();
     await click('内存布局');
     expect(await $('[data-testid="memory-offset-0"]').getText()).toContain('Ia');expect(await $('[data-testid="memory-offset-1"]').getText()).toContain('Ia');

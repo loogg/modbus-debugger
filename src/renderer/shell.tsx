@@ -59,7 +59,7 @@ function TopBar() {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
-  const elapsed = rec ? Math.floor((now - new Date(rec.startedUtc).getTime()) / 1000) : 0;
+  const elapsed = rec ? Math.max(0, Math.floor((now - new Date(rec.startedUtc).getTime()) / 1000)) : 0;
   const p = (n: number) => String(n).padStart(2, '0');
   return (
     <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-line bg-surface px-[18px]">
@@ -139,10 +139,10 @@ function TreeConnection(props: { connectionId: string; children?: React.ReactNod
           {open ? <ChevronDown20Regular className="shrink-0" /> : <ChevronRight20Regular className="shrink-0" />}
           <span className="truncate">{conn.name}</span>
         </span>
-        <StatusDot tone={state === 'online' ? 'ok' : state === 'error' ? 'err' : 'idle'} label={state === 'online' ? t('shell.conn.online') : state === 'connecting' ? t('shell.conn.connecting') : t('shell.conn.offline')} />
+        <StatusDot tone={state === 'online' ? 'ok' : state === 'error' ? 'err' : 'idle'} label={state === 'online' ? conn.role === 'slave' ? t('slave.running') : t('shell.conn.online') : state === 'connecting' ? t('shell.conn.connecting') : conn.role === 'slave' ? t('slave.stopped') : t('shell.conn.offline')} />
       </button>
-      {conn.transport === 'rtu' && conn.rtu ? <div className="ml-6 text-xs text-ink2">{conn.rtu.baudRate} · {conn.rtu.dataBits}{conn.rtu.parity.charAt(0).toUpperCase()}{conn.rtu.stopBits}</div> : null}
-      {conn.transport === 'tcp' && conn.tcp ? <div className="ml-6 text-xs text-ink2">{conn.tcp.host}:{conn.tcp.port}</div> : null}
+      {conn.transport === 'rtu' && conn.rtu ? <div className="ml-6 text-xs text-ink2">{conn.role === 'slave' ? t('slave.slaveShort') : t('slave.masterShort')} · {conn.rtu.baudRate} · {conn.rtu.dataBits}{conn.rtu.parity.charAt(0).toUpperCase()}{conn.rtu.stopBits}</div> : null}
+      {conn.transport === 'tcp' && conn.tcp ? <div className="ml-6 text-xs text-ink2 break-all">{conn.role === 'slave' ? t('slave.slaveShort') : t('slave.masterShort')} · {conn.tcp.host}:{conn.tcp.port}</div> : null}
       {props.actions ? <div className="ml-6 mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-accent">{props.actions}</div> : null}
       {open ? <div className="ml-3 mt-1">{props.children}</div> : null}
     </div>
@@ -210,8 +210,8 @@ function DevicesSidebar() {
           onSelectConnection={() => select({ connectionId: c.id, slaveId: null, deviceView: 'topology' })}
           actions={
             <>
-              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'scan' })}>{t('shell.devices.scan')}</button>
-              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'temp' })}>{t('shell.devices.tempRead')}</button>
+              {c.role !== 'slave' ? <><button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'scan' })}>{t('shell.devices.scan')}</button>
+              <button className="focus-ring cursor-pointer hover:underline" onClick={() => select({ connectionId: c.id, deviceView: 'temp' })}>{t('shell.devices.tempRead')}</button></> : <span className="text-ink2">{t('slave.slaveShort')}</span>}
               <button className="focus-ring cursor-pointer hover:underline" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: c.id })}>{t('shell.devices.addSlave')}</button>
             </>
           }

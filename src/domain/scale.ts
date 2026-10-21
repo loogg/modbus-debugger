@@ -48,6 +48,7 @@ export function quantize(rawDouble: number, rawType: RawType, bitWidth: number):
   const range = rawRange(rawType, bitWidth);
   if (range === null) {
     if (!Number.isFinite(rawDouble)) return { ok: false, reason: 'raw value is not finite' };
+    if (rawType === 'Float32' && !Number.isFinite(Math.fround(rawDouble))) return { ok: false, reason: 'raw value exceeds finite Float32 range' };
     return { ok: true, value: rawDouble };
   }
   const q = Math.round(rawDouble);

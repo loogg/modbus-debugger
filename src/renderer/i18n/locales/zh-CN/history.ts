@@ -3,8 +3,12 @@ export const history = {
   title: '历史',
   subtitle: '回放主动记录的会话',
   empty: '还没有记录会话。在趋势模块选择趋势组后点击“开始记录”。',
+  loading: '正在读取记录会话…',
+  samplePage: '第 {{page}} / {{pages}} 页 · 共 {{count}} 个数值样本 · 每页 500 条',
+  previousPage: '上一页',
+  nextPage: '下一页',
   headerSubtitle: '{{start}} – {{end}} · {{n}} 个信号',
-  replayTitle: '{{name}} · 空载测试',
+  replayTitle: '{{name}} · 离线回放',
   replaySubtitle: '离线回放 · {{time}}',
   sessionStartedAt: '会话开始于 {{time}}',
 

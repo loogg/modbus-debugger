@@ -61,6 +61,7 @@ export interface ConnectionStateView {
   detail: string | null;
   lastResponseUtc: string | null;
   scan?: ScanStateView | null;
+  clientCount?: number;
 }
 
 export interface RecordingView {

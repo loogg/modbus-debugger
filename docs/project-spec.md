@@ -6,6 +6,8 @@
 
 `Connection → Slave Instance → Device Template → Block → Point`
 
+Connection 可选择 `master`（主站 / Client）或 `slave`（本机从站 / Server）；旧工作区未指定角色时按主站运行。两种角色可在不同连接同时使用，同一连接只承担一个角色。
+
 - Slave 只绑定 Template，不复制模板结构；Unit ID 属于 Slave，不属于 Template。
 - Block 是实际轮询单元：地址区、Start、Length、默认周期；同 Template、同地址区 Block 不允许重叠。
 - Point 是 Block Raw Memory 的解释视图；Point 允许重叠并共享同一 Block Cache。
@@ -14,22 +16,33 @@
 - 写 Coil 使用 FC05 / FC15；写 Holding Register 使用 FC06 / FC16。
 - 核心 UI 和通信日志使用 0-based PDU 地址；PLC Reference Address 只在 Import 层转换。
 
+## 本机从站
+
+- TCP 使用本机地址和端口监听，RTU 打开指定串口；创建和加载从站连接后默认停止，用户点击“启动从站”才开始响应。停止会关闭全部客户端/监听器或串口，启动失败显示实际错误；自动恢复仅作用于已启动的连接。
+- 一个连接可配置多个 Unit 1–247，复用已有 Slave Instance 与 Template。只响应启用、已绑定数据块的实例，Unit 的内存相互独立。数据块地址均为 0-based，连续块允许跨块访问，缺口和越界返回异常 02。
+- 支持 FC01/02/03/04/05/06/15/16。外部主站只能写 Coil / Holding Register；本地“从站内存”可设置四类数据区。请求先完整校验，批量写入失败时不改变任何地址；非法功能码返回 01，非法数量、值或 PDU 长度返回 03。RTU Unit 0 广播写更新所有启用且支持该范围的实例，广播请求一律不响应。
+- Main 的 Block Cache 是本机设备的实际内存，Realtime / Trend / Recorder 共用；从站不发起 Poll。界面输入是草稿，命令成功提交后才发布确认值；主站模式的缓存不得用于 RMW 的限制不变。
+- 新数据块初始化为零。停止/启动保留进程内当前值；“保存为启动初始值”将当前从站全部数据块保存至工作区（首次保存自动分配文件），应用重启恢复匹配的数据区初始值。外部写入不会自动覆盖保存的初始值。地址、类型、长度或绑定改变时重新初始化对应内存，防止旧设备值污染新定义。
+- 从站连接不提供主站扫描/临时读取/主动刷新，Main 同时拒绝这些调用。通信诊断中请求为 RX、响应为 TX，保留 Unit、FC、TID、ADU/PDU、处理耗时和异常；TCP 客户端断开不会将仍在监听的从站标为离线。
+
 ## Point Mapping
 
 至少表达 register offset/count、raw type、byte/word order、byte selector、bit offset/width、String length/encoding、display format、Enum map、Scale/Offset、unit、access、high-risk write confirmation。
 
 数值点位可设置显示精度，即**最多小数位数 0–12，默认 3**。实时确认值、趋势 Tooltip 和历史回放按该点位精度格式化；Block Cache、工程数值、记录样本及 CSV 导出保留未舍入的原值。记录会话的 Schema Snapshot 保存当时的精度，后续模板修改不改变旧会话显示。
 
+主从或多个设备使用同名信号时，趋势、历史状态轨迹、样本来源和回放数据明确显示所属连接与从站。历史数值表每页 500 条，可翻页访问完整会话，CSV 始终导出全量原始精度；加载会话期间显示读取状态。
+
 模板编辑支持在属性检查器中保存点位；删除点位须确认，并清理绑定从站的趋势引用，不修改既有历史 Session 的 Schema Snapshot。
 
 ## Polling / Cache
 
-- Connection 在线且 Slave 启用后，绑定 Template 中全部 Block 按各自周期持续 Poll。
+- 主站 Connection 在线且 Slave 启用后，绑定 Template 中全部 Block 按各自周期持续 Poll。
 - 页面选择只改变展示，不改变后台 Poll 范围。
 - Realtime / Trend / Recorder 复用同一 Block Cache；断开 Connection 或禁用 Slave 后停止对应 Poll。
 - 高负载只告警，不自动降频。
 
-## Write Semantics
+## Write Semantics（主站）
 
 - Value 始终是最后一次 confirmed value；Editing 时后台 Poll 不覆盖输入，Writing 时 pending 与 confirmed 分离。
 - Read Back 失败必须结束写入中的等待态并显示结果未知；不得把未确认的输入当作设备值。
@@ -41,6 +54,9 @@
 - 先读合并和写后回读是内置写入流程，不提供全局开关；高风险二次确认按点位配置。设置页将固定流程作为说明，不以禁用且勾选的复选框伪装成偏好。
 
 ## Scale / Offset
+
+- String 写入按编码后的字节数校验，长度 1–246；超长、ASCII 中的非 ASCII 字符和填充用 NUL 字符在提交前拒绝，不静默截断。UTF-8 的中文和 emoji 计入实际字节长度；短文本以零填充剩余存储。
+- Float32 写入必须能编码为有限的 IEEE-754 单精度值；大于其有限范围的数在发送前拒绝，不能以确认写入的方式变成 Infinity。
 
 - Engineering = Raw × Scale + Offset；Write Raw = (Engineering − Offset) / Scale。
 - Scale=0、Raw 越界、NaN、±∞ 在发送前拒绝；整数/BitField 逆变换后量化并校验范围。

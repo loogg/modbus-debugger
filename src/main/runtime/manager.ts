@@ -6,6 +6,7 @@ import { removeTemplateBlock, removeTemplatePoint } from '../../domain/template-
 import { mutateWorkspace } from '../../domain/workspace-mutations';
 import { BlockCache, blockKey } from './block-cache';
 import { ConnectionRuntime, type ConnectionState } from './connection-runtime';
+import { SlaveRuntime } from './slave-runtime';
 import { DiagnosticsStore, type ConnectionHealth } from './diagnostics';
 import { SerialTransport, TcpTransport, type Transport } from './transport';
 import { HistoryStore, type EventRow, type SampleRow, type SessionDetail, type SessionSignalSchema, type SessionSummary, type TransactionMetadataRow } from '../services/history';
@@ -13,7 +14,7 @@ import { WorkspaceService } from '../services/workspace';
 import type { AppDelta, AppSnapshot, BlockViewState, ConnectionStateView, PointViewState, RecordingView } from '../../shared/snapshot';
 import type { Command, CommandResult } from '../../shared/commands';
 import type { BlockDef, ConnectionDef, DeviceTemplate, PointDef, SlaveDef } from '../../domain/model';
-import { decodeRaw, type DecodedRaw } from '../../domain/mapping';
+import { decodeRaw, stringWriteError, type DecodedRaw } from '../../domain/mapping';
 import { engineeringToRaw, toEngineering } from '../../domain/scale';
 import { formatEngineeringNumber } from '../../domain/point-format';
 import { systemClock, type Clock } from '../../domain/protocol';
@@ -39,7 +40,7 @@ export function defaultTransportFactory(config: ConnectionDef): Transport {
 export class RuntimeManager {
   readonly cache = new BlockCache();
   readonly diagnostics = new DiagnosticsStore();
-  private runtimes = new Map<string, ConnectionRuntime>();
+  private runtimes = new Map<string, ConnectionRuntime | SlaveRuntime>();
   private shutdownByConnection = new Map<string, Promise<void>>();
   private stopping = false;
   private clock: Clock;
@@ -124,7 +125,7 @@ export class RuntimeManager {
     if (delta) this.onDelta?.(delta);
   }
 
-  private scheduleRuntimeStop(connectionId: string, runtime: ConnectionRuntime): Promise<void> {
+  private scheduleRuntimeStop(connectionId: string, runtime: ConnectionRuntime | SlaveRuntime): Promise<void> {
     const previous = this.shutdownByConnection.get(connectionId) ?? Promise.resolve();
     const shutdown = previous.catch(() => undefined).then(() => runtime.stop());
     this.shutdownByConnection.set(connectionId, shutdown);
@@ -155,28 +156,28 @@ export class RuntimeManager {
       }
       if (!rt) {
         this.connConfigHash.set(conn.id, configHash);
-        rt = new ConnectionRuntime({
+        const hooks = {
+          onChange: () => { this.connStateRev++; this.persistTransactions(); },
+          onState: (state: ConnectionState, detail?: string) => {
+            this.connStateRev++;
+            if (state === 'online') this.recordConnectionEvent(`${conn.name} ${conn.role === 'slave' ? '从站已启动' : '已连接'}`);
+            if (state === 'error') this.recordConnectionEvent(`${conn.name} 连接异常：${detail ?? ''}`);
+          },
+        };
+        rt = conn.role === 'slave' ? new SlaveRuntime({ config: conn, cache: this.cache, diagnostics: this.diagnostics, clock: this.clock, hooks,
+          serial: conn.transport === 'rtu' ? this.transportFactory(conn) : undefined,
+        }) : new ConnectionRuntime({
           config: conn,
           transport: this.transportFactory(conn),
           cache: this.cache,
           diagnostics: this.diagnostics,
           clock: this.clock,
-          hooks: {
-            onChange: () => {
-              this.connStateRev++;
-              this.persistTransactions();
-            },
-            onState: (state: ConnectionState, detail?: string) => {
-              this.connStateRev++;
-              if (state === 'online') this.recordConnectionEvent(`${conn.name} 已连接`);
-              if (state === 'error') this.recordConnectionEvent(`${conn.name} 连接异常：${detail ?? ''}`);
-            },
-          },
+          hooks,
         });
         this.runtimes.set(conn.id, rt);
         // A runtime recreated after a config edit must honour an explicit disconnect:
         // it stays offline until the user presses 连接 again.
-        if (!this.userOffline.has(conn.id)) {
+        if (conn.role !== 'slave' && !this.userOffline.has(conn.id)) {
           const nextRuntime = rt;
           const shutdown = this.shutdownByConnection.get(conn.id);
           const startIfCurrent = () => {
@@ -200,7 +201,13 @@ export class RuntimeManager {
   }
 
   runtimeFor(connectionId: string): ConnectionRuntime | undefined {
-    return this.runtimes.get(connectionId);
+    const rt = this.runtimes.get(connectionId);
+    return rt instanceof ConnectionRuntime ? rt : undefined;
+  }
+
+  slaveRuntimeFor(connectionId: string): SlaveRuntime | undefined {
+    const rt = this.runtimes.get(connectionId);
+    return rt instanceof SlaveRuntime ? rt : undefined;
   }
 
   /* ---------------- point index & views ---------------- */
@@ -330,9 +337,10 @@ export class RuntimeManager {
       const rt = this.runtimes.get(conn.id);
       out[conn.id] = {
         state: rt?.state ?? 'offline',
-        detail: rt?.state === 'error' ? '连接异常' : null,
+        detail: rt instanceof SlaveRuntime ? rt.detail : rt?.state === 'error' ? '连接异常' : null,
         lastResponseUtc: this.diagnostics.lastOkUtcFor(conn.id),
-        scan: rt?.scan ?? null,
+        scan: rt instanceof ConnectionRuntime ? rt.scan : null,
+        clientCount: rt instanceof SlaveRuntime ? rt.clientCount : undefined,
       };
     }
     return out;
@@ -411,11 +419,11 @@ export class RuntimeManager {
 
   healthFor(connectionId: string): ConnectionHealth {
     const ws = this.workspaceService.current;
-    const blocks: Array<{ slaveId: string; blockId: string; blockName: string; configuredPeriodMs: number }> = [];
-    for (const slave of ws.slaves.filter((s) => s.connectionId === connectionId)) {
+    const blocks: Array<{ slaveId: string; unitId: number; blockId: string; blockName: string; configuredPeriodMs: number }> = [];
+    for (const slave of ws.slaves.filter((s) => s.connectionId === connectionId && ws.connections.find(connection => connection.id === connectionId)?.role !== 'slave')) {
       const template = ws.templates.find((t) => t.id === slave.templateId);
       if (!template) continue;
-      for (const b of template.blocks) blocks.push({ slaveId: slave.id, blockId: b.id, blockName: b.name, configuredPeriodMs: b.periodMs });
+      for (const b of template.blocks) blocks.push({ slaveId: slave.id, unitId: slave.unitId, blockId: b.id, blockName: b.name, configuredPeriodMs: b.periodMs });
     }
     return this.diagnostics.health(connectionId, this.clock.now(), blocks);
   }
@@ -459,7 +467,7 @@ export class RuntimeManager {
     const connViews = this.connectionViews();
     const connChanged = Object.entries(connViews).some(([id, v]) => {
       const prev = this.lastConnStates.get(id);
-      return !prev || prev.state !== v.state || prev.lastResponseUtc !== v.lastResponseUtc || prev.scan !== v.scan;
+      return !prev || prev.state !== v.state || prev.detail !== v.detail || prev.clientCount !== v.clientCount || prev.lastResponseUtc !== v.lastResponseUtc || prev.scan !== v.scan;
     });
     if (connChanged || this.lastConnStates.size !== Object.keys(connViews).length) {
       delta.connections = connViews;
@@ -853,7 +861,8 @@ export class RuntimeManager {
         if (this.stopping) return { ok: false, error: 'runtime manager is stopping' };
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
-        if (rt.state === 'offline' || rt.state === 'error') await rt.start();
+        if (rt instanceof SlaveRuntime || rt.state === 'offline' || rt.state === 'error') await rt.start();
+        if (rt instanceof SlaveRuntime && rt.state === 'error') return { ok: false, error: rt.detail ?? '从站启动失败' };
         return { ok: true, value: null };
       }
       case 'connection.disconnect': {
@@ -867,21 +876,40 @@ export class RuntimeManager {
       }
       case 'point.write':
         return this.writePoint(cmd);
+      case 'slave.setValues': {
+        const slave = wsSvc.current.slaves.find(item => item.id === cmd.slaveId);
+        const rt = slave && this.slaveRuntimeFor(slave.connectionId);
+        if (!rt) return { ok: false, error: '此操作仅适用于本机从站' };
+        try { rt.setValues(cmd.slaveId, cmd.blockId, cmd.offset, cmd.values); const delta = this.collectDelta(); if (delta) this.onDelta?.(delta); return { ok: true, value: null }; }
+        catch (error) { return { ok: false, error: String(error) }; }
+      }
+      case 'slave.saveInitialValues': {
+        const slave = wsSvc.current.slaves.find(item => item.id === cmd.slaveId);
+        const rt = slave && this.slaveRuntimeFor(slave.connectionId);
+        if (!rt || !slave) return { ok: false, error: '此操作仅适用于本机从站' };
+        wsSvc.set(mutateWorkspace(wsSvc.current, { type: 'slave.upsert', slave: { ...slave, initialValues: rt.initialValues(slave.id) } }));
+        const saved = wsSvc.saveManaged();
+        this.workspaceChanged();
+        return saved.ok ? { ok: true, value: null } : { ok: false, error: saved.error ?? '初始值保存失败' };
+      }
       case 'device.scan': {
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
+        if (!(rt instanceof ConnectionRuntime)) return { ok: false, error: '从站连接不执行主站扫描' };
         const found = await rt.scanUnits({ from: cmd.from, to: cmd.to }, cmd.options);
         return { ok: true, value: found };
       }
       case 'device.temporaryRead': {
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
+        if (!(rt instanceof ConnectionRuntime)) return { ok: false, error: '从站连接不执行临时读取' };
         const outcome = await rt.temporaryRead(cmd.unitId, cmd.area, cmd.start, cmd.quantity);
         return { ok: true, value: outcome };
       }
       case 'device.stopScan': {
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
+        if (!(rt instanceof ConnectionRuntime)) return { ok: false, error: '从站连接不执行主站扫描' };
         rt.stopScan();
         return { ok: true, value: null };
       }
@@ -889,6 +917,7 @@ export class RuntimeManager {
         const slave = wsSvc.current.slaves.find(s => s.id === cmd.slaveId);
         const rt = slave ? this.runtimes.get(slave.connectionId) : undefined;
         if (!rt) return { ok: false, error: 'connection runtime missing' };
+        if (!(rt instanceof ConnectionRuntime)) return { ok: false, error: '本机从站使用实际内存，不执行轮询刷新' };
         await rt.refresh(cmd.slaveId, cmd.blockId);
         return { ok: true, value: null };
       }
@@ -937,7 +966,8 @@ export class RuntimeManager {
     const ref = index.get(pointKey(cmd.slaveId, cmd.pointId));
     if (!ref) return { ok: false, error: '点位不存在' };
     const rt = this.runtimes.get(ref.connection.id);
-    if (!rt || rt.state !== 'online') return { ok: false, error: '连接不在线' };
+    if (!rt || (!(rt instanceof SlaveRuntime) && rt.state !== 'online')) return { ok: false, error: '连接不在线' };
+    if (!ref.slave.enabled) return { ok: false, error: '从站未启用' };
     if (ref.point.access !== 'rw') return { ok: false, error: '点位为只读' };
     const m = ref.point.mapping;
 
@@ -947,9 +977,13 @@ export class RuntimeManager {
       rawValue = cmd.boolValue;
     } else if (m.rawType === 'String') {
       if (cmd.stringValue === null) return { ok: false, error: 'String 点位需要文本值' };
+      const error = stringWriteError(m, cmd.stringValue);
+      if (error) return { ok: false, error };
       rawValue = cmd.stringValue;
     } else if (Object.keys(ref.point.enumMap).length > 0 && cmd.engineering !== null) {
-      rawValue = Math.round(cmd.engineering);
+      const conv = engineeringToRaw(cmd.engineering, { scale: 1, offset: 0 }, m.rawType, m.bitWidth);
+      if (!conv.ok) return { ok: false, error: conv.reason };
+      rawValue = conv.value;
     } else {
       if (cmd.engineering === null) return { ok: false, error: '缺少工程值' };
       const conv = engineeringToRaw(cmd.engineering, { scale: ref.point.scale, offset: ref.point.offset }, m.rawType, m.bitWidth);
@@ -957,6 +991,14 @@ export class RuntimeManager {
       rawValue = conv.value;
     }
 
+    if (rt instanceof SlaveRuntime) {
+      try {
+        rt.setPoint(ref.slave.id, ref.block.id, m, rawValue);
+        this.recordWriteEvent(`${ref.slave.name} / ${ref.point.name} 本地设值`);
+        const delta = this.collectDelta(); if (delta) this.onDelta?.(delta);
+        return { ok: true, value: { phase: 'confirmed', result: 'ok', exceptionCode: null } satisfies PointWriteResult };
+      } catch (error) { return { ok: false, error: String(error) }; }
+    }
     const outcome = await rt.writePoint({
       slave: ref.slave,
       block: ref.block,

@@ -35,7 +35,7 @@ async function check() {
   await click(await $('//button[normalize-space(.)="重新检查"]').isExisting()?'重新检查':'检查更新');
 }
 describe('关于与 GitHub 更新（真实 UI / Main / 文件 I/O）',()=>{
-  before(async()=>{ fs.mkdirSync('out/audit/update-shots',{recursive:true}); await $('//nav//button[contains(.,"关于")]').click(); });
+  before(async()=>{ fs.mkdirSync('out/test-temp/full-e2e/update-shots',{recursive:true}); await $('//nav//button[contains(.,"关于")]').click(); });
   afterEach(async()=>{
     await browser.execute(async()=>({result:await (window as unknown as {modbus:ModbusApi}).modbus.command({type:'update.cancel'})}));
     await browser.waitUntil(async()=>!['checking','downloading','verifying'].includes((await state()).phase));
@@ -84,7 +84,7 @@ describe('关于与 GitHub 更新（真实 UI / Main / 文件 I/O）',()=>{
     const probe=result!.value!;
     expect(probe.status).toBe(200); expect(probe.prefix.slice(0,2)).toEqual([80,75]);
     if(probe.host) expect(['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com']).toContain(probe.host);
-    await browser.saveScreenshot(path.resolve('out/audit/update-shots/current.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/update-shots/current.png'));
   });
   it('checks and downloads from release metadata, verifies bytes, and opens the exact downloaded file location',async()=>{
     await fixture(); await check(); await waitPhase('available');
@@ -92,7 +92,7 @@ describe('关于与 GitHub 更新（真实 UI / Main / 文件 I/O）',()=>{
     const file=(await state()).downloadPath!; expect(fs.readFileSync(file)).toEqual(bytes); expect(file).toContain(path.join('data','updates'));
     await click('打开下载目录'); expect(await browser.electron.execute((electron)=>{void electron; return (globalThis as unknown as {updateFixture:Fixture}).updateFixture.revealed;})).toBe(file);
     await click('更新日志'); expect(await browser.electron.execute((electron)=>{void electron; return (globalThis as unknown as {updateFixture:Fixture}).updateFixture.opened;})).toBe('https://github.com/loogg/modbus-debugger/releases/tag/v99.0.0');
-    await browser.saveScreenshot(path.resolve('out/audit/update-shots/downloaded.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/update-shots/downloaded.png'));
     fs.unlinkSync(file); // Fixture cleanup only, never delete a user-selected path.
   });
   it('continues across page switches and cancels a partial download through the button',async()=>{
@@ -103,7 +103,7 @@ describe('关于与 GitHub 更新（真实 UI / Main / 文件 I/O）',()=>{
     const txAfter=await browser.execute(async()=> (await (window as unknown as {modbus:ModbusApi}).modbus.getSnapshot()).transactions.at(-1)?.traceId);
     expect(txAfter).not.toBe(txBefore);
     await $('//nav//button[contains(.,"设备")]').click(); await $('//nav//button[contains(.,"关于")]').click();
-    expect(Number(await $('progress').getAttribute('value'))).toBeGreaterThan(0); await browser.saveScreenshot(path.resolve('out/audit/update-shots/progress.png')); await click('取消'); await waitPhase('available');
+    expect(Number(await $('progress').getAttribute('value'))).toBeGreaterThan(0); await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/update-shots/progress.png')); await click('取消'); await waitPhase('available');
     const folder=path.join(process.env.MODBUS_TEST_RUN_DIR!,'temp','updates'); expect(fs.readdirSync(folder).some(file=>file.endsWith('.part'))).toBe(false);
   });
   it('shows rate-limit and checksum errors and allows a subsequent check to recover',async()=>{
@@ -124,7 +124,7 @@ describe('关于与 GitHub 更新（真实 UI / Main / 文件 I/O）',()=>{
     expect(visible).toBe(true);
     const widths=await browser.execute(()=>{const main=document.querySelector('main')!;return {client:main.clientWidth,scroll:main.scrollWidth};});
     expect(widths.scroll).toBeLessThanOrEqual(widths.client+1);
-    await browser.saveScreenshot(path.resolve('out/audit/update-shots/compact.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/update-shots/compact.png'));
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:960,deviceScaleFactor:1,mobile:false});
   });
 

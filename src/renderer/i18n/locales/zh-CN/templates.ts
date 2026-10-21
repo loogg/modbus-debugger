@@ -14,6 +14,10 @@ export const templates = {
   addressRange: '地址范围',
   length: '长度',
   registersUnit: '{{n}} 个寄存器',
+  bitsUnit: '{{n}} 位',
+  addressOffset: '地址偏移',
+  sharedBitsCount: '与 {{count}} 个点位共享/重叠位地址',
+  exclusiveBits: '独占位地址区间',
   pointsUnit: '{{n}} 个',
   boundSection: '绑定到此模板的从站',
   noBoundSlaves: '还没有从站绑定此模板',
@@ -87,6 +91,7 @@ export const templates = {
   startAddress: '起始地址',
   period: '默认轮询周期',
   calcRange: '计算范围：{{start}}–{{end}} · {{n}} 个寄存器',
+  calcBitRange: '计算范围：{{start}}–{{end}} · {{n}} 位',
 
   /* --------------------------- ImportRegisters --------------------------- */
   importBlockName: '导入块 {{n}}',

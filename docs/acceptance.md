@@ -26,6 +26,13 @@
 - RTU / TCP 正式 Transport 已实现；Scheduler 优先级、Scanner 独占、Write→Read Back、RMW 原子序列有 Integration Test。
 - 每个事务的 `traceId`、source metadata、Raw ADU/PDU、duration、result 完整；TCP MBAP ID 与 `traceId` 分离。
 
+## 本机从站
+
+- TCP Server / RTU 从站均支持 FC01/02/03/04/05/06/15/16、多 Unit、独立内存、广播写不响应和正确异常码；完整请求校验失败不发生部分写入。
+- TCP 多客户端独立分帧/TID、任意分片和连续多帧、坏帧恢复、客户端与缓冲/发送队列有界；停止后关闭客户端/监听器/串口，立即重启可用，端口冲突有明确错误。
+- 从站不创建 Poll，四区本地设值、实时/趋势/Recorder/诊断共享 Main Cache；草稿和失败不污染实际值。保存初始值后重启恢复，旧工作区保持主站语义。
+- 连接角色、监听/串口参数、启动/停止、添加本机 Unit/模板、内存编辑/保存初始值，以及 RX 请求/TX 响应方向经真实界面审查；原生与虚拟串口互操作分别记录证据。
+
 ## Trend / History / Diagnosis / Import
 
 - 从站扫描页提供默认折叠的高级配置；FC01/02/03/04、起始地址、超时、重试经 IPC 校验并作用于实际请求。折叠不重置参数，扫描中禁止修改，不改变连接默认值；FC01/02 读取 1 位的短响应正常识别。

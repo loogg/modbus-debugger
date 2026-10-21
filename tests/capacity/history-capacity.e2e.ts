@@ -2,7 +2,7 @@ import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const metricsPath = path.resolve('out/audit/capacity-1m-smoke.json');
+const metricsPath = path.resolve('out/test-temp/capacity/capacity-1m-smoke.json');
 const clipboardInfo = () => browser.electron.execute(electron => {
   const text = electron.clipboard.readText();
   return { length: text.length, head: text.slice(0, 64), tail: text.slice(-64) };
@@ -31,7 +31,7 @@ describe('opt-in packaged history capacity smoke', () => {
     await browser.waitUntil(async () => await $('canvas').isExisting(), { timeout: 45000 });
     const openedMs = Date.now() - openedAt;
     fs.mkdirSync(path.dirname(metricsPath), { recursive: true });
-    await browser.saveScreenshot(path.resolve('out/audit/capacity-1m-history.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/capacity/capacity-1m-history.png'));
 
     const replayStartedAt = Date.now();
     await $('//button[normalize-space(.)="回放"]').click();
@@ -49,7 +49,7 @@ describe('opt-in packaged history capacity smoke', () => {
     await browser.waitUntil(async () => (await replayLinePixels()) > 1000, { timeout: 5000, timeoutMsg: 'replay chart never rendered its sampled line' });
     const linePixels = await replayLinePixels();
     const scrubMs = Date.now() - scrubStartedAt;
-    await browser.saveScreenshot(path.resolve('out/audit/capacity-1m-replay.png'));
+    await browser.saveScreenshot(path.resolve('out/test-temp/capacity/capacity-1m-replay.png'));
     await $('//button[normalize-space(.)="返回历史"]').click();
 
     const exportStartedAt = Date.now();

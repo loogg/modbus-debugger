@@ -131,7 +131,7 @@ export class DiagnosticsStore {
   health(
     connectionId: string,
     nowMono: number,
-    blocks: Array<{ slaveId: string; blockId: string; blockName: string; configuredPeriodMs: number }>,
+    blocks: Array<{ slaveId: string; unitId: number; blockId: string; blockName: string; configuredPeriodMs: number }>,
     windowSec = 60,
   ): ConnectionHealth {
     const from = nowMono - windowSec * 1000;
@@ -154,7 +154,7 @@ export class DiagnosticsStore {
     const busLoadPercent = Math.min(100, (bitsPerSec / 115200) * 100);
 
     const blockHealth: BlockHealth[] = blocks.map((b) => {
-      const btx = tx.filter((t) => t.sourceKind === 'poll' && t.sourceId === b.blockId);
+      const btx = tx.filter((t) => t.sourceKind === 'poll' && t.sourceId === b.blockId && t.unitId === b.unitId);
       const starts = btx.map((t) => t.startMono).sort((a, c) => a - c);
       let actual: number | null = null;
       if (starts.length > 1) {

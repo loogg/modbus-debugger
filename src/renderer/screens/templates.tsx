@@ -70,7 +70,7 @@ export function TemplatesScreen() {
             <div className="text-xs text-accent mt-1">{AREAS[b.area]}</div>
             <div className="mt-4 flex flex-col gap-2 text-xs">
               <div className="flex"><span className="w-16 text-ink2">{t('templates.addressRange')}</span><span className="mono">{b.start}–{b.start + b.length - 1}</span></div>
-              <div className="flex"><span className="w-16 text-ink2">{t('templates.length')}</span><span>{t('templates.registersUnit', { n: b.length })}</span></div>
+              <div className="flex"><span className="w-16 text-ink2">{t('templates.length')}</span><span>{t(b.area <= 2 ? 'templates.bitsUnit' : 'templates.registersUnit', { n: b.length })}</span></div>
               <div className="flex"><span className="w-16 text-ink2">{t('templates.points')}</span><span>{t('templates.pointsUnit', { n: template.points.filter((p) => p.blockId === b.id).length })}</span></div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -275,9 +275,9 @@ function TemplateEdit(props: { templateId: string }) {
           <div className="grid grid-cols-3 gap-4">
             <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.startAddress')}</div><TextInput type="number" value={String(block.start)} onChange={(e) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { start: Number(e.target.value) } })} /></label>
             <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.length')}</div><TextInput type="number" value={String(block.length)} onChange={(e) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { length: Number(e.target.value) } })} /></label>
-            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.period')}</div><Select value={String(block.periodMs)} onChange={(v) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { periodMs: Number(v) } })} options={[{ value: '50', label: '50 ms' }, { value: '100', label: '100 ms' }, { value: '200', label: '200 ms' }, { value: '500', label: '500 ms' }, { value: '1000', label: '1000 ms' }]} /></label>
+            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.period')}</div><Select value={String(block.periodMs)} onChange={(v) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { periodMs: Number(v) } })} options={[...new Set([50, 100, 200, 500, 1000, block.periodMs])].sort((a, b) => a - b).map(value => ({ value: String(value), label: `${value} ms` }))} /></label>
           </div>
-          <InfoBand tone="blue">{t('templates.calcRange', { start: block.start, end: block.start + block.length - 1, n: block.length })}</InfoBand>
+          <InfoBand tone="blue">{t(block.area <= 2 ? 'templates.calcBitRange' : 'templates.calcRange', { start: block.start, end: block.start + block.length - 1, n: block.length })}</InfoBand>
         </div>
       )}
     </>

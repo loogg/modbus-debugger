@@ -72,11 +72,11 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
       <div className="mt-4 grid grid-cols-3 gap-4">
         <Field label={t('overlays.startAddr')}><TextInput type="number" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
         <Field label={t('overlays.length')}><TextInput type="number" value={length} onChange={(e) => setLength(e.target.value)} /></Field>
-        <Field label={t('overlays.defaultPeriod')}><Select value={period} onChange={setPeriod} options={['50', '100', '200', '500', '1000'].map((p) => ({ value: p, label: `${p} ms` }))} /></Field>
+        <Field label={t('overlays.defaultPeriod')}><Select value={period} onChange={setPeriod} options={[...new Set([50, 100, 200, 500, 1000, Number(period)])].sort((a, b) => a - b).map((p) => ({ value: String(p), label: `${p} ms` }))} /></Field>
       </div>
       <div className="mt-4">
         <div className="text-xs text-ink2 mb-1.5">{t('overlays.computedRange')}</div>
-        <InfoBand className="flex items-center justify-between"><span className="text-sm font-bold mono">{candidate.start}–{candidate.start + candidate.length - 1}</span><span className="text-xs text-ink2">{t('overlays.registerCount', { n: String(candidate.length) })}</span></InfoBand>
+        <InfoBand className="flex items-center justify-between"><span className="text-sm font-bold mono">{candidate.start}–{candidate.start + candidate.length - 1}</span><span className="text-xs text-ink2">{t(candidate.area <= 2 ? 'overlays.bitCount' : 'overlays.registerCount', { n: String(candidate.length) })}</span></InfoBand>
       </div>
       <div className="mt-4">
         <div className="text-xs text-ink2 mb-1.5">{t('overlays.rangeValidation')}</div>
@@ -276,21 +276,21 @@ function InspectorDrawer(props: { pointId: string }) {
   if (!workspace || !point || !block || !entry) return <Drawer title={t('overlays.inspectorTitle')} width={500} onClose={close}><InfoBand>{t('overlays.inspectorEmpty')}</InfoBand></Drawer>;
   const raw: RawMemory | null = entry.registers ? { kind: 'registers', registers: new Uint16Array(entry.registers) } : entry.bits ? { kind: 'bits', bits: entry.bits } : null;
   const rawValues = entry.registers ?? entry.bits?.map(value => value ? 1 : 0) ?? [];
-  const regs = rawValues.slice(point.mapping.offset, point.mapping.offset + Math.min(4, point.mapping.registerCount));
+  const regs = rawValues.slice(point.mapping.offset, point.mapping.offset + point.mapping.registerCount);
   const bytes = regs.flatMap((value) => [(value >> 8) & 0xff, value & 0xff]).map((value) => value.toString(16).toUpperCase().padStart(2, '0')).join(' ');
   return (
     <Drawer title={t('overlays.inspectorTitle')} subtitle={t('overlays.inspectorSubtitle', { point: point.name, type: point.mapping.rawType, offset: String(point.mapping.offset) })} width={500} onClose={close}
       footer={<Button onClick={() => { close(); select({ commView: 'messages' }); setModule('comm'); }}>{t('overlays.viewRecentComm')}</Button>}>
-      <InfoBand tone="blue" className="flex items-center justify-between">
-        <div>
+      <InfoBand tone="blue" className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
           <div className="text-xs text-ink2 mb-1">{t('overlays.engValue')}</div>
-          <div className="text-2xl font-bold text-accent">{view?.engText ?? '—'} {point.unit}</div>
+          <div className={`font-bold text-accent break-all ${point.mapping.rawType === 'String' ? 'max-h-32 overflow-auto text-base' : 'text-2xl'}`}>{view?.engText ?? '—'} {point.unit}</div>
         </div>
-        <div className="text-xs text-ink2">{t('overlays.inspectorSource', { block: block.name, addr: String(block.start + point.mapping.offset) })}</div>
+        <div className="max-w-[140px] text-xs text-ink2">{t('overlays.inspectorSource', { block: block.name, addr: String(block.start + point.mapping.offset) })}</div>
       </InfoBand>
       <div className="mt-5 text-sm font-bold mb-2">{t('overlays.rawRegisters')}</div>
       <InfoBand>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid max-h-64 grid-cols-2 gap-4 overflow-y-auto">
           {regs.map((value, i) => (
             <div key={i}>
               <div className="text-xs text-ink2">+{point.mapping.offset + i}</div>
@@ -317,9 +317,11 @@ function InspectorDrawer(props: { pointId: string }) {
       </div>
       <div className="mt-5 text-sm font-bold mb-2">{t('overlays.conversionRules')}</div>
       <InfoBand>
-        <div className="text-sm">{t('overlays.scaleDisplayFormula', { scale: String(point.scale), offset: String(point.offset) })}</div>
-        <div className="text-sm">{t('overlays.scaleWriteFormula', { offset: String(point.offset), scale: String(point.scale) })}</div>
-        <div className="text-xs text-ink2 mt-1">{t('overlays.currentExample', { eng: view?.engText ?? '—', unit: point.unit, raw: view?.rawText ?? '—', type: point.mapping.rawType })}</div>
+        {point.mapping.rawType === 'String' ? <div className="text-sm">{t('slave.stringMapping', { encoding: point.mapping.stringEncoding === 'utf8' ? 'UTF-8' : 'ASCII', length: point.mapping.stringLength })}</div> : <>
+          <div className="text-sm">{t('overlays.scaleDisplayFormula', { scale: String(point.scale), offset: String(point.offset) })}</div>
+          <div className="text-sm">{t('overlays.scaleWriteFormula', { offset: String(point.offset), scale: String(point.scale) })}</div>
+        </>}
+        <div className="text-xs text-ink2 mt-1 break-all">{t('overlays.currentExample', { eng: view?.engText ?? '—', unit: point.unit, raw: view?.rawText ?? '—', type: point.mapping.rawType })}</div>
       </InfoBand>
     </Drawer>
   );

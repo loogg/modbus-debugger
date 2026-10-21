@@ -14,6 +14,7 @@ export function AddConnectionDialog(props: { connectionId?: string }) {
   const toast = useApp((s) => s.toast);
   const [name, setName] = useState(existingConn?.name ?? t('overlays.defaultConnName'));
   const [protocol, setProtocol] = useState<'rtu' | 'tcp'>(existingConn?.transport ?? 'rtu');
+  const [role, setRole] = useState<'master' | 'slave'>(existingConn?.role ?? 'master');
   const [port, setPort] = useState(existingConn?.rtu?.port ?? '');
   const [portOptions, setPortOptions] = useState<Array<{ value: string; label: string }>>([]);
   const portTouched = useRef(false);
@@ -56,6 +57,7 @@ export function AddConnectionDialog(props: { connectionId?: string }) {
       id,
       name,
       transport: protocol,
+      role: role === 'master' && !existingConn?.role ? undefined : role,
       rtu: protocol === 'rtu' ? { port, baudRate: Number(baud), dataBits: Number(dataBits) as 7 | 8, parity, stopBits: Number(stopBits) as 1 | 2 } : undefined,
       tcp: protocol === 'tcp' ? { host, port: Number(tcpPort) } : undefined,
       timeoutMs: Number(timeout),
@@ -73,6 +75,7 @@ export function AddConnectionDialog(props: { connectionId?: string }) {
   return (
     <Dialog title={existingConn ? t('overlays.editConnTitle') : t('overlays.addConnTitle')} subtitle={t('overlays.connSubtitle')} width={660} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" onClick={() => void create()}>{existingConn ? t('overlays.saveChanges') : t('overlays.createConn')}</Button></>}>
       <Field label={t('overlays.fieldName')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+      <div className="mt-4"><Field label={t('slave.role')}><Select value={role} onChange={value => { const next = value as typeof role; setRole(next); if (!existingConn && (host === '192.168.1.50' || host === '127.0.0.1')) setHost(next === 'slave' ? '127.0.0.1' : '192.168.1.50'); }} options={[{ value: 'master', label: t('slave.master') }, { value: 'slave', label: t('slave.slave') }]} /></Field></div>
       <div className="mt-4">
         <div className="text-xs text-ink2 mb-1.5">{t('overlays.protocol')}</div>
         <div className="grid grid-cols-2 rounded-ctl bg-accentsoft p-1 text-sm">
@@ -111,22 +114,22 @@ export function AddConnectionDialog(props: { connectionId?: string }) {
         </>
       ) : (
         <div className="mt-4 grid grid-cols-2 gap-4">
-          <Field label={t('overlays.fieldHost')}><TextInput value={host} onChange={(e) => setHost(e.target.value)} /></Field>
+          <Field label={role === 'slave' ? t('slave.listenHost') : t('overlays.fieldHost')} hint={role === 'slave' ? t('slave.listenHint') : undefined}><TextInput value={host} onChange={(e) => setHost(e.target.value)} /></Field>
           <Field label={t('overlays.fieldTcpPort')}><TextInput value={tcpPort} onChange={(e) => setTcpPort(e.target.value)} /></Field>
         </div>
       )}
-      <div className="mt-4 grid grid-cols-3 gap-4">
+      {role === 'master' ? <div className="mt-4 grid grid-cols-3 gap-4">
         <Field label={t('overlays.fieldTimeout')}><TextInput data-testid="timeout-input" value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
         <Field label={t('overlays.retries')}><TextInput value={retries} onChange={(e) => setRetries(e.target.value)} /></Field>
         <Field label={t('overlays.fieldReconnect')}><Select value={reconnect} onChange={(v) => setReconnect(v as typeof reconnect)} options={[{ value: 'auto', label: t('overlays.reconnectAuto') }, { value: 'manual', label: t('overlays.reconnectManual') }]} /></Field>
-      </div>
+      </div> : null}
       <InfoBand tone="blue" className="mt-5">
         <div className="text-sm font-bold text-accent mb-1">{t('overlays.afterCreate')}</div>
-        <div className="text-sm">{t('overlays.afterCreateBody')}</div>
+        <div className="text-sm">{role === 'slave' ? t('slave.setupHint') : t('overlays.afterCreateBody')}</div>
       </InfoBand>
       <div className="mt-5 grid grid-cols-3 gap-4">
-        <Field label={t('overlays.fieldInterFrame')}><TextInput type="number" value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field>
-        <Field label={t('overlays.fieldRts')}><Select value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field>
+        {role === 'master' ? <Field label={t('overlays.fieldInterFrame')}><TextInput type="number" value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field> : null}
+        {protocol === 'rtu' ? <Field label={t('overlays.fieldRts')}><Select value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field> : null}
         <Field label={t('overlays.fieldLogLevel')}><Select value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
       </div>
     </Dialog>

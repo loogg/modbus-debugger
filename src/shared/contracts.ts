@@ -17,7 +17,7 @@ export interface PointWriteResult {
   exceptionCode: number | null;
 }
 
-export type SourceKind = 'poll' | 'write' | 'readback' | 'temporary-read' | 'scanner' | 'rmw-read' | 'rmw-write';
+export type SourceKind = 'poll' | 'write' | 'readback' | 'temporary-read' | 'scanner' | 'rmw-read' | 'rmw-write' | 'slave';
 
 export interface TransactionRecord {
   traceId: string;

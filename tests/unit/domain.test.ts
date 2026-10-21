@@ -3,7 +3,7 @@ import { decodeRaw, encodeRaw, registersForType, type PointMapping, type RawMemo
 import { engineeringToRaw, inverseToRaw, quantize, toEngineering } from '../../src/domain/scale';
 import { findBlockOverlaps, pointSharesRegister } from '../../src/domain/overlap';
 import { parsePlcReference, toPlcReference } from '../../src/domain/address';
-import { migrateWorkspace, emptyWorkspace } from '../../src/domain/model';
+import { migrateWorkspace, emptyWorkspace, pointSchema } from '../../src/domain/model';
 import type { BlockDef } from '../../src/domain/model';
 
 const m = (over: Partial<PointMapping>): PointMapping => ({
@@ -21,6 +21,9 @@ const m = (over: Partial<PointMapping>): PointMapping => ({
 const regs = (...v: number[]): RawMemory => ({ kind: 'registers', registers: Uint16Array.from(v) });
 
 describe('Point mapping golden decode', () => {
+  it('rejects a zero-byte String point definition', () => {
+    expect(pointSchema.safeParse({ id: 's', blockId: 'b', name: 'String', access: 'rw', mapping: m({ rawType: 'String', stringLength: 0 }) }).success).toBe(false);
+  });
   it('Int16 / UInt16', () => {
     expect(decodeRaw(regs(0x8000), m({ rawType: 'Int16' }))).toBe(-32768);
     expect(decodeRaw(regs(0x7fff), m({ rawType: 'Int16' }))).toBe(32767);

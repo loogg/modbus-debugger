@@ -65,6 +65,7 @@ export const overlays = {
   defaultPeriod: '默认轮询周期',
   computedRange: '计算范围',
   registerCount: '{{n}} 个寄存器',
+  bitCount: '{{n}} 位',
   rangeValidation: '范围校验',
   overlapError: '✕ 与同地址区数据块重叠：{{names}}',
   listSep: '、',

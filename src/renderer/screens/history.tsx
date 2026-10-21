@@ -56,13 +56,14 @@ export function HistoryScreen() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [note, setNote] = useState<string | null>(null);
+  const [samplePage, setSamplePage] = useState(0);
 
   const session = sessions.find((s) => s.id === selection.sessionId) ?? sessions[0];
 
   const sessionId = session?.id ?? null;
   useEffect(() => {
     let cancelled = false;
-    setNote(null); setPlaying(false); setReplay(false); setCursorMs(0);
+    setNote(null); setPlaying(false); setReplay(false); setCursorMs(0); setSamplePage(0); setData(null);
     if (!sessionId) {
       setData(null);
       return;
@@ -112,13 +113,21 @@ export function HistoryScreen() {
     return (
       <>
         <PageHeader title={t('history.title')} subtitle={t('history.subtitle')} />
-        <InfoBand tone="blue">{t('history.empty')}</InfoBand>
+        <InfoBand tone="blue">{t(session ? 'history.loading' : 'history.empty')}</InfoBand>
       </>
     );
   }
 
   const schema = data.detail.schema;
   const startMs = new Date(data.detail.startUtc).getTime();
+  const signalLabel = (signal: SessionSchemaEntry) => (
+    <span className="inline-flex min-w-0 flex-col">
+      <span>{signal.pointName}</span>
+      {schema.some(other => other.signalId !== signal.signalId && other.pointName === signal.pointName) && (
+        <span className="text-xs text-ink2">{signal.connectionName} / {signal.slaveName}</span>
+      )}
+    </span>
+  );
 
   const exportCsv = async () => {
     await navigator.clipboard.writeText(buildHistoryCsv(data.samples, data.events));
@@ -160,7 +169,7 @@ export function HistoryScreen() {
                 const ev = cursorEvents.filter((e) => e.signalId === s.signalId).slice(-1)[0];
                 return (
                   <div key={s.signalId} className="flex justify-between border-b border-[#E7EAEE] px-4 py-2.5 text-sm last:border-0">
-                    <span>{s.pointName}</span>
+                    {signalLabel(s)}
                     <span className={s.recordMode === 'samples' ? '' : 'text-[#7A5AF8]'}>{s.recordMode === 'samples' ? (last ? `${formatEngineeringNumber(last.value, s.decimalPlaces)} ${s.unit}` : '—') : ev?.value ?? '—'}</span>
                   </div>
                 );
@@ -193,7 +202,7 @@ export function HistoryScreen() {
   const signalCols: Array<Column<(typeof schema)[number]>> = [
     { id: 'name', header: t('history.colSignal'), width: 180, render: (r) => <span className="font-medium">{r.pointName}</span> },
     { id: 'type', header: t('history.colType'), width: 100, render: (r) => <span className="text-xs text-ink2">{r.rawType}</span> },
-    { id: 'source', header: t('history.colSource'), width: 260, render: (r) => <span className="text-xs text-ink2">{r.slaveName} / {r.blockName}</span> },
+    { id: 'source', header: t('history.colSource'), width: 260, render: (r) => <span className="text-xs text-ink2">{r.connectionName} / {r.slaveName} / {r.blockName}</span> },
     { id: 'mode', header: t('history.colRecordMode'), width: 160, render: (r) => <span className="text-xs">{r.recordMode === 'samples' ? t('history.modeSamples') : t('history.modeEvents')}</span> },
   ];
 
@@ -204,10 +213,16 @@ export function HistoryScreen() {
     { id: 'result', header: t('history.colResult'), width: 100, render: (r) => (r.kind === 'write' ? <span className="text-xs text-ink2">—</span> : null) },
   ];
 
-  const sampleRows = data.samples.slice(0, 500);
+  const samplePageCount = Math.max(1, Math.ceil(data.samples.length / 500));
+  const currentSamplePage = Math.min(samplePage, samplePageCount - 1);
+  const sampleRows = data.samples.slice(currentSamplePage * 500, (currentSamplePage + 1) * 500);
   const sampleCols: Array<Column<(typeof sampleRows)[number]>> = [
     { id: 't', header: t('history.colTime'), width: 110, render: (r) => <span className="mono text-xs">{fmt(r.tMs)}</span> },
     { id: 'signal', header: t('history.colSignal'), width: 180, render: (r) => schema.find((s) => s.signalId === r.signalId)?.pointName ?? r.signalId },
+    { id: 'source', header: t('history.colSource'), width: 260, render: (r) => {
+      const signal = schema.find(s => s.signalId === r.signalId);
+      return signal ? <span className="text-xs text-ink2">{signal.connectionName} / {signal.slaveName}</span> : '—';
+    } },
     { id: 'value', header: t('history.colValue'), width: 160, render: (r) => <span className="mono">{formatEngineeringNumber(r.value, schema.find((signal) => signal.signalId === r.signalId)?.decimalPlaces)}</span> },
     { id: 'unit', header: t('history.colUnit'), width: 80, render: (r) => schema.find((s) => s.signalId === r.signalId)?.unit ?? '' },
   ];
@@ -280,7 +295,7 @@ export function HistoryScreen() {
                   xMode="duration"
                   kind={kind}
                   label={s.pointName}
-                  sublabel={kind === 'bool' ? 'Bool' : kind}
+                  sublabel={schema.filter(other => other.pointName === s.pointName).length > 1 ? `${s.connectionName} / ${s.slaveName}` : kind === 'bool' ? 'Bool' : kind}
                   initialValue={events[0]?.value ?? null}
                   events={events}
                   startMs={0}
@@ -297,7 +312,16 @@ export function HistoryScreen() {
           ))}
         </div>
       )}
-      {selection.historyTab === 'data' && <DataTable columns={sampleCols} rows={sampleRows} rowKey={(r, i) => `${r.tMs}-${r.signalId}-${i}`} maxHeight={520} />}
+      {selection.historyTab === 'data' && <>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs text-ink2">
+          <span>{t('history.samplePage', { page: currentSamplePage + 1, pages: samplePageCount, count: data.samples.length })}</span>
+          <div className="flex gap-2">
+            <Button size="sm" disabled={currentSamplePage === 0} onClick={() => setSamplePage(currentSamplePage - 1)}>{t('history.previousPage')}</Button>
+            <Button size="sm" disabled={currentSamplePage + 1 >= samplePageCount} onClick={() => setSamplePage(currentSamplePage + 1)}>{t('history.nextPage')}</Button>
+          </div>
+        </div>
+        <DataTable columns={sampleCols} rows={sampleRows} rowKey={(r, i) => `${r.tMs}-${r.signalId}-${i}`} maxHeight={520} />
+      </>}
       {selection.historyTab === 'signals' && (
         <>
           <div className="text-sm font-bold mb-1">{t('history.recordedSignals')}</div>

@@ -68,7 +68,7 @@ describe('扫描预设与 Raw ADU 复制', () => {
     expect(await rows[1]!.getText()).toContain('TX');
     expect(await rows[0]!.getText()).toContain(`${record.responseAduHex!.length / 2} bytes`);
     expect(await rows[1]!.getText()).toContain(record.summary);
-    const screenshot = path.resolve('out/audit/figma-current/13-comm-tx-rx.png');
+    const screenshot = path.resolve('out/test-temp/full-e2e/figma-current/13-comm-tx-rx.png');
     fs.mkdirSync(path.dirname(screenshot), { recursive: true });
     await browser.saveScreenshot(screenshot);
     await rows[1]!.click();

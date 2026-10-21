@@ -2,8 +2,8 @@ import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const SHOTS = path.resolve('out', 'audit', 'screenshots');
-const FIGMA_SHOTS = path.resolve('out', 'audit', 'figma-current');
+const SHOTS = path.resolve('out', 'test-temp', 'full-e2e', 'screenshots');
+const FIGMA_SHOTS = path.resolve('out', 'test-temp', 'full-e2e', 'figma-current');
 
 interface PuppeteerBrowser {
   getPuppeteer(): Promise<{ targets(): Array<{ type(): string; page(): Promise<unknown> }> }>;

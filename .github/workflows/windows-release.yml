@@ -71,7 +71,7 @@ jobs:
         with:
           name: windows-build-diagnostics-${{ github.run_id }}
           path: |
-            out/release-smoke-screenshots/
+            out/test-temp/release-smoke-screenshots/
             out/**/*.log
           if-no-files-found: ignore
           retention-days: 7

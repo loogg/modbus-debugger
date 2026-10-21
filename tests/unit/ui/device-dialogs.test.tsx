@@ -74,3 +74,14 @@ it('defaults to a free Unit ID and blocks a duplicate before saving', async () =
     type: 'slave.upsert', slave: expect.objectContaining({ connectionId: 'c1', unitId: 3 }),
   })));
 });
+
+it('never reports an out-of-range or fractional Unit ID as available', () => {
+  useApp.setState({ overlay: { kind: 'dialog', id: 'add-slave', connectionId: 'c1' } });
+  render(<Overlays />);
+  const unit = screen.getByRole('group', { name: '从站地址 (Unit ID)' }).querySelector('input')!;
+  for (const value of ['0', '248', '1.5', '']) {
+    fireEvent.change(unit, { target: { value } });
+    expect(screen.getByRole('alert')).toHaveTextContent('Unit ID 必须为 1–247 的整数');
+    expect(screen.getByRole('button', { name: '添加从站' })).toBeDisabled();
+  }
+});
