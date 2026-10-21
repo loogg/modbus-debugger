@@ -2,7 +2,9 @@
 
 验收日期：2026-10-21 起。目标：Windows x64，目录、ZIP、Portable、Setup；源码版本由 `package.json` 与 lockfile 同步定义。发布源码以 Git 标签 `v0.12.1` 为准，发布前状态与后续线上核验分别记录。
 
-当前状态：全部本地正式验收已通过，线上发布核验进行中。物理 RS485 电气与厂商设备没有对应环境，不计通过。
+最终状态：已提交、推送并[正式发布 v0.12.1](https://github.com/loogg/modbus-debugger/releases/tag/v0.12.1)；全部适用本地验收、云端构建/四产物 Smoke 与公开下载核验通过。物理 RS485 电气与厂商设备没有对应环境，不计通过。
+
+发布源码：`5860c748b52a9bc286a44fb3cc0a56234c2c9a2e`，标签 `v0.12.1`。线上核验补充仅修改资料，不改变已发布程序。
 
 ## 功能与修复范围
 
@@ -61,6 +63,19 @@ FC01/02 读到 2000 位，FC03/04 读到 125 寄存器；FC05/06 单写，FC15 �
 
 ## 发布与适用边界
 
-本地 `release/` 平铺四种同版本产物和更新 manifest。GitHub 标签工作流将重新构建同一源码并执行 Smoke 后发布；线上附件与 SHA-256、解压清单和启动结果待发布后核验，不把本地产物哈希当作线上哈希。
+本地 `release/` 平铺四种同版本产物和更新 manifest。[标签工作流](https://github.com/loogg/modbus-debugger/actions/runs/39631877475) 重新构建同一源码，四产物 Smoke、清单校验、附件上传和正式发布全部成功；[master 构建](https://github.com/loogg/modbus-debugger/actions/runs/39631876994)也成功。
+
+四个公开附件均已实际下载。以下大小和 SHA-256 同时匹配 GitHub Release API 与下载文件，属于线上构建，不以本地候选摘要替代。
+
+| 附件（统一前缀 `modbus-debugger-0.12.1-win-x64`） | bytes | SHA-256 |
+| --- | ---: | --- |
+| `.zip` | 126187698 | `391c70b314f2fd58c1530bf7a81cb79f12280c558043841a92dd2ef1016b1b3c` |
+| `-Portable.exe` | 125950402 | `8d6bc9e527c8d9fd802649e7ca65d69d8171a9633d4ebdace9a88dc38cf2a78d` |
+| `-Setup.exe` | 126264896 | `e9a75828cd4f2e88fe243c735cf6a666f1122890efc21f803f1715d29edfe443` |
+| `-manifest.json` | 11933 | `829b113ecaa8ddf5e6d05b85ca73e72cc7d71190edfdd0ea8f8161d18514f196` |
+
+公开 ZIP 解压后 85 项程序文件逐一匹配公开 manifest，内置 manifest 与公开附件逐字节相同。其 ASAR 为 `9553313efb81ed9dc91d4086e0705c082d9e5ea3592138e41ab4896e891e8950`；ASAR 共 251 文件，与本地最终候选相比，250 个逐字节相同，唯一差异为入口 HTML 的回车格式（去除 CR 后完全一致）。Main、Preload、Renderer JS 和依赖均相同。一次性比较脚本最初仅归一 CRLF，未处理该 HTML 的 CRCRLF；核对原始字符后限定仅 HTML 可存在 CR 差异，其他文件仍要求逐字节一致，未改变程序或忽略逻辑差异。
+
+实际下载 ZIP 的真实启动、v0.12.1、Renderer、Native IPC、serialport、WASM/历史初始化均通过。证据在 `out/test-temp/release-0.12.1/published-release.json`、`published-verification.json`、`published-smoke.png` 和 `published/`；原始输出可清理重建，公开工作流与 Release 链接长期保留。最终应用/模拟器均关闭，COM1/COM2 成功再次打开并关闭；原有 `.gitignore` 工作区修改保持未提交。
 
 实际串口覆盖 Windows ELTIMA COM1↔COM2 虚拟驱动、Native serialport 和 RTU 字节链路；没有物理 RS485 接线、收发器方向、电气噪声与特定厂商设备，保留为未验证。测试安装位于隔离目录，并拒绝覆盖现有日常安装；未修改日常工作区/历史库。
