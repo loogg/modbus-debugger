@@ -16,3 +16,5 @@ tools/natives-electron/
 tests/e2e/screenshots/actual/
 tests/e2e/cd-logs/
 tools/simulator/__pycache__/
+.agents
+skills-lock.json
