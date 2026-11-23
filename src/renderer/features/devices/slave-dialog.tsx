@@ -12,7 +12,7 @@ export function AddSlaveDialog(props: { connectionId: string; slaveId?: string; 
   const close = useApp((s) => s.closeOverlay);
   const select = useApp((s) => s.select);
   const setModule = useApp((s) => s.setModule);
-  const existing = workspace?.slaves.find((s) => s.id === props.slaveId);
+  const [existing] = useState(() => workspace?.slaves.find((s) => s.id === props.slaveId));
   // Default to the first free Unit ID on this connection so a new slave never starts in conflict.
   const nextUnit = (() => {
     const used = new Set((workspace?.slaves ?? []).filter((s) => s.connectionId === props.connectionId).map((s) => s.unitId));
@@ -33,9 +33,9 @@ export function AddSlaveDialog(props: { connectionId: string; slaveId?: string; 
   const save = async () => {
     if (!workspace || !validUnit || conflict || !name.trim()) return;
     if (existing) {
-      if (!(await command({ type: 'slave.upsert', slave: { ...existing, name, unitId: Number(unit), templateId, enabled } })).ok) return;
+      if (!(await command({ type: 'slave.upsert', slave: { ...existing, name, unitId: Number(unit), templateId, enabled }, expected: existing })).ok) return;
     } else {
-      if (!(await command({ type: 'slave.upsert', slave: { id: uid('slave'), connectionId: props.connectionId, unitId: Number(unit), name, templateId, enabled } })).ok) return;
+      if (!(await command({ type: 'slave.upsert', slave: { id: uid('slave'), connectionId: props.connectionId, unitId: Number(unit), name, templateId, enabled }, expected: null })).ok) return;
     }
     close();
   };

@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { PointDef } from '../../domain/model';
 import type { PointViewState } from '../../shared/snapshot';
-import { useApp } from '../store/app';
+import { useApp, useViewStore } from '../store/app';
+import { useDirtyGuard } from '../workbench/view-context';
 import { useTranslation } from '../i18n';
 import { Select } from './ui';
 import { pointKey } from '../../shared/point-key';
 import type { PointWriteResult } from '../../shared/contracts';
+import { fmtEpochDateTimeMs } from '../time';
 
 function Spinner() {
   return (
@@ -17,10 +19,11 @@ function Spinner() {
 }
 
 /**
- * Value cell: always renders the last confirmed device value. Editing input,
- * pending value, rejection / unknown / confirmed markers are transient overlays.
+ * Readable points show confirmed device values. Write-only points show the
+ * latest accepted command, explicitly labelled separately from device values.
  */
 export function ValueCell(props: { point: PointDef; view: PointViewState | undefined }) {
+  const viewStore = useViewStore();
   const { t } = useTranslation();
   const writeKey = pointKey(props.view?.slaveId, props.point.id);
   const writeState = useApp((s) => s.writeStates[writeKey]);
@@ -29,6 +32,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
   const openOverlay = useApp((s) => s.openOverlay);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
+  useDirtyGuard(editing && draft !== '');
   const inputRef = useRef<HTMLInputElement>(null);
   const [markerFresh, setMarkerFresh] = useState(true);
   useEffect(() => {
@@ -39,7 +43,8 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
     return () => clearTimeout(timer);
   }, [writeState]);
 
-  const writable = props.point.access === 'rw';
+  const writable = props.point.access !== 'ro';
+  const commandOnly = props.point.access === 'wo';
   const view = props.view;
   const isEnum = Object.keys(props.point.enumMap).length > 0;
   const isBool = props.point.mapping.rawType === 'Bool';
@@ -82,7 +87,7 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
     useApp.setState((s) => ({
       writeStates: { ...s.writeStates, [writeKey]: { phase: 'writing', attempted: text, at: Date.now(), exceptionCode: null } },
     }));
-    const slaveId = props.view?.slaveId ?? useApp.getState().selection.slaveId;
+    const slaveId = props.view?.slaveId ?? viewStore.getState().selection.slaveId;
     const res = await command<PointWriteResult>({ type: 'point.write', slaveId: slaveId ?? '', pointId: props.point.id, engineering, boolValue, stringValue });
     if (!res.ok) {
       useApp.setState((s) => {
@@ -90,10 +95,10 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
         delete ws[writeKey];
         return { writeStates: ws };
       });
-    } else if (res.value?.phase === 'confirmed' && useApp.getState().snapshot?.workspace.connections.some(connection => connection.role === 'slave' && connection.id === useApp.getState().snapshot?.workspace.slaves.find(slave => slave.id === slaveId)?.connectionId)) {
+    } else if (res.value?.phase === 'confirmed') {
       useApp.setState(state => ({ writeStates: { ...state.writeStates, [writeKey]: { phase: 'confirmed', attempted: text, at: Date.now(), exceptionCode: null } } }));
-    } else if (res.value && res.value.phase !== 'confirmed') {
-      // Successful markers arrive with Main's read-back delta, alongside its confirmed value.
+    } else if (res.value) {
+      // The protocol result is independent of the periodically collected device value.
       const outcome = res.value;
       const reason = outcome.result === 'exception'
         ? t('ui.valueCell.preReadException', { code: `0x${(outcome.exceptionCode ?? 0).toString(16).toUpperCase().padStart(2, '0')}` })
@@ -103,7 +108,8 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
     }
   };
 
-  const confirmedText = view?.hasValue ? view.engText : '—';
+  const accepted = commandOnly ? view?.lastWrite?.accepted : undefined;
+  const confirmedText = commandOnly ? accepted?.text || (accepted?.value === '' ? '（空字符串）' : '—') : view?.hasValue ? view.engText : '—';
   const unit = props.point.unit;
 
   let marker: React.ReactNode = null;
@@ -166,14 +172,15 @@ export function ValueCell(props: { point: PointDef; view: PointViewState | undef
       className="inline-flex w-full min-w-0 items-center gap-1.5"
       onDoubleClick={() => {
         if (!writable || writeState?.phase === 'writing') return;
-        setDraft(isBool ? (view?.boolValue ? 'ON' : 'OFF') : confirmedText);
+        setDraft(isBool ? ((commandOnly ? accepted?.value : view?.boolValue) ? 'ON' : 'OFF') : commandOnly && !accepted ? '' : confirmedText);
         setEditing(true);
       }}
-      title={writable ? t('ui.valueCell.doubleClickEdit') : undefined}
+      title={commandOnly ? `只写点位 · 双击下发命令${view?.lastWrite ? `\n最后下发 ${view.lastWrite.attempted} · ${fmtEpochDateTimeMs(view.lastWrite.atMs)} · ${view.lastWrite.phase === 'confirmed' ? '写入成功' : view.lastWrite.phase === 'rejected' ? '设备拒绝' : view.lastWrite.phase === 'not-sent' ? '未发送' : '结果未知'}` : ''}` : writable ? t('ui.valueCell.doubleClickEdit') : undefined}
     >
       <span className="min-w-0 flex-1 truncate">
         {valueNode}
-        {unit && view?.hasValue ? <span className="text-xs text-ink2"> {unit}</span> : null}
+        {commandOnly && <span className="ml-1 text-[10px] text-ink2">上次写入</span>}
+        {unit && (commandOnly ? accepted : view?.hasValue) ? <span className="text-xs text-ink2"> {unit}</span> : null}
       </span>
       {markerFresh ? marker : null}
       <button

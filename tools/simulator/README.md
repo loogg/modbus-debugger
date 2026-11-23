@@ -15,9 +15,11 @@ RTU 两端不能打开同一个串口。`--serial-port` 在 RTU 模式必填；�
 
 ## 从站能力与数据
 
-覆盖本工具全部读写功能码：FC01 Coil、FC02 Discrete Input、FC03 Holding Register、FC04 Input Register、FC05 单线圈写、FC06 单寄存器写、FC15 多线圈写、FC16 多寄存器写。四个地址区独立，每个 Unit 独立，非法地址返回异常，未配置 Unit 不响应。这里的“全部”指本工具支持的这八种功能码，并非 Modbus 标准所有扩展功能。
+支持 FC01 Coil、FC02 Discrete Input、FC03 Holding Register、FC04 Input Register、FC05 单线圈写、FC06 单寄存器写、FC15 多线圈写、FC16 多寄存器写、FC22（0x16）掩码写。四个地址区独立，每个 Unit 独立，非法地址返回异常，未配置 Unit 不响应。
 
 默认每个寄存器区 128 项（0–127），每个位区 2048 项（0–2047）。可用 `--register-count` / `--bit-count` 调整。FC01/02 最大读 2000 位，FC03/04 最大读 125 项，FC15 最大写 1968 位，FC16 最大写 123 项。
+
+`--write-only-register 3:2` 将 HR 3–4 配置为只写，FC03 读取覆盖该范围时返回异常 02，FC06/16/22 仍按实际功能处理。参数可重复提供多个范围，建议配合 `--static` 验证混合块拆分与只写命令。
 
 | 地址（0-based） | 初始化内容 |
 | --- | --- |

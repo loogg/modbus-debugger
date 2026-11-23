@@ -10,11 +10,20 @@ export type ResultKind =
   | 'malformed'
   | 'transport';
 
-/** A completed write operation; delivery and read-back are separate from the last confirmed value. */
+/** Protocol write outcome, or the result of a direct local-slave memory commit. */
 export interface PointWriteResult {
   phase: 'not-sent' | 'confirmed' | 'rejected' | 'unknown';
   result: ResultKind;
   exceptionCode: number | null;
+}
+
+export interface PointWriteReceipt {
+  result?: ResultKind;
+  phase: PointWriteResult['phase'];
+  attempted: string;
+  atMs: number;
+  exceptionCode: number | null;
+  accepted?: { value: number | boolean | string; engineering: number | null; text: string; atMs: number };
 }
 
 export type SourceKind = 'poll' | 'write' | 'readback' | 'temporary-read' | 'scanner' | 'rmw-read' | 'rmw-write' | 'slave';
@@ -26,6 +35,8 @@ export interface TransactionRecord {
   functionCode: number;
   sourceKind: SourceKind;
   sourceId: string | null;
+  /** First attempt of the first readable fragment in a block polling cycle. */
+  pollCycleStart?: boolean;
   startUtc: string;
   startMono: number;
   durationMs: number | null;
@@ -73,10 +84,13 @@ export interface HealthSample {
   busLoadPercent: number;
   p95Ms: number;
   requestRatePerSec: number;
+  throughputBytesPerSec?: number;
 }
 
 export interface ConnectionHealth {
   connectionId: string;
+  transport?: 'rtu' | 'tcp';
+  throughputBytesPerSec?: number;
   busLoadPercent: number;
   requestRatePerSec: number;
   p50Ms: number;
@@ -90,10 +104,10 @@ export interface ConnectionHealth {
 }
 
 export interface Prefs {
+  detachedWindows?: Record<string, { x: number; y: number; width: number; height: number }>;
   window: { x: number | null; y: number | null; width: number; height: number };
   sidebarWidth: number;
   historyDbPath: string | null;
-  persistRawComm: boolean;
   lastWorkspacePath: string | null;
   /** 'local' follows the OS; otherwise an IANA name applied to every displayed timestamp. */
   timezone: string;

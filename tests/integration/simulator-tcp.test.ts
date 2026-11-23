@@ -31,7 +31,7 @@ function waitForPort(port: number, ms = 30000): Promise<void> {
 }
 
 describe('interop with the standalone PyModbus simulator', () => {
-  it('polls live values, writes with read-back and performs a temporary read', async () => {
+  it('polls live values, acknowledges writes and performs a temporary read', async () => {
     const sim: ChildProcess = spawn('python', [path.join(__dirname, '..', '..', 'tools', 'simulator', 'modbus_sim.py'), '--port', String(PORT)], { stdio: ['ignore', 'pipe', 'pipe'] });
     let startupError = '';
     sim.stderr?.on('data', (chunk) => { startupError += String(chunk); });
@@ -73,7 +73,7 @@ describe('interop with the standalone PyModbus simulator', () => {
       expect(volts).toBeGreaterThan(40);
       expect(volts).toBeLessThan(56);
 
-      // write target speed (holding 6, Int16) and confirm via read-back
+      // Confirm the write response, then read the actual device value explicitly.
       const res = await runtime.writePoint({
         slave,
         block,
@@ -83,6 +83,8 @@ describe('interop with the standalone PyModbus simulator', () => {
         readBackRange: { start: 0, length: 12 },
       });
       expect(res.result).toBe('ok');
+      expect(res.readBack).toBeNull();
+      await runtime.refresh(slave.id, block.id);
       const after = cache.get(key)?.memory;
       if (after?.kind === 'registers') expect(after.registers[6]).toBe(1800);
 

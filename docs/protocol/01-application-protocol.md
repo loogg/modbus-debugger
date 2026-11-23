@@ -15,8 +15,11 @@
 | 06 | Write Single Register | fc, addr(2), value(2) | 回显请求 |
 | 15 (0x0F) | Write Multiple Coils | fc, addr(2), qty(2), byteCount(1), data(n) | fc, addr(2), qty(2) |
 | 16 (0x10) | Write Multiple Registers | fc, addr(2), qty(2), byteCount(1), data(2*qty) | fc, addr(2), qty(2) |
+| 22 (0x16) | Mask Write Register | fc, addr(2), andMask(2), orMask(2) | 回显请求 |
 
 地址与数量均为 0-based PDU 语义；Coil/Discrete qty 1..2000，Register qty 1..125。
+
+FC22 的新值为 `(current AND andMask) OR (orMask AND NOT andMask)`，所有运算限制在 16 位内。请求和正常响应 PDU 均为 7 字节，RTU ADU 为 10 字节，TCP ADU 为 14 字节。应用使用该功能写入只写寄存器的部分字段，设备须支持此功能码。正常写应答按原请求校验地址、值、数量及掩码。[官方应用协议规范](https://www.modbus.org/file/secure/modbusprotocolspecification.pdf)
 
 ## 异常响应
 

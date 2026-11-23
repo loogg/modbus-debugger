@@ -10,7 +10,6 @@ export const DEFAULT_PREFS: Prefs = {
   window: { x: null, y: null, width: 1440, height: 960 },
   sidebarWidth: 244,
   historyDbPath: null,
-  persistRawComm: false,
   lastWorkspacePath: null,
   timezone: 'local',
   language: 'zh-CN',
@@ -39,7 +38,8 @@ export class WorkspaceService {
   private loadPrefs(): void {
     try {
       if (fs.existsSync(this.prefsPath)) {
-        const raw = JSON.parse(fs.readFileSync(this.prefsPath, 'utf-8')) as Partial<Prefs>;
+        const raw = JSON.parse(fs.readFileSync(this.prefsPath, 'utf-8')) as Partial<Prefs> & { persistRawComm?: unknown };
+        delete raw.persistRawComm;
         this.prefs = {
           ...DEFAULT_PREFS,
           ...raw,
@@ -186,16 +186,20 @@ export class WorkspaceService {
 
   /** Export a portable copy without changing the active workspace or autosave target. */
   exportToFile(dest: string): { ok: boolean; error?: string; path?: string } {
-    const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
-    try {
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(tmp, this.exportText(), 'utf-8');
-      fs.renameSync(tmp, dest);
-      return { ok: true, path: dest };
-    } catch (error) {
-      try { fs.unlinkSync(tmp); } catch { /* The temp file may not have been created. */ }
-      return { ok: false, error: String(error) };
-    }
+    return exportTextToFile(dest, this.exportText());
   }
 
+}
+
+export function exportTextToFile(dest: string, text: string): { ok: boolean; error?: string; path?: string } {
+  const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(tmp, text, 'utf-8');
+    fs.renameSync(tmp, dest);
+    return { ok: true, path: dest };
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch { /* The temp file may not have been created. */ }
+    return { ok: false, error: String(error) };
+  }
 }

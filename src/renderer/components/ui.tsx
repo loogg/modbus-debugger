@@ -4,9 +4,12 @@ import * as RadixCheckbox from '@radix-ui/react-checkbox';
 import * as RadixSelect from '@radix-ui/react-select';
 import * as RadixDropdown from '@radix-ui/react-dropdown-menu';
 import { Checkmark16Regular, CheckmarkSquare20Regular, ChevronDown20Regular, MoreHorizontal20Regular } from '@fluentui/react-icons';
-import { useApp } from '../store/app';
+import { useApp, useSlaveState } from '../store/app';
+import type { SlaveDef } from '../../domain/model';
+import type { SlaveCommunicationState } from '../../shared/snapshot';
 import { fmtTime } from '../time';
 import { i18n, useTranslation } from '../i18n';
+import { usePortalRoot, useViewDocument, useViewWindow } from '../workbench/view-context';
 
 /* ------------------------------- buttons ------------------------------- */
 
@@ -80,17 +83,13 @@ export interface SelectOption {
   label: string;
 }
 
-/** A slave is only "在线" when it is enabled AND its connection link is up. */
-export function slaveStatus(
-  enabled: boolean,
-  connState: 'offline' | 'connecting' | 'online' | 'error' | undefined,
-): { tone: 'ok' | 'idle' | 'warn'; label: string } {
-  // Plain helper, not a component: read the i18n singleton instead of useTranslation().
-  if (!enabled) return { tone: 'idle', label: i18n.t('ui.slaveStatus.disabled') };
-  if (connState === 'online') return { tone: 'ok', label: i18n.t('ui.slaveStatus.online') };
-  if (connState === 'connecting') return { tone: 'warn', label: i18n.t('ui.slaveStatus.connecting') };
-  if (connState === 'error') return { tone: 'warn', label: i18n.t('ui.slaveStatus.error') };
-  return { tone: 'idle', label: i18n.t('ui.slaveStatus.offline') };
+export function slaveStatus(state: SlaveCommunicationState): { tone: StatusTone; label: string } {
+  const tone = state === 'online' ? 'ok' : state === 'offline' ? 'err' : state === 'connecting' ? 'warn' : 'idle';
+  return { tone, label: i18n.t(`ui.slaveStatus.${state}`) };
+}
+
+export function SlaveStatusDot({ slave }: { slave: SlaveDef }) {
+  return <StatusDot {...slaveStatus(useSlaveState(slave))} />;
 }
 
 /** Shared dropdown visuals: same panel + row treatment for Radix Select and ComboInput. */
@@ -99,6 +98,7 @@ export const dropdownOptionClass =
   'flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left text-sm text-ink hover:bg-surface2 data-[highlighted]:bg-surface2';
 
 export function Select(props: { value: string; onChange: (v: string) => void; options: SelectOption[]; placeholder?: string; disabled?: boolean }) {
+  const portalRoot = usePortalRoot();
   return (
     <RadixSelect.Root value={props.value} onValueChange={props.onChange} disabled={props.disabled}>
       <RadixSelect.Trigger className={`${inputClass} flex items-center justify-between text-left`}>
@@ -107,13 +107,14 @@ export function Select(props: { value: string; onChange: (v: string) => void; op
           <ChevronDown20Regular className="text-ink2" />
         </RadixSelect.Icon>
       </RadixSelect.Trigger>
-      <RadixSelect.Portal>
+      <RadixSelect.Portal container={portalRoot}>
         <RadixSelect.Content
           className={dropdownPanelClass}
           position="popper"
           sideOffset={4}
+          collisionPadding={8}
           // match the trigger width: a content-sized floating box reads as broken
-          style={{ width: 'var(--radix-select-trigger-width)' }}
+          style={{ width: 'var(--radix-select-trigger-width)', maxHeight: 'min(320px, var(--radix-select-content-available-height))', overflow: 'hidden' }}
         >
           <RadixSelect.Viewport>
             {props.options.map((o) => (
@@ -168,9 +169,9 @@ const toneColor: Record<StatusTone, string> = {
   accent: '#0078D4',
 };
 
-export function StatusDot(props: { tone: StatusTone; label?: string; className?: string }) {
+export function StatusDot(props: { tone: StatusTone; label?: string; className?: string; title?: string }) {
   return (
-    <span className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 text-xs ${props.className ?? ''}`} style={{ color: toneColor[props.tone] }}>
+    <span className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 text-xs ${props.className ?? ''}`} style={{ color: toneColor[props.tone] }} title={props.title}>
       <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: toneColor[props.tone] }} />
       {props.label}
     </span>
@@ -258,22 +259,24 @@ export function EmptyState(props: { title: string; message?: string; actions?: R
  * Radix registers its Escape handler on document in the CAPTURE phase, so stopPropagation
  * from the input can never reach it; the supported hook is onEscapeKeyDown + preventDefault.
  */
-let openComboLists = 0;
-export function hasOpenComboList(): boolean {
-  return openComboLists > 0;
+const openComboLists = new WeakMap<Document | HTMLElement, number>();
+export function hasOpenComboList(scope: Document | HTMLElement = document): boolean {
+  return (openComboLists.get(scope) ?? 0) > 0;
 }
 
 export function Dialog(props: { title: string; subtitle?: string; width?: number; onClose: () => void; footer?: React.ReactNode; children: React.ReactNode }) {
+  const portalRoot = usePortalRoot();
+  const viewDocument = useViewDocument();
   return (
     <RadixDialog.Root open onOpenChange={(o) => !o && props.onClose()}>
-      <RadixDialog.Portal>
+      <RadixDialog.Portal container={portalRoot}>
         <RadixDialog.Overlay className="fixed inset-0 z-40 bg-black/30" />
         <RadixDialog.Content
           className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-48px)] max-w-[calc(100vw-48px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-surface shadow-2xl outline-none"
           style={{ width: props.width ?? 640 }}
           onEscapeKeyDown={(e) => {
             // first Escape closes an open combobox list; the dialog only closes afterwards
-            if (hasOpenComboList()) e.preventDefault();
+            if (hasOpenComboList(portalRoot ?? viewDocument)) e.preventDefault();
           }}
         >
           <div className="px-7 pt-6 pb-4 shrink-0">
@@ -307,6 +310,7 @@ export function Drawer(props: { title: string; subtitle?: string; width?: number
 }
 
 export function OverflowMenu(props: { items: Array<{ label: string; onSelect: () => void; danger?: boolean }> }) {
+  const portalRoot = usePortalRoot();
   const { t } = useTranslation();
   return (
     <RadixDropdown.Root>
@@ -315,7 +319,7 @@ export function OverflowMenu(props: { items: Array<{ label: string; onSelect: ()
           <MoreHorizontal20Regular />
         </button>
       </RadixDropdown.Trigger>
-      <RadixDropdown.Portal>
+      <RadixDropdown.Portal container={portalRoot}>
         <RadixDropdown.Content className="z-50 min-w-[160px] rounded-ctl border border-line bg-surface p-1 shadow-lg">
           {props.items.map((it) => (
             <RadixDropdown.Item
@@ -353,19 +357,21 @@ export function Toasts() {
 /* ------------------------------- misc ------------------------------- */
 
 export function useCompact(): boolean {
-  const [compact, setCompact] = useState(window.innerWidth < 1280);
+  const viewWindow = useViewWindow();
+  const [compact, setCompact] = useState(viewWindow.innerWidth < 1280);
   const ref = useRef(compact);
   useEffect(() => {
     const onResize = () => {
-      const v = window.innerWidth < 1280;
+      const v = viewWindow.innerWidth < 1280;
       if (v !== ref.current) {
         ref.current = v;
         setCompact(v);
       }
     };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
+    onResize();
+    viewWindow.addEventListener('resize', onResize);
+    return () => viewWindow.removeEventListener('resize', onResize);
+  }, [viewWindow]);
   return compact;
 }
 
@@ -394,16 +400,19 @@ export function ComboInput(props: {
   disabled?: boolean;
   testId?: string;
 }) {
+  const viewDocument = useViewDocument();
+  const portalRoot = usePortalRoot();
+  const scope = portalRoot ?? viewDocument;
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
   const blurTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => {
-    if (open) openComboLists += 1;
+    if (open) openComboLists.set(scope, (openComboLists.get(scope) ?? 0) + 1);
     return () => {
-      if (open) openComboLists -= 1;
+      if (open) openComboLists.set(scope, Math.max(0, (openComboLists.get(scope) ?? 1) - 1));
     };
-  }, [open]);
+  }, [open, scope]);
   const closeList = React.useCallback(() => {
     if (blurTimer.current) clearTimeout(blurTimer.current);
     blurTimer.current = null;
@@ -414,12 +423,12 @@ export function ComboInput(props: {
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) closeList();
     };
-    document.addEventListener('mousedown', onDoc);
+    viewDocument.addEventListener('mousedown', onDoc);
     return () => {
-      document.removeEventListener('mousedown', onDoc);
+      viewDocument.removeEventListener('mousedown', onDoc);
       if (blurTimer.current) clearTimeout(blurTimer.current);
     };
-  }, [closeList]);
+  }, [closeList, viewDocument]);
   return (
     <div ref={ref} className="relative">
       <input

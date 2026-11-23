@@ -3,7 +3,7 @@ import { RTU_MAX_ADU } from './rtu';
 import { mbapLengthValid, MBAP_LENGTH, TCP_MAX_ADU } from './tcp';
 import { FC } from './types';
 
-const KNOWN_FC = new Set<number>([FC.ReadCoils, FC.ReadDiscreteInputs, FC.ReadHoldingRegisters, FC.ReadInputRegisters, FC.WriteSingleCoil, FC.WriteSingleRegister, FC.WriteMultipleCoils, FC.WriteMultipleRegisters, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x8f, 0x90]);
+const KNOWN_FC = new Set<number>([FC.ReadCoils, FC.ReadDiscreteInputs, FC.ReadHoldingRegisters, FC.ReadInputRegisters, FC.WriteSingleCoil, FC.WriteSingleRegister, FC.WriteMultipleCoils, FC.WriteMultipleRegisters, FC.MaskWriteRegister, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x8f, 0x90, 0x96]);
 
 export interface Clock {
   /** monotonic milliseconds */
@@ -384,6 +384,7 @@ export class RtuStreamingFramer implements Framer {
 
   private requestLength(offset: number): number | null {
     const fc = this.buf[offset + 1];
+    if (fc === 22) return 10;
     if (fc !== undefined && fc >= 1 && fc <= 6) return 8;
     if ((fc === 15 || fc === 16) && this.buf.length >= offset + 7) {
       const length = 9 + this.buf[offset + 6]!;

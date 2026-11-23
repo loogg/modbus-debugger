@@ -6,9 +6,11 @@ import { WorkspaceService } from '../../src/main/services/workspace';
 import { HistoryStore } from '../../src/main/services/history';
 import { emptyWorkspace, type BlockDef, type ConnectionDef, type PointDef, type SlaveDef, type Workspace } from '../../src/domain/model';
 import { FakeTransport } from '../support/fake';
+import type { DataReadResult } from '../../src/shared/point-data';
 import type { AppDelta } from '../../src/shared/snapshot';
 import { commandSchema } from '../../src/shared/commands';
 import type { TransactionRecord } from '../../src/main/runtime/diagnostics';
+import { buildTcpAdu, encodeResponsePdu } from '../../src/domain/protocol';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const tmpDir = () => createScratch('manager-');
@@ -51,12 +53,12 @@ function demoWorkspace(): Workspace {
   };
 }
 
-async function harness() {
+async function harness(transportFactory = () => new FakeTransport('tcp')) {
   const dir = tmpDir();
   const svc = new WorkspaceService(dir);
   svc.adopt(demoWorkspace(), null);
   const history = await HistoryStore.open(path.join(dir, 'history.db'));
-  const mgr = new RuntimeManager(svc, history, { transportFactory: () => new FakeTransport('tcp') });
+  const mgr = new RuntimeManager(svc, history, { transportFactory });
   const deltas: AppDelta[] = [];
   mgr.onDelta = (d) => deltas.push(d);
   return { dir, svc, history, mgr, deltas };
@@ -83,6 +85,44 @@ function txOf(i: number): TransactionRecord {
 }
 
 describe('RuntimeManager snapshot / delta pipeline', () => {
+  it('publishes device-specific communication deltas independently of diagnostics and removes deleted devices', async () => {
+    const transport = new FakeTransport('tcp');
+    transport.onResponse(request => request[6] === 1
+      ? [buildTcpAdu((request[0]! << 8) | request[1]!, 1, encodeResponsePdu({ kind: 'exception', fc: 3, code: 2 }))]
+      : null);
+    const { mgr, svc, deltas } = await harness(() => transport);
+    svc.mutate(workspace => ({ ...workspace, slaves: [slave, { ...slave, id: 's2', unitId: 2 }] }));
+    mgr.start();
+    try {
+      await expect.poll(() => mgr.buildSnapshot().slaveStates?.s2?.state).toBe('offline');
+      const states = mgr.buildSnapshot().slaveStates;
+      expect(states?.s1).toMatchObject({ state: 'online', lastResponseUtc: expect.any(String) });
+      expect(states?.s2).toEqual({ state: 'offline', lastResponseUtc: null });
+      expect(mgr.buildSnapshot().connections.c1?.lastResponseUtc).toBeNull();
+      await expect.poll(() => deltas.some(delta => delta.slaveStates?.s2?.state === 'offline')).toBe(true);
+      await mgr.handleCommand({ type: 'diagnostics.clear' });
+      expect(mgr.buildSnapshot().slaveStates?.s1?.lastResponseUtc).not.toBeNull();
+
+      expect(await mgr.handleCommand(commandSchema.parse({ type: 'slave.upsert', slave: { ...slave, enabled: false } }))).toMatchObject({ ok: true });
+      expect(mgr.buildSnapshot().slaveStates?.s1).toEqual({ state: 'disabled', lastResponseUtc: null });
+      const workspace = { ...svc.current, slaves: svc.current.slaves.filter(item => item.id !== 's2') };
+      expect(await mgr.handleCommand(commandSchema.parse({ type: 'workspace.apply', workspace }))).toMatchObject({ ok: true });
+      await expect.poll(() => deltas.some(delta => delta.slaveStates?.s2 === null)).toBe(true);
+      expect(mgr.buildSnapshot().slaveStates?.s2).toBeUndefined();
+    } finally { await mgr.stop(); }
+  });
+  it('publishes the actual connection failure and returns it to a manual connect caller', async () => {
+    const wire = new FakeTransport('tcp');
+    vi.spyOn(wire, 'connect').mockRejectedValue(new Error('TCP connect timeout (90 ms)'));
+    const h = await harness(() => wire);
+    h.mgr.start();
+    try {
+      await sleep(10);
+      const result = await h.mgr.handleCommand({ type: 'connection.connect', connectionId: 'c1' });
+      expect(result).toMatchObject({ ok: false, error: expect.stringContaining('90 ms') });
+      expect(h.mgr.buildSnapshot().connections.c1).toMatchObject({ state: 'error', detail: expect.stringContaining('90 ms') });
+    } finally { await h.mgr.stop(); }
+  });
   it('publishes scan progress and cancellation without successful polls and preserves it in fresh snapshots', async () => {
     const { mgr, deltas } = await harness();
     mgr.start();
@@ -133,25 +173,29 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
 
     mgr.start();
     await sleep(400);
+    expect(mgr.buildSnapshot({ includeDiagnostics: false }).transactions).toEqual([]);
     await mgr.stop();
     history.close();
 
     const streamed = deltas.flatMap((d) => d.transactions ?? []).map((t) => t.traceId);
     expect(streamed).not.toContain('pre0');
     expect(streamed).not.toContain('pre1');
-    // the polling loop kept running against a silent transport, so timeouts were streamed
-    expect(streamed.length).toBeGreaterThan(0);
+    expect(streamed).toHaveLength(0);
+    expect(mgr.diagnostics.transactionsSince(2).length).toBeGreaterThan(0);
   });
 
-  it('streams each transaction exactly once', async () => {
+  it('serves each diagnostic transaction through the read cursor while keeping deltas light', async () => {
     const { mgr, deltas, history } = await harness();
     mgr.start();
     await sleep(500);
     await mgr.stop();
     history.close();
-    const ids = deltas.flatMap((d) => d.transactions ?? []).map((t) => t.traceId);
+    const page = mgr.diagnostics.read({ type: 'diagnostics.read', afterTransactions: 0, limit: 500 });
+    const ids = page.transactions.map(row => row.traceId);
     expect(ids.length).toBeGreaterThan(3);
     expect(new Set(ids).size).toBe(ids.length);
+    expect(deltas.every(delta => delta.transactions === undefined && delta.parseEvents === undefined)).toBe(true);
+    expect(mgr.diagnostics.read({ type: 'diagnostics.read', afterTransactions: page.transactionCursor, limit: 500 }).transactions).toEqual([]);
   });
 
   it('emits diagRev once after diagnostics.clear so the renderer can drop its rings', async () => {
@@ -159,6 +203,7 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
     const snap = mgr.buildSnapshot();
     mgr.start();
     await sleep(250);
+    const prior = mgr.diagnostics.read({ type: 'diagnostics.read', limit: 500 });
     const res = await mgr.handleCommand({ type: 'diagnostics.clear' });
     expect(res.ok).toBe(true);
     await sleep(250);
@@ -167,14 +212,14 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
     const withRev = deltas.filter((d) => d.diagRev !== undefined);
     expect(withRev.length).toBe(1);
     expect(withRev[0]?.diagRev).toBe(snap.diagRev + 1);
-    // after the clear the stream restarts from empty and only carries new records
-    const cut = deltas.indexOf(withRev[0] as AppDelta);
-    const before = deltas.slice(0, cut).flatMap((d) => d.transactions ?? []).map((t) => t.traceId);
-    const after = deltas.slice(cut + 1).flatMap((d) => d.transactions ?? []).map((t) => t.traceId);
+    const page = mgr.diagnostics.read({ type: 'diagnostics.read', generation: prior.generation, afterTransactions: prior.transactionCursor, limit: 500 });
+    const before = prior.transactions.map(row => row.traceId);
+    const after = page.transactions.map(row => row.traceId);
     expect(before.length).toBeGreaterThan(0);
     expect(after.length).toBeGreaterThan(0);
     // the cursor was re-parked at the (monotonic) total, so nothing is replayed
     expect(after.filter((id) => before.includes(id))).toEqual([]);
+    expect(page.reset).toBe(true);
   });
 
   it('publishes connection health at most once per second per connection', async () => {
@@ -223,7 +268,8 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
     await sleep(300);
     // A silent transport keeps producing timeout transactions: this is the exact condition
     // under which the renderer used to lose prefs changes.
-    expect(deltas.some((d) => (d.transactions ?? []).length > 0)).toBe(true);
+    expect(mgr.diagnostics.transactionTotal).toBeGreaterThan(0);
+    expect(deltas.every(delta => delta.transactions === undefined)).toBe(true);
     deltas.length = 0;
 
     const res = await mgr.handleCommand(commandSchema.parse({ type: 'prefs.set', patch: { timezone: 'UTC' } }));
@@ -284,7 +330,7 @@ describe('RuntimeManager snapshot / delta pipeline', () => {
 
 
 describe('same template bound to multiple slaves', () => {
-  it('keeps confirmed values, write targets and recording samples isolated by slave', async () => {
+  it('keeps confirmed values, write targets and buffered samples isolated by slave', async () => {
     const { svc, history, mgr } = await harness();
     const values = new Map([[1, 111], [2, 222]]);
     const fake = new FakeTransport('tcp');
@@ -323,17 +369,18 @@ describe('same template bound to multiple slaves', () => {
       expect(snap.points['s2::p1']?.engNumber).toBe(222);
       expect(snap.blocks['s1::b1']?.registers?.[0]).toBe(999);
       expect(snap.transactions.some(tx => tx.result === 'ok' && tx.responseAduHex)).toBe(true);
-      expect(runtime.startRecording('g').ok).toBe(true);
-      await sleep(350);
-      runtime.stopRecording();
-      const session = history.listSessions()[0]!;
-      expect(history.getSession(session.id)?.schema.find((signal) => signal.signalId === 'sig-s1')?.decimalPlaces).toBe(2);
-      const samples = history.readSamples(session.id);
-      expect(samples.filter(s => s.signalId === 'sig-s1').map(s => s.value)).not.toHaveLength(0);
-      expect(new Set(samples.filter(s => s.signalId === 'sig-s1').map(s => s.value))).toEqual(new Set([999]));
-      expect(new Set(samples.filter(s => s.signalId === 'sig-s2').map(s => s.value))).toEqual(new Set([222]));
-      expect((await runtime.handleCommand({ type: 'history.addNote', sessionId: session.id, tMs: 0, text: 'quoted "note", line' })).ok).toBe(true);
-      expect(history.readEvents(session.id).at(-1)?.value).toBe('quoted "note", line');
+      const refs = ['s1', 's2'].map(slaveId => ({ slaveId, pointId: 'p1', limit: 2000 }));
+      const initial = await runtime.handleCommand({ type: 'data.read', points: [], blocks: [], buffers: [], series: refs });
+      expect(initial.ok).toBe(true);
+      const before = (initial as { ok: true; value: DataReadResult }).value;
+      await sleep(150);
+      const result = await runtime.handleCommand({ type: 'data.read', points: [], blocks: [], buffers: [],
+        series: refs.map(ref => ({ ...ref, afterSeq: before.series[`${ref.slaveId}::p1`]!.samples.at(-1)?.seq ?? 0 })) });
+      expect(result.ok).toBe(true);
+      const data = (result as { ok: true; value: DataReadResult }).value;
+      expect(new Set(data.series['s1::p1']!.samples.map(sample => sample.value))).toEqual(new Set([999]));
+      expect(new Set(data.series['s2::p1']!.samples.map(sample => sample.value))).toEqual(new Set([222]));
+      expect(history.listSessions()).toEqual([]);
     } finally { await runtime.stop(); history.close(); }
   });
   it('a first-read timeout does not fabricate a confirmed zero', async () => {
@@ -351,7 +398,8 @@ it('repeated snapshot reads cannot steal pending cache or transaction deltas', a
     mgr.diagnostics.recordTransaction(txOf(999));
     mgr.buildSnapshot();
     await sleep(150);
-    expect(deltas.flatMap(d => d.transactions ?? []).some(tx => tx.traceId === 'pre999')).toBe(true);
+    expect(mgr.diagnostics.read({ type: 'diagnostics.read', limit: 500 }).transactions.some(tx => tx.traceId === 'pre999')).toBe(true);
+    expect(deltas.every(delta => delta.transactions === undefined)).toBe(true);
   } finally { await mgr.stop(); history.close(); }
 });
 
@@ -365,136 +413,12 @@ it('publishes update progress with other deltas and retains the update state in 
     mgr.diagnostics.recordTransaction(txOf(777));
     await sleep(180);
     expect(deltas.some(d=>d.update?.phase==='downloaded')).toBe(true);
-    expect(deltas.flatMap(d=>d.transactions??[]).some(tx=>tx.traceId==='pre777')).toBe(true);
+    expect(mgr.diagnostics.read({ type: 'diagnostics.read', limit: 500 }).transactions.some(tx => tx.traceId === 'pre777')).toBe(true);
     expect(mgr.buildSnapshot().update?.phase).toBe('downloaded');
   } finally {await mgr.stop();history.close();}
 });
 
-describe('Record Session persistence', () => {
-  it('stores numeric samples and Bool, Enum, String change events from confirmed Block Cache values', async () => {
-    const { dir, svc, history, mgr } = await harness();
-    const numeric = { ...point('numeric', 'voltage'), scale: 2, offset: 1 };
-    const bool = { ...point('bool', 'enabled'), mapping: { ...point('bool', 'enabled').mapping, rawType: 'Bool' as const, offset: 1 } };
-    const enumPoint = { ...point('enum', 'mode'), mapping: { ...point('enum', 'mode').mapping, offset: 2 }, enumMap: { '1': 'Standby', '2': 'Run' } };
-    const string = { ...point('string', 'firmware'), mapping: { ...point('string', 'firmware').mapping, rawType: 'String' as const, offset: 3, registerCount: 2, stringLength: 4 } };
-    const ws = demoWorkspace();
-    ws.templates = [{ ...ws.templates[0]!, blocks: [{ ...block, length: 5, periodMs: 10000 }], points: [numeric, bool, enumPoint, string] }];
-    ws.trendGroups = [{ id: 'g-four', name: 'four kinds', description: '', windowSec: 60,
-      signals: [numeric, bool, enumPoint, string].map(p => ({ id: `sig-${p.id}`, pointRef: { connectionId: conn.id, slaveId: slave.id, pointId: p.id }, visible: true })) }];
-    svc.adopt(ws, null);
-    mgr.start();
-    try {
-      mgr.cache.applyReadResult('s1::b1', { kind: 'registers', fc: 3, registers: [10, 1, 1, 0x4142, 0x4344] }, 1);
-      const started = mgr.startRecording('g-four');
-      expect(started.ok).toBe(true);
-      const id = history.listSessions()[0]!.id;
-      const waitForEvents = async (count: number) => {
-        for (let i = 0; i < 50 && history.readEvents(id).length < count; i++) await sleep(20);
-        expect(history.readEvents(id)).toHaveLength(count);
-      };
-      await waitForEvents(3);
-      mgr.cache.applyReadResult('s1::b1', { kind: 'registers', fc: 3, registers: [12, 0, 2, 0x4546, 0x4748] }, 1);
-      await waitForEvents(6);
-      expect(mgr.stopRecording().ok).toBe(true);
-      expect(history.getSession(id)?.schema.map(s => [s.signalId, s.recordMode])).toEqual([
-        ['sig-numeric', 'samples'], ['sig-bool', 'events'], ['sig-enum', 'events'], ['sig-string', 'events'],
-      ]);
-      expect(history.readSamples(id).every(s => s.signalId === 'sig-numeric')).toBe(true);
-      expect(new Set(history.readSamples(id).map(s => s.value))).toEqual(new Set([21, 25]));
-      const expectedEvents = [
-        ['sig-bool', 'bool', 'true'], ['sig-enum', 'enum', 'Standby'], ['sig-string', 'string', 'ABCD'],
-        ['sig-bool', 'bool', 'false'], ['sig-enum', 'enum', 'Run'], ['sig-string', 'string', 'EFGH'],
-      ];
-      expect(history.readEvents(id).map(e => [e.signalId, e.kind, e.value])).toEqual(expectedEvents);
-    } finally { await mgr.stop(); }
-    const reopened = await HistoryStore.open(path.join(dir, 'history.db'));
-    try {
-      const id = reopened.listSessions()[0]!.id;
-      expect(new Set(reopened.readSamples(id).map(s => s.value))).toEqual(new Set([21, 25]));
-      expect(reopened.readEvents(id).map(e => [e.signalId, e.kind, e.value])).toEqual([
-        ['sig-bool', 'bool', 'true'], ['sig-enum', 'enum', 'Standby'], ['sig-string', 'string', 'ABCD'],
-        ['sig-bool', 'bool', 'false'], ['sig-enum', 'enum', 'Run'], ['sig-string', 'string', 'EFGH'],
-      ]);
-    } finally { reopened.close(); }
-  });
-
-  it('captures Tx and Rx only while Raw Communication is enabled and reads past bytes after disabling and reopening', async () => {
-    const { dir, svc, history, mgr } = await harness();
-    void mgr;
-    const ws = demoWorkspace();
-    ws.templates = [{ ...ws.templates[0]!, blocks: [{ ...block, periodMs: 10000 }] }];
-    ws.trendGroups = [{ id: 'g-raw', name: 'raw', description: '', windowSec: 60,
-      signals: [{ id: 'sig-p1', pointRef: { connectionId: conn.id, slaveId: slave.id, pointId: 'p1' }, visible: true }] }];
-    svc.adopt(ws, null);
-    const fake = new FakeTransport('tcp');
-    fake.onResponse(adu => {
-      const response = Buffer.alloc(11);
-      response[0] = adu[0]!; response[1] = adu[1]!;
-      response.writeUInt16BE(5, 4); response[6] = adu[6]!;
-      response[7] = 3; response[8] = 2; response.writeUInt16BE(42, 9);
-      return [response];
-    });
-    const runtime = new RuntimeManager(svc, history, { transportFactory: () => fake });
-    runtime.start();
-    try {
-      // ConnectionRuntime polls once on connect; finish that pre-session request first.
-      for (let i = 0; i < 50 && !runtime.diagnostics.recentTransactions().some(tx => tx.sourceKind === 'poll'); i++) await sleep(10);
-      expect(runtime.diagnostics.recentTransactions().some(tx => tx.sourceKind === 'poll')).toBe(true);
-      expect(runtime.startRecording('g-raw').ok).toBe(true);
-      const read = () => runtime.runtimeFor(conn.id)!.temporaryRead(1, 3, 0, 1);
-      expect((await read()).result).toBe('ok');
-      const id = history.listSessions()[0]!.id;
-      expect(history.readRawComm(id)).toEqual([]);
-      expect(history.readTransactionMetadata(id)).toHaveLength(1);
-      expect((await runtime.handleCommand({ type: 'prefs.set', patch: { persistRawComm: true } })).ok).toBe(true);
-      expect((await read()).result).toBe('ok');
-      const captured = runtime.diagnostics.recentTransactions().at(-1)!;
-      expect((await runtime.handleCommand({ type: 'prefs.set', patch: { persistRawComm: false } })).ok).toBe(true);
-      expect((await read()).result).toBe('ok');
-      expect(runtime.stopRecording().ok).toBe(true);
-      const metadata = history.readTransactionMetadata(id);
-      expect(metadata).toHaveLength(3);
-      expect(metadata.map(row => row.result)).toEqual(['ok', 'ok', 'ok']);
-      expect(metadata[1]).toMatchObject({
-        traceId: captured.traceId, connectionId: conn.id, slaveId: slave.id, unitId: 1,
-        sourceKind: 'temporary-read', sourceId: null, functionCode: 3,
-        result: 'ok', durationMs: captured.durationMs, summary: captured.summary,
-      });
-      expect(Object.keys(metadata[1]!)).not.toContain('requestAduHex');
-      expect(history.readRawComm(id).map(row => row.direction)).toEqual(['tx', 'rx']);
-      expect(history.readRawComm(id).map(row => row.hex)).toEqual([
-        captured.requestAduHex, captured.responseAduHex,
-      ]);
-      expect(history.readRawComm(id).map(row => row.pduHex)).toEqual([
-        captured.requestPduHex, captured.responsePduHex,
-      ]);
-      expect(history.readRawComm(id).map(row => row.traceId)).toEqual([captured.traceId, captured.traceId]);
-      const sessionData = await runtime.handleCommand({ type: 'history.sessionData', sessionId: id });
-      expect(sessionData.ok).toBe(true);
-      if (sessionData.ok) expect((sessionData.value as { rawComm: Array<{ hex: string }> }).rawComm).toHaveLength(2);
-      expect((await runtime.handleCommand({ type: 'prefs.set', patch: { persistRawComm: true } })).ok).toBe(true);
-      expect((await read()).result).toBe('ok');
-      expect(history.readRawComm(id)).toHaveLength(2); // No active session: never append to the last one.
-      expect(history.readTransactionMetadata(id)).toHaveLength(3);
-      fake.onResponse(() => null);
-      const second = runtime.startRecording('g-raw');
-      expect(second.ok).toBe(true);
-      if (!second.ok) throw new Error(second.error);
-      expect((await read()).result).toBe('timeout');
-      expect(runtime.stopRecording().ok).toBe(true);
-      expect(history.readRawComm(second.value.sessionId).map(row => row.direction)).toEqual(['tx']);
-      expect(history.readTransactionMetadata(second.value.sessionId).map(row => row.result)).toEqual(['timeout']);
-      expect(history.readRawComm(id)).toHaveLength(2);
-    } finally { await runtime.stop(); }
-    const reopened = await HistoryStore.open(path.join(dir, 'history.db'));
-    try {
-      expect(reopened.listSessions()).toHaveLength(2);
-      expect(reopened.listSessions().map(s => reopened.readRawComm(s.id).length).sort()).toEqual([1, 2]);
-      expect(reopened.listSessions().map(s => reopened.readTransactionMetadata(s.id).length).sort()).toEqual([1, 3]);
-    }
-    finally { reopened.close(); }
-  });
-
+describe('Legacy history state', () => {
   it('publishes the history size warning once the injected file size exceeds 10 GiB', async () => {
     const { mgr, history, deltas } = await harness();
     vi.spyOn(history, 'sizeBytes').mockReturnValue(10 * 1024 ** 3 + 1);

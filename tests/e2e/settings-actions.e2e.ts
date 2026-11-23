@@ -93,13 +93,10 @@ describe('桌面菜单与设置实际操作', () => {
 
   it('persists real preferences and clears diagnostics only after confirmation', async () => {
     await rail('设置');
-    expect(await $$('button[role="checkbox"]').then(items => items.length)).toBe(1);
+    expect(await $$('button[role="checkbox"]').then(items => items.length)).toBe(0);
     expect(await body()).toContain('正常写入路径 · 不可关闭');
-    const checkbox = await $('button[role="checkbox"]');
-    await checkbox.click();
-    await browser.waitUntil(async () => (await snapshot()).prefs.persistRawComm === true, { timeout: 10000 });
     const prefsPath = path.join(runDir!, 'data', 'prefs.json');
-    expect(JSON.parse(fs.readFileSync(prefsPath, 'utf8')).persistRawComm).toBe(true);
+    expect(await body()).toContain('按实际采集保留');
 
     const timezone = await $('//div[normalize-space(.)="时区"]/following-sibling::button[1]');
     await timezone.click();
@@ -117,8 +114,6 @@ describe('桌面菜单与设置实际操作', () => {
     await browser.waitUntil(async () => (await snapshot()).diagRev > before, { timeout: 10000 });
     expect(await body()).toContain('通信诊断已清空');
 
-    await checkbox.click();
-    await browser.waitUntil(async () => (await snapshot()).prefs.persistRawComm === false, { timeout: 10000 });
     await timezone.click();
     await browser.waitUntil(async () => (await timezone.getAttribute('data-state')) === 'open', { timeout: 5000, timeoutMsg: 'timezone list did not reopen' });
     await $('//*[@role="option"][normalize-space(.)="跟随系统"]').click();

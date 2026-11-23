@@ -1,11 +1,15 @@
 import React, { useMemo, useState } from 'react';
-import { useApp, usePoints, useRecording, useWorkspace } from '../store/app';
+import { slaveCommunicationState, useApp, usePoints, useWorkspace, type LiveSeries } from '../store/app';
 import { Button, InfoBand, PageHeader, StatusDot, Tabs } from '../components/ui';
 import { NumericChart, type LineSeries } from '../components/chart';
 import { StateTrack } from '../components/state-track';
 import { DataTable, type Column } from '../components/table';
 import { useTranslation } from '../i18n';
 import { pointKey } from '../../shared/point-key';
+import { HostDataStatus, HostRefreshControl, useHostData } from '../workbench/host-data';
+import { bufferCapacity } from '../../domain/point-buffers';
+import { BufferRangeStatus } from '../features/buffers/range-status';
+import { blockReadIssue } from '../features/devices/communication-status';
 
 const SERIES_COLORS = ['#0078D4', '#D97706', '#178A4D', '#7A5AF8', '#C42B1C', '#0E7C86'];
 
@@ -28,15 +32,21 @@ export function TrendScreen() {
   const select = useApp((s) => s.select);
   const openOverlay = useApp((s) => s.openOverlay);
   const command = useApp((s) => s.command);
-  const toast = useApp((s) => s.toast);
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
   const [frozenEnd, setFrozenEnd] = useState<number | null>(null);
+  const [frozenLive, setFrozenLive] = useState<Record<string, LiveSeries> | null>(null);
+  const [resetKey, setResetKey] = useState(0);
+  const bufferInfos = useApp(state => state.dataBuffers);
+  const connections = useApp(state => state.snapshot?.connections);
+  const slaveStates = useApp(state => state.snapshot?.slaveStates);
+  const blocks = useApp(state => state.snapshot?.blocks);
 
   const group = workspace?.trendGroups.find((g) => g.id === selection.groupId) ?? workspace?.trendGroups[0];
-  const windowSec = group?.windowSec ?? 60;
-  const recording = useRecording();
-  const isRecordingThis = recording?.groupId === group?.id;
+  const windowSec = selection.trendWindowSec ?? group?.windowSec ?? 60;
+  const references = group?.signals.map(signal => signal.pointRef) ?? [];
+  useHostData({ points: references, buffers: references, series: selection.trendTab === 'chart' ? group?.signals.filter(signal => signal.visible).map(signal => ({ ...signal.pointRef, windowMs: windowSec * 1000, endMs: paused || !follow ? frozenEnd ?? undefined : undefined })) ?? [] : [] });
+  const shownLive = paused || !follow ? frozenLive ?? live : live;
 
   const rows = useMemo<SignalRow[]>(() => {
     if (!workspace || !group) return [];
@@ -70,9 +80,11 @@ export function TrendScreen() {
   const now = Date.now();
   const end = follow && !paused ? now : frozenEnd ?? now;
   const start = end - windowSec * 1000;
+  const resume = () => { setPaused(false); setFollow(true); setFrozenEnd(null); setFrozenLive(null); setResetKey(key => key + 1); };
+  const freeze = () => { setFrozenEnd(end); setFrozenLive(structuredClone(live)); setPaused(true); setFollow(false); };
 
   const series: LineSeries[] = rows
-    .filter((r) => r.visible && live[r.instanceKey]?.samples.length)
+    .filter((r) => r.visible && shownLive[r.instanceKey]?.samples.length && !Object.keys(workspace.templates.flatMap(template => template.points).find(point => point.id === r.pointId)?.enumMap ?? {}).length)
     .map((r, i) => {
       const point = workspace.templates.flatMap(t => t.points).find(p => p.id === r.pointId);
       return {
@@ -80,25 +92,15 @@ export function TrendScreen() {
         unit: point?.unit ?? '',
         decimalPlaces: point?.decimalPlaces,
         color: SERIES_COLORS[i % SERIES_COLORS.length] ?? '#0078D4',
-        data: (live[r.instanceKey]?.samples ?? []).filter(([t]) => t >= start && t <= end) as Array<[number, number]>,
+        data: shownLive[r.instanceKey]?.samples ?? [],
       };
     });
 
   const discrete = rows.filter((r) => {
-    const buf = live[r.instanceKey];
+    const buf = shownLive[r.instanceKey];
     const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
     return buf && point && (point.mapping.rawType === 'Bool' || point.mapping.rawType === 'String' || Object.keys(point.enumMap).length > 0);
   });
-
-  const toggleRecord = async () => {
-    if (isRecordingThis) {
-      if (!(await command({ type: 'trend.stopRecording' })).ok) return;
-      toast({ kind: 'success', title: t('trend.recordStopped'), message: t('trend.recordStoppedMsg') });
-    } else {
-      const res = await command({ type: 'trend.startRecording', groupId: group.id });
-      if (res.ok) toast({ kind: 'success', title: t('trend.recordStarted'), message: t('trend.recordStartedMsg', { count: group.signals.length }) });
-    }
-  };
 
   const cols: Array<Column<SignalRow>> = [
     {
@@ -129,7 +131,23 @@ export function TrendScreen() {
       },
     },
     { id: 'type', header: t('trend.colType'), width: 110, render: (r) => <span className="text-xs text-ink2">{r.type}</span> },
-    { id: 'status', header: t('trend.colStatus'), width: 90, render: () => <StatusDot tone="ok" label={t('trend.statusOk')} /> },
+    { id: 'buffer', header: '采样缓冲', width: 190, render: row => {
+      const ref = group.signals.find(signal => signal.id === row.signalId)!.pointRef;
+      const info = bufferInfos[row.instanceKey];
+      return <div className="flex items-center gap-3 text-xs"><button className="focus-ring text-accent" aria-label={`${row.name} 缓冲容量`} onClick={() => openOverlay({ kind: 'dialog', id: 'point-buffer', pointRef: ref })}>{info?.count ?? 0} / {bufferCapacity(workspace, ref)}</button><button className="focus-ring text-accent" aria-label={`导出 ${row.name}`} onClick={() => openOverlay({ kind: 'dialog', id: 'buffer-export', points: [ref], name: row.name })}>导出</button></div>;
+    } },
+    { id: 'status', header: t('trend.colStatus'), width: 128, render: row => {
+      const ref = group.signals.find(signal => signal.id === row.signalId)!.pointRef;
+      const point = workspace.templates.flatMap(template => template.points).find(item => item.id === ref.pointId);
+      const slave = workspace.slaves.find(item => item.id === ref.slaveId);
+      const state = slaveCommunicationState(connections && { connections, slaveStates }, slave);
+      const block = blocks?.[pointKey(ref.slaveId, point?.blockId ?? '')];
+      const issue = blockReadIssue(state, block);
+      if (issue) return <StatusDot {...issue} />;
+      if (!points[row.instanceKey]?.hasValue) return <StatusDot tone="idle" label="未采集" />;
+      if (points[row.instanceKey]?.finite === false) return <StatusDot tone="warn" label="无效值" />;
+      return <StatusDot tone="ok" label="正常" />;
+    } },
     {
       id: 'op',
       header: t('trend.colOp'),
@@ -161,25 +179,26 @@ export function TrendScreen() {
         actions={
           <>
             <Button onClick={() => openOverlay({ kind: 'dialog', id: 'add-signal', groupId: group.id })}>{t('trend.addSignal')}</Button>
-            <Button variant="primary" disabled={Boolean(recording && !isRecordingThis)} onClick={() => void toggleRecord()}>
-              {isRecordingThis ? t('trend.stopRecording') : t('trend.startRecording')}
-            </Button>
+            <HostRefreshControl />
+            <Button variant="primary" disabled={!references.length} onClick={() => openOverlay({ kind: 'dialog', id: 'buffer-export', points: references, name: group.name })}>导出采样数据</Button>
           </>
         }
       />
-      <div className="-mt-3 mb-4 text-right text-xs text-ink2">{t('trend.recordScope', { count: group.signals.length })}</div>
+      <HostDataStatus />
       <div className="flex items-center justify-between">
         <Tabs tabs={[{ id: 'signals', label: t('trend.tabSignals') }, { id: 'chart', label: t('trend.tabChart') }]} active={selection.trendTab} onChange={(id) => select({ trendTab: id as 'signals' | 'chart' })} />
         <div className="flex items-center gap-4 pb-2">
           {selection.trendTab === 'chart' ? (
             <>
-              <select className="focus-ring h-8 rounded-ctl border border-line bg-surface px-2 text-xs" value={windowSec} onChange={(e) => void command({ type: 'trend.setWindow', groupId: group.id, windowSec: Number(e.target.value) })}>
+              <span className={`text-xs ${paused || !follow ? 'text-warn' : 'text-ink2'}`}>{paused || !follow ? '已暂停' : '实时'}</span>
+              <select aria-label="趋势时间窗口" className="focus-ring h-8 rounded-ctl border border-line bg-surface px-2 text-xs" value={windowSec} onChange={(e) => { select({ trendWindowSec: Number(e.target.value) }); resume(); }}>
+                {![30, 60, 300].includes(windowSec) && <option value={windowSec}>{windowSec} s</option>}
                 <option value={30}>{t('trend.window30')}</option>
                 <option value={60}>{t('trend.window60')}</option>
                 <option value={300}>{t('trend.window300')}</option>
               </select>
-              <button aria-pressed={follow} className="focus-ring cursor-pointer text-xs text-ink2 hover:text-ink" onClick={() => { setFrozenEnd(end); setFollow(!follow); }}>{t('trend.autoFollow')}</button>
-              <button aria-pressed={paused} className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={() => { setFrozenEnd(end); setPaused(!paused); }}>{paused ? t('trend.resume') : t('trend.pause')}</button>
+              <button aria-pressed={follow} className="focus-ring cursor-pointer text-xs text-ink2 hover:text-ink" onClick={follow ? freeze : resume}>{t('trend.autoFollow')}</button>
+              <button aria-label={paused || !follow ? '恢复跟随' : '暂停曲线'} aria-pressed={paused} className="focus-ring cursor-pointer text-xs text-accent hover:underline" onClick={paused || !follow ? resume : freeze}>{paused || !follow ? t('trend.resume') : t('trend.pause')}</button>
             </>
           ) : (
             <>
@@ -195,7 +214,9 @@ export function TrendScreen() {
       ) : (
         <>
           <div data-testid="trend-window" data-end-ms={end} className="rounded-card border border-line bg-surface p-4">
+            <BufferRangeStatus points={references} live={live} paused={paused || !follow} startMs={start} endMs={end} />
             <div className="flex flex-wrap gap-4 px-2 pb-2">
+              {Object.values(live).some(series => series.loading) && <span role="status" className="text-xs text-ink2">正在加载时间窗口…</span>}
               {series.map((s) => (
                 <span key={s.name} className="inline-flex items-center gap-1.5 text-xs" style={{ color: s.color }}>
                   <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
@@ -204,7 +225,7 @@ export function TrendScreen() {
               ))}
               <span className="text-[10px] text-ink2 self-center">{t('trend.axisPerUnit')}</span>
             </div>
-            <NumericChart series={series} height={300} startMs={start} endMs={end} />
+            <NumericChart series={series} height={300} startMs={start} endMs={end} interactive resetKey={resetKey} updateIntervalMs={selection.refreshMs ?? 100} />
           </div>
           {discrete.length ? (
             <>
@@ -212,7 +233,7 @@ export function TrendScreen() {
               <div className="rounded-card border border-line bg-surface2 px-4 py-3 flex flex-col gap-3">
                 {discrete.map((r) => {
                   const point = workspace.templates.flatMap((t) => t.points).find((p) => p.id === r.pointId);
-                  const buf = live[r.instanceKey];
+                  const buf = shownLive[r.instanceKey];
                   if (!point || !buf) return null;
                   const kind = point.mapping.rawType === 'Bool' ? 'bool' : point.mapping.rawType === 'String' ? 'string' : 'enum';
                   const initial = buf.events.filter(e => e.t <= start).at(-1)?.value ?? buf.events[0]?.value ?? null;
@@ -238,18 +259,12 @@ export function TrendScreen() {
       <InfoBand tone="blue" className="mt-6">
         <div className="text-sm font-bold text-accent mb-1">{t('trend.dataStatus')}</div>
         <div className="text-sm">
-          {t('trend.dataStatusLine1', { signals: group.signals.length, blocks: blockCount, samples: recording ? recording.sampleCount : 0 })}
+          {group.signals.length} 个信号 · {blockCount} 个采集块 · 已缓冲 {references.reduce((sum, ref) => sum + (bufferInfos[pointKey(ref.slaveId, ref.pointId)]?.count ?? 0), 0).toLocaleString()} 个样本
           <br />
-          {t('trend.chartShown', { shown: series.length, total: group.signals.length, record: isRecordingThis ? t('trend.recording', { elapsed: recording ? fmtElapsed(recording.elapsedMs) : '' }) : t('trend.recordNotStarted') })}
+          样本按各自采集时间保存。可在信号列表调整共享容量或导出原始数据。
         </div>
         <div className="text-xs text-ink2 mt-1">{t('trend.dataSourceHint', { count: blockCount })}</div>
       </InfoBand>
     </>
   );
-}
-
-function fmtElapsed(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
 }

@@ -1,9 +1,9 @@
 export const history = {
   // Page headers, empty state and session meta
   title: '历史',
-  subtitle: '回放主动记录的会话',
-  empty: '还没有记录会话。在趋势模块选择趋势组后点击“开始记录”。',
-  loading: '正在读取记录会话…',
+  subtitle: '查看既有历史会话并离线回放',
+  empty: '暂无历史会话。当前采样数据可从趋势组或画布曲线导出。',
+  loading: '正在读取历史会话…',
   samplePage: '第 {{page}} / {{pages}} 页 · 共 {{count}} 个数值样本 · 每页 500 条',
   previousPage: '上一页',
   nextPage: '下一页',
@@ -50,7 +50,7 @@ export const history = {
 
   // Signals tab
   recordedSignals: '记录信号',
-  recordedSignalsHint: '开始记录时冻结的信号与编码配置（Schema Snapshot，模板后续修改不影响本会话）',
+  recordedSignalsHint: '会话保存的信号与编码定义，按当时的 Schema Snapshot 解释旧数据',
 
   // Table columns
   colSignal: '信号',

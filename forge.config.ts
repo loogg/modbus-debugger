@@ -13,7 +13,7 @@ const config: ForgeConfig = {
     name: 'Modbus Debugger',
     executableName: 'modbus-debugger',
     icon: path.resolve(__dirname, 'build', 'icon.ico'),
-    extraResource: [path.resolve(__dirname, 'build', 'icon.png'), path.resolve(__dirname, 'build', 'update-helper.ps1')],
+    extraResource: [path.resolve(__dirname, 'build', 'icon.png'), path.resolve(__dirname, 'build', 'update-helper.ps1'), path.resolve(__dirname, 'build', 'licenses')],
   },
   rebuildConfig: {},
   hooks: {

@@ -2,6 +2,7 @@ import { describe, expect, it, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import React from 'react';
 import { ComboInput, Dialog, Field, hasOpenComboList } from '../../../src/renderer/components/ui';
+import { ViewEnvironmentContext } from '../../../src/renderer/workbench/view-context';
 
 const OPTIONS = [
   { value: '9600', label: '9600' },
@@ -28,6 +29,18 @@ const settle = async (ms = 200) => {
 };
 
 afterEach(() => cleanup());
+
+it('scopes open lists to the owning view so another view can handle Escape independently', () => {
+  const first = document.createElement('div');
+  const second = document.createElement('div');
+  render(<ViewEnvironmentContext.Provider value={{ document, portalRoot: first, active: true, guards: new Map() }}><Harness /></ViewEnvironmentContext.Provider>);
+  fireEvent.focus(input());
+  expect(hasOpenComboList(first)).toBe(true);
+  expect(hasOpenComboList(second)).toBe(false);
+  expect(hasOpenComboList(document)).toBe(false);
+  cleanup();
+  expect(hasOpenComboList(first)).toBe(false);
+});
 
 describe('ComboInput dropdown lifecycle', () => {
   it('opens on focus and re-enumerates through onOpen every time it opens', () => {

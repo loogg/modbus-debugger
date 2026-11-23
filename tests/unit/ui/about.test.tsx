@@ -9,7 +9,7 @@ import type { Command } from '../../../src/shared/commands';
 import type { UpdateState } from '../../../src/shared/update';
 const initial = ():UpdateState => ({currentVersion:'0.10.0',packageKind:'zip',platform:'win32',arch:'x64',phase:'idle',latest:null,available:false,checkedAt:null,receivedBytes:0,totalBytes:0,downloadPath:null,error:null});
 const command=vi.fn((_cmd:Command)=>undefined);
-beforeEach(()=>{ command.mockClear(); useApp.setState({command:async <T,>(cmd:Command)=>{command(cmd); return {ok:true,value:null as T};}, snapshot:{revision:1,workspace:emptyWorkspace(),workspacePath:null,dirty:false,connections:{},blocks:{},points:{},transactions:[],parseEvents:[],diagRev:0,health:{},recording:null,sessions:[],warnings:[],prefs:DEFAULT_PREFS,historyDbPath:'',update:initial()}}); });
+beforeEach(()=>{ command.mockClear(); useApp.setState({command:async <T,>(cmd:Command)=>{command(cmd); return {ok:true,value:null as T};}, snapshot:{revision:1,workspace:emptyWorkspace(),workspacePath:null,dirty:false,connections:{},blocks:{},points:{},transactions:[],parseEvents:[],diagRev:0,health:{},sessions:[],warnings:[],prefs:DEFAULT_PREFS,historyDbPath:'',update:initial()}}); });
 afterEach(cleanup);
 const publish = (patch:Partial<UpdateState>)=>act(()=>useApp.getState().applyDelta({revision:2,transactions:[],update:{...initial(),...patch}}));
 it('shows the current application version and sends only typed check/link commands',()=>{

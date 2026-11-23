@@ -3,12 +3,14 @@ import { useApp, useBlocks, useWorkspace } from '../../store/app';
 import { Button, EmptyState, Field, InfoBand, PageHeader, Select, TextInput } from '../../components/ui';
 import { AREAS } from '../../../domain/address';
 import { useTranslation } from '../../i18n';
+import { useDirtyGuard } from '../../workbench/view-context';
 
 const PAGE_SIZE = 32;
 
 function MemoryRow(props: { address: number; value: number | undefined; bits: boolean; disabled: boolean; onApply(value: number): Promise<boolean> }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState('');
+  useDirtyGuard(draft.trim() !== '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const apply = async () => {
@@ -57,7 +59,7 @@ export function SlaveMemoryView(props: { slaveId: string }) {
       <div className="overflow-auto rounded-card border border-line bg-surface" style={{ maxHeight: 'calc(100vh - 410px)', minHeight: 180 }}>
         <table className="w-full min-w-[620px] text-left"><thead className="sticky top-0 z-20 bg-surface2 text-xs text-ink2"><tr>
           <th className="sticky left-0 bg-surface2 px-4 py-3 font-medium">{t('slave.address')}</th><th className="px-4 py-3 font-medium">{t('slave.confirmed')}</th><th className="px-4 py-3 font-medium">Hex</th><th className="px-4 py-3 font-medium">{t('slave.editValue')}</th><th className="px-4 py-3 font-medium">{t('devices.colActions')}</th>
-        </tr></thead><tbody>{offsets.map(offset => <MemoryRow key={`${slave.id}:${block.id}:${offset}`} address={block.start + offset} value={values?.[offset]} bits={block.area <= 2} disabled={!slave.enabled} onApply={async value => {
+        </tr></thead><tbody>{offsets.map(offset => <MemoryRow key={`${slave.id}:${block.id}:${offset}`} address={block.start + offset} value={state?.valid?.[offset] === false ? undefined : values?.[offset]} bits={block.area <= 2} disabled={!slave.enabled} onApply={async value => {
           const result = await command({ type: 'slave.setValues', slaveId: slave.id, blockId: block.id, offset, values: [value] });
           if (result.ok) toast({ kind: 'success', title: t('slave.applied') });
           return result.ok;

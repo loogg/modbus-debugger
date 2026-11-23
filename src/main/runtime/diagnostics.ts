@@ -1,4 +1,7 @@
 import type { BlockHealth, ConnectionHealth, HealthSample, ParseEventRecord, TransactionRecord } from '../../shared/contracts';
+import { randomUUID } from 'node:crypto';
+import type { ConnectionDef } from '../../domain/model';
+import type { DiagnosticsPage, DiagnosticsRead } from '../../shared/diagnostics';
 
 export type {
   BlockHealth,
@@ -13,6 +16,51 @@ export type {
 const RING = 5000;
 /** 1 Hz sampling => 10 minutes of health history per connection. */
 const SERIES_RING = 600;
+const HEALTH_WINDOW_MS = 60000;
+const DETAIL_PAGE_BYTES = 128 * 1024;
+interface HealthTransaction {
+  at: number;
+  duration: number;
+  unitId: number;
+  blockId: string | null;
+  cycleStart: boolean;
+  result: TransactionRecord['result'];
+  bytes: number;
+}
+interface HealthBucket {
+  transactions: HealthTransaction[];
+  events: Array<{ at: number; kind: ParseEventRecord['kind'] }>;
+}
+
+function readRecords<T extends { connectionId: string }>(rows: T[], total: number, after: number | undefined, through: number | undefined, connectionId: string | undefined, limit: number) {
+  const oldest = total - rows.length;
+  const end = Math.min(through ?? total, total);
+  if (after === undefined) {
+    const selected: T[] = [];
+    let bytes = 0;
+    for (let index = rows.length - 1; index >= 0 && selected.length < limit; index--) {
+      const row = rows[index]!;
+      if (connectionId && row.connectionId !== connectionId) continue;
+      const size = Buffer.byteLength(JSON.stringify(row));
+      if (selected.length && bytes + size > DETAIL_PAGE_BYTES) break;
+      selected.push(row); bytes += size;
+    }
+    return { rows: selected.reverse(), cursor: total, through: total, overwritten: false };
+  }
+  const result: T[] = [];
+  let bytes = 0;
+  let cursor = Math.max(oldest, Math.min(after, total));
+  const upper = end < oldest ? total : end;
+  while (cursor < upper && result.length < limit) {
+    const row = rows[cursor - oldest]!;
+    const matches = !connectionId || row.connectionId === connectionId;
+    const size = matches ? Buffer.byteLength(JSON.stringify(row)) : 0;
+    if (matches && result.length && bytes + size > DETAIL_PAGE_BYTES) break;
+    cursor++;
+    if (matches) { result.push(row); bytes += size; }
+  }
+  return { rows: result, cursor, through: upper, overwritten: after < oldest };
+}
 
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
@@ -30,6 +78,26 @@ export class DiagnosticsStore {
   private evTotal = 0;
   private lastOkByConnection = new Map<string, string>();
   private series = new Map<string, HealthSample[]>();
+  private healthBuckets = new Map<string, Map<number, HealthBucket>>();
+  private generation = randomUUID();
+
+  pruneHealth(nowMono: number): void {
+    const cutoff = nowMono - HEALTH_WINDOW_MS;
+    for (const [connectionId, buckets] of this.healthBuckets) {
+      for (const second of buckets.keys()) if ((second + 1) * 1000 <= cutoff) buckets.delete(second);
+      if (!buckets.size) this.healthBuckets.delete(connectionId);
+    }
+  }
+
+  private healthBucket(connectionId: string, at: number): HealthBucket {
+    let buckets = this.healthBuckets.get(connectionId);
+    if (!buckets) { buckets = new Map(); this.healthBuckets.set(connectionId, buckets); }
+    const second = Math.floor(at / 1000);
+    for (const key of buckets.keys()) if (key < second - HEALTH_WINDOW_MS / 1000) buckets.delete(key);
+    let bucket = buckets.get(second);
+    if (!bucket) { bucket = { transactions: [], events: [] }; buckets.set(second, bucket); }
+    return bucket;
+  }
 
   nextTraceId(): string {
     this.seq += 1;
@@ -41,6 +109,11 @@ export class DiagnosticsStore {
     this.txTotal += 1;
     if (rec.result === 'ok') this.lastOkByConnection.set(rec.connectionId, rec.startUtc);
     if (this.transactions.length > RING) this.transactions.splice(0, this.transactions.length - RING);
+    if (rec.durationMs !== null) this.healthBucket(rec.connectionId, rec.startMono).transactions.push({
+      at: rec.startMono, duration: rec.durationMs, unitId: rec.unitId,
+      blockId: rec.sourceKind === 'poll' ? rec.sourceId : null, cycleStart: rec.pollCycleStart !== false,
+      result: rec.result, bytes: (rec.requestAduHex.length + (rec.responseAduHex?.length ?? 0)) / 2,
+    });
   }
 
   recordParseEvent(rec: Omit<ParseEventRecord, 'id'>): void {
@@ -48,6 +121,18 @@ export class DiagnosticsStore {
     this.evTotal += 1;
     this.parseEvents.push({ ...rec, id: `p${this.seq.toString(36)}` });
     if (this.parseEvents.length > RING) this.parseEvents.splice(0, this.parseEvents.length - RING);
+    this.healthBucket(rec.connectionId, rec.mono).events.push({ at: rec.mono, kind: rec.kind });
+  }
+
+  read(request: DiagnosticsRead): DiagnosticsPage {
+    const reset = request.generation !== undefined && request.generation !== this.generation;
+    const transactions = readRecords(this.transactions, this.txTotal, reset ? undefined : request.afterTransactions, reset ? undefined : request.throughTransactions, request.connectionId, request.limit);
+    const events = readRecords(this.parseEvents, this.evTotal, reset ? undefined : request.afterEvents, reset ? undefined : request.throughEvents, request.connectionId, request.limit);
+    return { generation: this.generation, transactions: transactions.rows, parseEvents: events.rows,
+      transactionCursor: transactions.cursor, eventCursor: events.cursor,
+      throughTransactions: transactions.through, throughEvents: events.through,
+      hasMore: transactions.cursor < transactions.through || events.cursor < events.through,
+      overwritten: transactions.overwritten || events.overwritten, reset };
   }
 
   recentTransactions(limit = 500): TransactionRecord[] {
@@ -125,6 +210,8 @@ export class DiagnosticsStore {
     this.parseEvents = [];
     this.lastOkByConnection.clear();
     this.series.clear();
+    this.healthBuckets.clear();
+    this.generation = randomUUID();
     // txTotal / evTotal stay monotonic so cursors held by the delta loop remain valid.
   }
 
@@ -133,36 +220,36 @@ export class DiagnosticsStore {
     nowMono: number,
     blocks: Array<{ slaveId: string; unitId: number; blockId: string; blockName: string; configuredPeriodMs: number }>,
     windowSec = 60,
+    line?: Pick<ConnectionDef, 'transport' | 'rtu'>,
   ): ConnectionHealth {
+    windowSec = Math.min(60, Math.max(1, windowSec));
     const from = nowMono - windowSec * 1000;
-    const tx = this.transactions.filter((t) => t.connectionId === connectionId && t.startMono >= from && t.durationMs !== null);
-    const events = this.parseEvents.filter((e) => e.connectionId === connectionId && e.mono >= from);
-    const durations = tx.map((t) => t.durationMs as number).sort((a, b) => a - b);
+    this.pruneHealth(nowMono);
+    const buckets = this.healthBuckets.get(connectionId);
+    const tx = [...buckets?.values() ?? []].flatMap(bucket => bucket.transactions).filter(t => t.at >= from && t.at <= nowMono);
+    const events = [...buckets?.values() ?? []].flatMap(bucket => bucket.events).filter(event => event.at >= from && event.at <= nowMono);
+    const durations = tx.map(t => t.duration).sort((a, b) => a - b);
     const timeouts = tx.filter((t) => t.result === 'timeout').length;
     const crcErrors = events.filter((e) => e.kind === 'crc').length;
     const exceptions = tx.filter((t) => t.result === 'exception').length;
     const unexpected = tx.filter((t) => t.result === 'unexpected').length + events.filter((e) => e.kind === 'unexpected').length;
 
-    // Bus load: bytes on wire (request + response ADU) over the window, expressed as a
-    // percentage of a nominal 115200 8N1 line capacity (11 bits/char).
-    const bytes = tx.reduce((acc, t) => {
-      const req = t.requestAduHex.length / 2;
-      const res = t.responseAduHex ? t.responseAduHex.length / 2 : 0;
-      return acc + req + res;
-    }, 0);
-    const bitsPerSec = (bytes * 11) / windowSec;
-    const busLoadPercent = Math.min(100, (bitsPerSec / 115200) * 100);
+    const bytes = tx.reduce((sum, transaction) => sum + transaction.bytes, 0);
+    const throughputBytesPerSec = bytes / windowSec;
+    const transport = line?.transport ?? 'rtu';
+    const bitsPerCharacter = 1 + (line?.rtu?.dataBits ?? 8) + (line?.rtu?.parity && line.rtu.parity !== 'none' ? 1 : 0) + (line?.rtu?.stopBits ?? 1);
+    const busLoadPercent = transport === 'rtu' ? Math.min(100, throughputBytesPerSec * bitsPerCharacter / (line?.rtu?.baudRate ?? 115200) * 100) : 0;
 
     const blockHealth: BlockHealth[] = blocks.map((b) => {
-      const btx = tx.filter((t) => t.sourceKind === 'poll' && t.sourceId === b.blockId && t.unitId === b.unitId);
-      const starts = btx.map((t) => t.startMono).sort((a, c) => a - c);
+      const btx = tx.filter(t => t.blockId === b.blockId && t.unitId === b.unitId);
+      const starts = btx.filter(transaction => transaction.cycleStart).map(t => t.at).sort((a, c) => a - c);
       let actual: number | null = null;
       if (starts.length > 1) {
         let sum = 0;
         for (let i = 1; i < starts.length; i++) sum += (starts[i] as number) - (starts[i - 1] as number);
         actual = sum / (starts.length - 1);
       }
-      const bd = btx.map((t) => t.durationMs as number).sort((a, c) => a - c);
+      const bd = btx.map(t => t.duration).sort((a, c) => a - c);
       const bto = btx.filter((t) => t.result === 'timeout').length;
       return {
         slaveId: b.slaveId,
@@ -177,6 +264,8 @@ export class DiagnosticsStore {
 
     return {
       connectionId,
+      transport,
+      throughputBytesPerSec,
       busLoadPercent,
       requestRatePerSec: tx.length / windowSec,
       p50Ms: percentile(durations, 50),

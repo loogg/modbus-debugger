@@ -1,7 +1,8 @@
 import type { AppTransport, TransportState, TransportStatus } from './types';
-import type { AppDelta, AppSnapshot } from '../../shared/snapshot';
+import type { AppDelta, AppSnapshot, SnapshotOptions } from '../../shared/snapshot';
 import type { Command, CommandResult } from '../../shared/commands';
 import type { AppVersions, BridgeClientMessage, BridgeServerMessage } from '../../shared/preload-api';
+import { decodeDataReadFrame } from '../../shared/data-read-frame';
 
 export interface BridgeTransportOptions {
   url?: string;
@@ -75,6 +76,7 @@ export class WebSocketBridgeTransport implements AppTransport {
       if (!['ws:','wss:'].includes(target.protocol) || !['localhost','127.0.0.1','[::1]'].includes(target.hostname)) throw new Error('开发 Bridge 目标必须是回环地址');
       this.updateStatus('connecting', `Connecting to Dev Bridge at ${this.url}...`);
       const ws = new WebSocket(this.url, `modbus-review.${this.sessionToken}`);
+      ws.binaryType = 'arraybuffer';
       this.ws = ws;
 
       ws.onopen = () => {
@@ -110,11 +112,15 @@ export class WebSocketBridgeTransport implements AppTransport {
   }
 
   private handleMessage(data: unknown): void {
-    if (typeof data !== 'string') return;
     let msg: BridgeServerMessage;
     try {
-      msg = JSON.parse(data) as BridgeServerMessage;
+      if (data instanceof ArrayBuffer) {
+        const decoded = decodeDataReadFrame(data);
+        msg = { type: 'response', ok: true, ...decoded };
+      } else if (typeof data === 'string') msg = JSON.parse(data) as BridgeServerMessage;
+      else return;
     } catch {
+      if (data instanceof ArrayBuffer) this.rejectAllPending('采样二进制响应无效');
       return;
     }
 
@@ -194,9 +200,9 @@ export class WebSocketBridgeTransport implements AppTransport {
     });
   }
 
-  async getSnapshot(): Promise<AppSnapshot> {
+  async getSnapshot(options?: SnapshotOptions): Promise<AppSnapshot> {
     const id = `snap_${this.seq++}`;
-    return this.sendRequest<AppSnapshot>({ type: 'snapshot', id });
+    return this.sendRequest<AppSnapshot>({ type: 'snapshot', id, options });
   }
 
   async versions(): Promise<AppVersions> {

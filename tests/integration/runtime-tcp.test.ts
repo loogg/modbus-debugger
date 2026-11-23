@@ -116,21 +116,25 @@ describe('ConnectionRuntime over fake TCP transport', () => {
     await ctx.runtime.stop();
   });
 
-  it('write -> read back updates confirmed value only after read back', async () => {
+  it('settles the write on its echo and updates the device value on a separate refresh', async () => {
+    let deviceValue = 1;
     ctx.transport.onResponse((adu) => {
       const fc = fcOf(adu);
-      if (fc === 0x06) return [respWriteAck(0, 42, tidOf(adu))];
-      return [respRegs([42, 0, 0, 0], tidOf(adu))];
+      if (fc === 0x06) { deviceValue = 42; return [respWriteAck(0, 42, tidOf(adu))]; }
+      return [respRegs([deviceValue, 0, 0, 0], tidOf(adu))];
     });
     await ctx.runtime.start();
     await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
     const res = await ctx.runtime.writePoint({ slave, block, mapping: point.mapping, rawValue: 42, pointId: 'p1', readBackRange: { start: 0, length: 4 } });
     expect(res.result).toBe('ok');
     const entry = ctx.cache.get(blockKey('s1', 'b1'));
-    if (entry?.memory.kind === 'registers') expect(entry.memory.registers[0]).toBe(42);
+    if (entry?.memory.kind === 'registers') expect(entry.memory.registers[0]).toBe(1);
+    expect(res.readBack).toBeNull();
     const kinds = ctx.diag.recentTransactions(20).map((t) => t.sourceKind);
     expect(kinds).toContain('write');
-    expect(kinds).toContain('readback');
+    expect(kinds).not.toContain('readback');
+    await ctx.runtime.refresh(slave.id, block.id);
+    if (entry?.memory.kind === 'registers') expect(entry.memory.registers[0]).toBe(42);
     await ctx.runtime.stop();
   });
 
@@ -145,7 +149,7 @@ describe('ConnectionRuntime over fake TCP transport', () => {
       }
       if (fc === 0x06) {
         writes.push(hex(adu));
-        return [respWriteAck(1, 0, tidOf(adu))];
+        return [respWriteAck(1, (adu[10]! << 8) | adu[11]!, tidOf(adu))];
       }
       return [respRegs([0, 0x00d0, 0, 0].slice(addrOf(adu), addrOf(adu) + qty), tidOf(adu))];
     });
@@ -330,7 +334,7 @@ describe('ConnectionRuntime over fake TCP transport', () => {
     } finally { await ctx.runtime.stop(); }
   });
 
-  it('starts scanning only after an in-flight write and its read-back have both finished', async () => {
+  it('starts scanning after the in-flight write response finishes', async () => {
     ctx.transport.onResponse(adu => fcOf(adu) === 6 ? null : [respRegs(new Array(qtyOf(adu)).fill(42), tidOf(adu), unitOf(adu))]);
     await ctx.runtime.start();
     try {
@@ -342,8 +346,8 @@ describe('ConnectionRuntime over fake TCP transport', () => {
       ctx.transport.inject(respWriteAck(0, 42, tidOf(writeAdu)));
       expect((await write).result).toBe('ok');
       await scan;
-      expect(ctx.transport.sent.slice(0, 3).map(adu => [fcOf(adu), unitOf(adu)])).toEqual([[6, 1], [3, 1], [3, 2]]);
-      expect(qtyOf(ctx.transport.sent[1]!)).toBe(4);
+      expect(ctx.transport.sent.slice(0, 2).map(adu => [fcOf(adu), unitOf(adu)])).toEqual([[6, 1], [3, 2]]);
+      expect(qtyOf(ctx.transport.sent[1]!)).toBe(1);
     } finally { await ctx.runtime.stop(); }
   });
 
@@ -469,7 +473,7 @@ describe('retry policy', () => {
     expect(txs.length).toBe(1);
     await ctx.runtime.stop();
   });
-  it('writes do NOT retry on timeout (read-back resolves truth)', async () => {
+  it('sends an ambiguous write once and retains the last sampled value until a refresh', async () => {
     const ctx = make(2);
     let applied = false;
     ctx.transport.onResponse((adu) => {
@@ -480,16 +484,18 @@ describe('retry policy', () => {
     await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
     const res = await ctx.runtime.writePoint({ slave, block, mapping: point.mapping, rawValue: 42, pointId: 'p1', readBackRange: { start: 0, length: 4 } });
     expect(res.result).toBe('timeout');
-    expect(res.readBack?.result).toBe('ok');
-    expect(res.readBack?.response?.kind === 'registers' && res.readBack.response.registers[0]).toBe(42);
+    expect(res.readBack).toBeNull();
     const fc06 = ctx.diag.recentTransactions(40).filter((t) => t.functionCode === 0x06);
     expect(fc06.length).toBe(1);
-    expect(ctx.diag.recentTransactions(40).filter((t) => t.sourceKind === 'readback')).toHaveLength(1);
+    expect(ctx.diag.recentTransactions(40).filter((t) => t.sourceKind === 'readback')).toHaveLength(0);
     const confirmed = ctx.cache.get(blockKey('s1', 'b1'))?.memory;
-    expect(confirmed?.kind === 'registers' && confirmed.registers[0]).toBe(42);
+    expect(confirmed?.kind === 'registers' && confirmed.registers[0]).toBe(1);
+    await ctx.runtime.refresh(slave.id, block.id);
+    const refreshed = ctx.cache.get(blockKey('s1', 'b1'))?.memory;
+    expect(refreshed?.kind === 'registers' && refreshed.registers[0]).toBe(42);
     await ctx.runtime.stop();
   });
-  it('does not resend an ambiguous transport write and reads the device value back', async () => {
+  it('preserves an ambiguous transport write result and allows an explicit value refresh', async () => {
     const ctx = setup({ ...conn, retries: 2 });
     let applied = false;
     ctx.transport.onResponse((adu) => [respRegs([applied ? 42 : 1, 0, 0, 0], tidOf(adu))]);
@@ -508,11 +514,14 @@ describe('retry policy', () => {
       await waitFor(() => ctx.cache.get(blockKey('s1', 'b1'))?.status === 'ok');
       const outcome = await ctx.runtime.writePoint({ slave, block, mapping: point.mapping, rawValue: 42, pointId: 'p1', readBackRange: { start: 0, length: 4 } });
       expect(outcome.result).toBe('transport');
-      expect(outcome.readBack?.result).toBe('ok');
+      expect(outcome.readBack).toBeNull();
       expect(ctx.transport.sent.filter((adu) => fcOf(adu) === 0x06)).toHaveLength(1);
-      expect(ctx.diag.recentTransactions(40).filter((tx) => tx.sourceKind === 'readback')).toHaveLength(1);
+      expect(ctx.diag.recentTransactions(40).filter((tx) => tx.sourceKind === 'readback')).toHaveLength(0);
       const confirmed = ctx.cache.get(blockKey('s1', 'b1'))?.memory;
-      expect(confirmed?.kind === 'registers' && confirmed.registers[0]).toBe(42);
+      expect(confirmed?.kind === 'registers' && confirmed.registers[0]).toBe(1);
+      await ctx.runtime.refresh(slave.id, block.id);
+      const refreshed = ctx.cache.get(blockKey('s1', 'b1'))?.memory;
+      expect(refreshed?.kind === 'registers' && refreshed.registers[0]).toBe(42);
     } finally {
       await ctx.runtime.stop();
     }

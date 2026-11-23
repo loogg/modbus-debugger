@@ -13,12 +13,12 @@ async function harness() {
   workspace.adopt({...emptyWorkspace(),connections:[{id:'c',name:'c',transport:'tcp',tcp:{host:'127.0.0.1',port:5020},timeoutMs:50,retries:0,reconnect:'manual',interFrameMs:0,rtsControl:'none',logLevel:'info'}],
     slaves:[{id:'s',name:'s',connectionId:'c',unitId:1,templateId:'t',enabled:true}],templates:[{id:'t',name:'t',version:'1',description:'',blocks:[{id:'b',name:'b',area:3,start:0,length:4,periodMs:60000}],
       points:[{id:'p',name:'Enable',blockId:'b',mapping:{rawType:'Bool',offset:0,registerCount:1,wordOrder:'ABCD',byteSelector:'low',bitOffset:0,bitWidth:1,stringLength:0,stringEncoding:'ascii'},scale:1,offset:0,unit:'',access:'rw',displayFormat:'auto',enumMap:{},highRisk:false,description:''}]}]},null);
-  const transport=new FakeTransport('tcp');let mode:'ok'|'exception'|'timeout'|'transport'|'readback-timeout'='ok',register=17;
+  const transport=new FakeTransport('tcp');let mode:'ok'|'exception'|'timeout'|'transport'|'block-timeout'='ok',register=17;
   transport.onResponse(request=>{
     const tid=request[0]!*256+request[1]!;
     if(request[7]===6){register=request[10]!*256+request[11]!;return [buildTcpAdu(tid,1,encodeResponsePdu({kind:'writeAck',fc:6,address:0,extra:register}))];}
     const quantity=request[10]!*256+request[11]!;
-    if(mode==='readback-timeout'&&quantity===4)return null;
+    if(mode==='block-timeout'&&quantity===4)return null;
     if(mode==='exception')return [buildTcpAdu(tid,1,encodeResponsePdu({kind:'exception',fc:3,code:2}))];
     if(mode==='timeout')return null;
     if(mode==='transport'){transport.drop();return null;}
@@ -38,15 +38,19 @@ it.each(['exception','timeout','transport'] as const)('returns a not-sent termin
     expect(h.manager.buildSnapshot().points['s::p']?.boolValue).toBe(true);
     h.setMode('ok');if(mode==='transport')await h.manager.handleCommand({type:'connection.connect',connectionId:'c'});
     expect(await h.manager.handleCommand(write)).toMatchObject({ok:true,value:{phase:'confirmed',result:'ok'}});
+    expect(h.manager.buildSnapshot().points['s::p']?.boolValue).toBe(true);
+    await h.manager.runtimeFor('c')!.refresh('s', 'b');
     expect(h.manager.buildSnapshot().points['s::p']?.boolValue).toBe(false);
     const memory=h.manager.cache.get('s::b')?.memory;expect(memory?.kind==='registers'&&memory.registers[0]).toBe(16);
   }finally{await h.manager.stop();}
 });
-it('returns unknown when a sent write cannot be confirmed, preserving the previous confirmed value',async()=>{
+it('keeps a successful write result when a later block read times out',async()=>{
   const h=await harness();try{
-    h.setMode('readback-timeout');
-    expect(await h.manager.handleCommand(write)).toMatchObject({ok:true,value:{phase:'unknown',result:'ok'}});
+    h.setMode('block-timeout');
+    expect(await h.manager.handleCommand(write)).toMatchObject({ok:true,value:{phase:'confirmed',result:'ok'}});
     expect(h.transport.sent.filter(request=>request[7]===6)).toHaveLength(1);
     expect(h.manager.buildSnapshot().points['s::p']?.boolValue).toBe(true);
+    await h.manager.runtimeFor('c')!.refresh('s', 'b');
+    expect(h.manager.buildSnapshot().points['s::p']?.lastWrite?.phase).toBe('confirmed');
   }finally{await h.manager.stop();}
 });

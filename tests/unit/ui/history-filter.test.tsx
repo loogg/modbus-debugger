@@ -7,7 +7,7 @@ import { emptyWorkspace } from '../../../src/domain/model';
 import { DEFAULT_PREFS } from '../../../src/main/services/workspace';
 afterEach(cleanup);
 it('history date, group, slave and clear filters change the actual session cards', () => {
-  useApp.setState({ snapshot: { revision: 1, workspace: emptyWorkspace(), workspacePath: null, dirty: false, connections: {}, blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, recording: null, warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '', sessions: [
+  useApp.setState({ snapshot: { revision: 1, workspace: emptyWorkspace(), workspacePath: null, dirty: false, connections: {}, blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '', sessions: [
     { id: 'a', groupId: 'g1', groupName: 'Group1', slaveNames: ['Pump1'], startUtc: '2020-01-02T00:00:00Z', endUtc: '2020-01-02T00:00:01Z', status: 'completed', signalCount: 1, sampleCount: 1, eventCount: 0, sizeBytes: 0 },
     { id: 'b', groupId: 'g2', groupName: 'Group2', slaveNames: ['Pump2'], startUtc: '2021-01-02T00:00:00Z', endUtc: '2021-01-02T00:00:01Z', status: 'completed', signalCount: 1, sampleCount: 1, eventCount: 0, sizeBytes: 0 },
   ] } });

@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import { bufferConfigSchema } from '../shared/point-data';
+import { canvasSchema } from './canvas';
+import { masterScriptSchema } from './master-script';
+import { workbenchLayoutSchema } from '../shared/workbench';
 import { registersForType, type PointMapping } from './mapping';
 import { findBlockOverlaps } from './overlap';
 import { MAX_DECIMAL_PLACES } from './point-format';
@@ -26,7 +30,7 @@ export const pointSchema = z.object({
   scale: z.number().finite().refine(value => value !== 0, 'Scale must not be zero').default(1),
   offset: z.number().default(0),
   unit: z.string().default(''),
-  access: z.enum(['ro', 'rw']),
+  access: z.enum(['ro', 'rw', 'wo']),
   displayFormat: z.enum(['auto', 'hex', 'binary']).default('auto'),
   decimalPlaces: z.number().int().min(0).max(MAX_DECIMAL_PLACES).optional(),
   enumMap: z.record(z.string()).default({}),
@@ -43,7 +47,7 @@ export const blockSchema = z.object({
   area: areaSchema,
   start: z.number().int().min(0).max(65535),
   length: z.number().int().min(1).max(2000),
-  periodMs: z.number().int().min(20).max(60000),
+  periodMs: z.number().int().min(0).max(60000),
 });
 export type BlockDef = z.infer<typeof blockSchema>;
 
@@ -72,6 +76,9 @@ export const tcpSettingsSchema = z.object({
 });
 export type TcpSettings = z.infer<typeof tcpSettingsSchema>;
 
+export const DEFAULT_CONNECT_TIMEOUT_MS = 3000;
+export const DEFAULT_RECONNECT_INTERVAL_MS = 1000;
+
 export const connectionSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
@@ -82,7 +89,11 @@ export const connectionSchema = z.object({
   tcp: tcpSettingsSchema.optional(),
   timeoutMs: z.number().int().min(50).max(10000).default(500),
   retries: z.number().int().min(0).max(5).default(1),
+  /** Older workspaces use the original 50 ms read retry delay. */
+  retryDelayMs: z.number().int().min(0).max(60000).optional(),
   reconnect: z.enum(['auto', 'manual']).default('auto'),
+  connectTimeoutMs: z.number().int().min(1).max(60000).optional(),
+  reconnectIntervalMs: z.number().int().min(0).max(60000).optional(),
   interFrameMs: z.number().min(0).max(100).default(0),
   rtsControl: z.enum(['none', 'toggle']).default('none'),
   logLevel: z.enum(['info', 'debug']).default('info'),
@@ -138,6 +149,10 @@ export const workspaceSchema = z.object({
   slaves: z.array(slaveSchema).default([]),
   templates: z.array(templateSchema).default([]),
   trendGroups: z.array(trendGroupSchema).default([]),
+  sampleBuffers: z.array(bufferConfigSchema).max(20000).optional(),
+  canvases: z.array(canvasSchema).max(100).optional(),
+  masterScripts: z.array(masterScriptSchema).max(100).optional(),
+  workbench: workbenchLayoutSchema.optional(),
   layout: layoutSchema.default({ module: 'devices', selection: {} }),
 }).superRefine((ws, ctx) => {
   const fail = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message });
@@ -145,6 +160,10 @@ export const workspaceSchema = z.object({
     if (new Set(rows.map(row => row.id)).size !== rows.length) fail(`Duplicate ${label} id`);
   }
   const pointIds = new Set<string>();
+  const bufferKeys = (ws.sampleBuffers ?? []).map(item => `${item.slaveId}::${item.pointId}`);
+  if (new Set(bufferKeys).size !== bufferKeys.length) fail('Duplicate point buffer configuration');
+  if (new Set((ws.canvases ?? []).map(c => c.id)).size !== (ws.canvases ?? []).length) fail('Duplicate canvas id');
+  if (new Set((ws.masterScripts ?? []).map(script => script.id)).size !== (ws.masterScripts ?? []).length) fail('Duplicate script id');
   for (const template of ws.templates) {
     if (new Set(template.blocks.map(block => block.id)).size !== template.blocks.length) fail('Duplicate block id');
     if (findBlockOverlaps(template.blocks).length) fail('Blocks in the same area overlap');
@@ -181,7 +200,7 @@ export const workspaceSchema = z.object({
 });
 export type Workspace = z.infer<typeof workspaceSchema>;
 
-export const WORKSPACE_SCHEMA_VERSION = 1;
+export const WORKSPACE_SCHEMA_VERSION = 2;
 
 export function emptyWorkspace(name = '未命名工作区'): Workspace {
   return {
@@ -216,5 +235,6 @@ export function migrateWorkspace(raw: unknown): Workspace {
     delete obj.points;
     obj.schemaVersion = 1;
   }
+  if (version < 2) obj.schemaVersion = 2;
   return workspaceSchema.parse(obj);
 }

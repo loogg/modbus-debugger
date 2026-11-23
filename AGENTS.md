@@ -20,9 +20,9 @@
 
 ## 项目硬约束
 
-- **权威状态源**：Main 是 Connection Runtime、Scheduler、Block Cache、通信诊断、Recorder、SQLite 和 Workspace I/O 的唯一权威源；Renderer 仅消费 Main Snapshot / delta，严禁直连底层。
+- **权威状态源**：Main 是 Connection Runtime、Scheduler、Block Cache、通信诊断、采样缓冲、SQLite 和 Workspace I/O 的唯一权威源；Renderer 仅消费 Main Snapshot / delta，严禁直连底层。
 - **跨进程契约**：共享 DTO 由 `src/shared/` 定义，Renderer 不依赖 Main 内部类型；生产界面编辑工作区使用 Main 的细粒度命令，不发送完整 `workspace.apply` 快照。
-- **缓存复用**：Realtime / Trend / Recorder 必须复用同一 Block Cache，不得各自创建 Poll。
+- **缓存复用**：Realtime / Trend / Canvas / 采样缓冲 必须复用同一 Block Cache，不得各自创建 Poll。
 - **自研核心编解码**：Modbus Client Core 采用自研纯 TypeScript PDU / RTU / TCP Codec（FC01/02/03/04/05/06/15/16），第三方 Modbus Master API 不进入 Domain / Application。
 - **流式解析与自动恢复**：RTU / TCP 接收链路必须支持任意分片、连续多帧、半包+粘包混合及异常帧识别；坏帧不得使后续合法帧失步或被丢弃。RTU Framing 不依赖字符间隔时序，以预期长度、CRC、可信边界扫描与有界等待为准。
 - **状态真实性**：Value 永远代表设备 confirmed value；输入与 pending 严禁写入 Block Cache。

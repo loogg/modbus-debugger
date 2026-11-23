@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { assertLegacyPreferencesUnchanged, createScratch, removeScratch, setupTestEnvironment, snapshotLegacyPreferences, testRoot } from './tools/test-paths.mjs';
+import { legacySessionsForWorkspace, writeLegacyHistoryFixture } from './tools/legacy-history-fixture';
 
 setupTestEnvironment();
 const testRunDir = process.env.MODBUS_TEST_RUN_DIR ? path.resolve(process.env.MODBUS_TEST_RUN_DIR) : createScratch('e2e-');
@@ -29,7 +30,13 @@ const FIXTURE = path.resolve('tools', 'e2e', 'demo.workspace.json');
 function stageWorkspace(): string {
   workspaceCopyDir = testRunDir;
   const dest = path.join(workspaceCopyDir, 'demo.workspace.json');
-  fs.copyFileSync(FIXTURE, dest);
+  if (process.env.MODBUS_E2E_TCP_ONLY === '1') {
+    const workspace = JSON.parse(fs.readFileSync(FIXTURE, 'utf8')) as import('./src/domain/model').Workspace;
+    workspace.connections = workspace.connections.filter(c => c.transport === 'tcp');
+    workspace.slaves = workspace.slaves.filter(s => workspace.connections.some(c => c.id === s.connectionId));
+    workspace.trendGroups = workspace.trendGroups.map(g => ({ ...g, signals: g.signals.filter(s => workspace.slaves.some(device => device.id === s.pointRef.slaveId)) }));
+    fs.writeFileSync(dest, JSON.stringify(workspace));
+  } else fs.copyFileSync(FIXTURE, dest);
   return dest;
 }
 
@@ -59,7 +66,6 @@ function seedPrefs(workspacePath: string): void {
     window: { x: 60, y: 60, width: 1440, height: 960 },
     sidebarWidth: 244,
     historyDbPath: null,
-    persistRawComm: false,
     lastWorkspacePath: workspacePath,
   };
   fs.writeFileSync(path.join(prefsDir, 'prefs.json'), JSON.stringify(prefs, null, 2));
@@ -107,6 +113,23 @@ export const config = {
         child.once('error', err => { clearTimeout(timer); reject(err); });
       });
     }
+  },
+  beforeSession: async (_config: unknown, _capabilities: unknown, specs: string[]) => {
+    const workspace = JSON.parse(fs.readFileSync(path.join(testRunDir, 'demo.workspace.json'), 'utf8')) as import('./src/domain/model').Workspace;
+    if (specs.some(spec => spec.endsWith('display-followup.e2e.ts'))) {
+      const slave = workspace.slaves.find(item => workspace.connections.find(connection => connection.id === item.connectionId)?.transport === 'tcp')!;
+      const template = workspace.templates.find(item => item.id === slave.templateId)!;
+      workspace.trendGroups[0]!.signals = template.points.map(point => ({ id: `legacy-${point.id}`, pointRef: { connectionId: slave.connectionId, slaveId: slave.id, pointId: point.id }, visible: true }));
+    }
+    const sessions = legacySessionsForWorkspace(workspace);
+    if (specs.some(spec => spec.endsWith('display-followup.e2e.ts'))) {
+      for (const session of sessions) session.events = Array.from(session.events ?? []).filter(event => event.kind !== 'string' || event.tMs === 0)
+        .map(event => event.kind === 'string' ? { ...event, value: 'V2.4.0' } : event);
+    }
+    if (specs.some(spec => spec.endsWith('history-legacy.e2e.ts')) && sessions[0]) {
+      sessions.push({ ...sessions[0], id: 'legacy-unfinished', groupName: '未结束的旧会话', status: 'recording', endUtc: null });
+    }
+    await writeLegacyHistoryFixture(path.join(testRunDir, 'data', 'history.db'), sessions);
   },
   onComplete: (exitCode: number) => {
     sim?.kill();

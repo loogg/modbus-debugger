@@ -9,7 +9,7 @@
 | 目录 | 职责 |
 | --- | --- |
 | `src/domain/` | 协议编解码、流式分帧、映射、缩放、重叠校验 |
-| `src/main/` | 通信 Runtime、Scheduler、Block Cache、Recorder、持久化、工作区 I/O、IPC |
+| `src/main/` | 通信 Runtime、Scheduler、Block Cache、采样缓冲、持久化、工作区 I/O、IPC |
 | `src/preload/` | 最小 typed API |
 | `src/renderer/` | 页面、公共组件、UI 状态与本地化 |
 | `src/shared/` | Snapshot / delta / Command 契约 |
@@ -32,7 +32,7 @@ npm test -- tests/integration/runtime-tcp.test.ts
 
 `npm test` 执行所有 Vitest 用例；也可传入 `tests/unit` / `tests/integration` 目录。监听修改使用 `npx vitest`。
 
-历史库增长测量使用 `node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs -- '--rows=100000,500000,1000000' --batch=1000`；脚本只在 `out/test-temp/` 建库，现有结果与局限见[容量基准](benchmarks/history-capacity-2026-09-25.md)。
+历史库增长测量使用 `node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs -- '--rows=100000,500000,1000000'`；脚本只在 `out/test-temp/` 建库，现有结果与局限见[容量基准](benchmarks/history-capacity-2026-09-25.md)。
 
 E2E 通过 WebdriverIO + Electron Service 运行打包版，并自动启动 PyModbus：
 
@@ -44,7 +44,33 @@ npm run test:e2e -- --spec tests/e2e/app.e2e.ts --mochaOpts.grep "launches with"
 
 需要全部 E2E 时运行 `npm run test:e2e`。固定 fixture 为 `tools/e2e/demo.workspace.json`，测试会复制后使用；测试隔离规则见下文。历史测试截图路径见[验证与审计历史](archive/full-audit.md)，文档截图独立维护于 `docs/images/`。
 
+画布和多窗口定向验证：
+
+```powershell
+npm test -- tests/unit/canvas.test.ts tests/unit/canvas-containers.test.ts tests/unit/ui/canvas-widget.test.tsx tests/unit/ui/canvas-trend.test.tsx tests/unit/ui/chart-units.test.tsx tests/unit/ui/workbench-state.test.tsx tests/unit/ui/workbench-recovery.test.tsx tests/integration/canvas-workspace.test.ts --maxWorkers=2 --minWorkers=1
+npm run package
+$env:MODBUS_E2E_TCP_ONLY = '1'
+npm run test:e2e -- --spec tests/e2e/canvas-workbench.e2e.ts --logLevel error
+Remove-Item Env:MODBUS_E2E_TCP_ONLY
+```
+
+`MODBUS_E2E_TCP_ONLY=1` 在启动应用前移除临时夹具中的 RTU 连接及相应引用，不尝试打开串口。定向套件使用独立 PyModbus TCP 模拟器，检查实际写入、同页多实例、原生关闭/回入、弹窗内 Radix 交互、容器持久化与多信号曲线。原生窗口生命周期仍需真实桌面操作；结果记录在[画布与工作台任务](acceptance/canvas-workbench.md)。`npx vite-node tools/create-canvas-review-fixture.ts` 可在 `out/test-temp/canvas-compact-review/` 生成紧凑画布审查夹具，供真实 Bridge 或原生实例使用。
+
+仪表/输入类型与样式的定向单测为 `tests/unit/canvas-variants.test.ts`，枚举下拉的主窗口/缩放/原生弹出锚点已纳入上述 E2E。生成五种仪表、五种输入的审查夹具可运行 `npx vite-node tools/create-canvas-review-fixture.ts --variants`，输出位于 `out/test-temp/canvas-variants-review/`。该隔离夹具把模拟器的 String 寄存器配置为可写，以验证文本和空字符串写入。
+
+指示灯匹配和默认状态的定向单测为 `tests/unit/canvas-lamp.test.ts`。`npx vite-node tools/create-canvas-review-fixture.ts --lamps` 在 `out/test-temp/canvas-lamp-review/` 生成亮灭、枚举、区间和未匹配状态夹具，配合端口 50520 的 TCP 模拟器验证。打包版 E2E 包含枚举读取、手动配置默认文字/颜色/渐变、写入未映射值以及弹出/回入和重新加载恢复。
+
+编辑态预览的定向验证：`npx vitest run tests/unit/canvas-preview.test.ts tests/unit/ui/canvas-widget.test.tsx tests/unit/ui/canvas-trend.test.tsx --maxWorkers=2 --minWorkers=1`。`npx vite-node tools/create-canvas-review-fixture.ts --preview` 在 `out/test-temp/canvas-preview-review/` 生成真实 Backend 和原生审查用夹具。上述打包版 E2E 同时覆盖预览与设备确认值隔离、视图副本独立、原生弹出/回入保留、运行及重载清除。
+
+Host 读取和采样缓冲的验证见[任务记录](acceptance/host-data-buffers.md)。`npx vite-node tools/create-canvas-review-fixture.ts --buffers` 创建 `out/test-temp/host-buffer-review/source.workspace.json`，使用 20 ms 控制块和 80 ms 遥测块，供真实 Backend 与原生 UI 检查。定向逻辑测试为 `tests/unit/sample-buffers.test.ts`、`tests/unit/host-data-cache.test.ts`、`tests/unit/chart-data.test.ts`、`tests/unit/ui/buffer-export.test.tsx` 和 `tests/integration/point-data.test.ts`。
+
+打包后执行 `$env:MODBUS_E2E_TCP_ONLY='1'`，再运行 `npm run test:e2e -- --spec tests/e2e/host-buffers.e2e.ts --logLevel error`。该套件将上述夹具复制进隔离工作区，验证真实写入、共享容量三个入口、跨块光标命中实际样本、原生弹出/回入和 CSV 文件。旧历史界面测试由 `tools/legacy-history-fixture.ts` 在 E2E 启动前准备旧格式 SQLite 文件，读取与备注回归位于 `tests/e2e/history-legacy.e2e.ts`。当前数据使用缓冲导出。
+
 ## Vite 构建与运行边界
+
+清理会话写入后的定向回归包括 `tests/integration/recorder-removal.test.ts`、`tests/integration/persistence.test.ts` 和历史 UI 测试。打包后运行 `npm run test:e2e -- --spec tests/e2e/history-legacy.e2e.ts --logLevel error`，验证旧库读取、备注、CSV、回放和移除接口的拒绝响应。采样缓冲与主从导出沿用 `host-buffers.e2e.ts` 和 `master-slave-loopback.e2e.ts`。旧格式夹具在 `beforeSession` 中写入隔离测试目录。
+
+高速轮询定向验证使用 `npx vitest run tests/integration/polling-scheduler.test.ts tests/integration/runtime-tcp.test.ts tests/integration/scan-rtu.test.ts tests/unit/ui/device-dialogs.test.tsx tests/unit/ui/template-edit.test.tsx --maxWorkers=1 --minWorkers=1`，覆盖低周期、公平轮询、可配置重试间隔、RTU 事务边界与配置入口。真实链路沿用 `tests/integration/simulator-wire.test.ts`，RTU 端口通过环境变量显式指定。结果写入[任务记录](acceptance/host-data-buffers.md#0180-高速轮询与连接重试配置)。
 
 | 配置 | target | 输出 |
 | --- | --- | --- |
@@ -100,7 +126,7 @@ npm run test:e2e -- --spec tests/e2e/master-slave-loopback.e2e.ts --logLevel err
 Remove-Item Env:MODBUS_SELF_RTU
 ```
 
-前者运行既有正式主站、模板/导入、历史、设置、更新流程；后者在同一个 Native Main 内运行 TCP/RTU 双端类型、真实中文/emoji 编辑、记录、回放与 CSV。所有 Electron 自动化套件（E2E、容量、产物 Smoke、自升级）串行执行，避免同名应用窗口/调试会话识别相互干扰。证据位于 `out/test-temp/full-e2e/` 和 `out/test-temp/loopback-evidence/native/`；失败时 WDIO 保留对应隔离目录，成功清理应用数据副本。
+前者运行既有正式主站、模板/导入、历史、设置、更新流程；后者在同一个 Native Main 内运行 TCP/RTU 双端类型、真实中文/emoji 编辑、确认采样缓冲与 CSV。所有 Electron 自动化套件（E2E、容量、产物 Smoke、自升级）串行执行，避免同名应用窗口/调试会话识别相互干扰。证据位于 `out/test-temp/full-e2e/` 和 `out/test-temp/loopback-evidence/native/`；失败时 WDIO 保留对应隔离目录，成功清理应用数据副本。
 
 需要人工审查时运行 `node node_modules/vite-node/vite-node.mjs tools/create-loopback-fixture.ts`，生成 `out/test-temp/loopback-review/loopback.workspace.json`。使用独立 `MODBUS_DATA_DIR` 与该文件设置 `MODBUS_E2E_WORKSPACE`，再 `npm start`；从站连接通过 UI 启动，TCP 使用回环端口 15031，RTU 从站 COM1、主站 COM2，19200 / 8N1。`--tcp-only` 可生成只含 TCP 的审查夹具。不要在日常数据根目录加载测试工作区。
 
@@ -162,9 +188,9 @@ Setup 使用安装向导和程序文件清单，支持自选目录，保留用�
 ## 模拟器与功能验收实践
 
 - **PyModbus 从站测试**：从站 CLI 必须同时提供 RTU 与 TCP 模式。RTU 用 `--serial-port` 显式指定从站端口，禁止写死 COM 号；TCP 用 `--host` / `--port` 指定监听地址。
-- **协议与场景覆盖**：覆盖支持的 FC01/02/03/04/05/06/15/16、独立 Unit 和四类地址区、写后读回、非法地址、未知 Unit 静默、动态/静态数据及故障注入。
+- 支持的 FC01/02/03/04/05/06/15/16/22、独立 Unit 和四类地址区、写应答确认、只写地址、非法地址、未知 Unit 静默、动态/静态数据及故障注入均有相关验证。
 - **UI 真实交互验证**：UI 验收通过真实鼠标/键盘触发操作，核对确认设备值、Main 状态、文件或历史库结果；IPC 仅用于搭建 fixture 与观察状态，不得替代被测按钮。Browser Review 的 Mock Transport 可检查布局和状态，通信验收须使用真实 Main 链路与模拟器或设备。
-- **有效断言原则**：断言应能检验相反与边界行为（如扫描取消后不发后续请求、重新扫描替换结果、写入区分从站实例、只读/取消不发写包、写后回读确认、复制模板验证新 ID、导入验证实际地址与宽度等）。
+- 断言覆盖相反与边界行为，包括扫描取消、重新扫描、实例隔离、只读/取消、正常写应答匹配、独立采集值、只写范围和样本真实性、复制模板新 ID、导入实际地址与宽度。
 - **审计记录**：全量验收报告需列出实际通过、失败与明确跳过的项目；无真实串口环境时须明确标注，不可把 TCP/mock 代替为 RTU 硬件通过。每次正式发布的记录放入 `docs/archive/acceptance-v<version>.md`；早期审计过程见 [full-audit.md](archive/full-audit.md)。
 
 ## 文档与截图维护

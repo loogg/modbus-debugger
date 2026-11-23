@@ -112,13 +112,9 @@ describe('既有页面操作回归', () => {
     await waitGone('字段映射');
   });
 
-  it('趋势记录 → 历史会话 → 信号页 全链路', async () => {
+  it('旧数据库 → 历史查看 → 信号页', async () => {
     await rail('趋势');
-    await $('//button[contains(., "开始记录")]').click();
-    await browser.pause(3000);
-    expect(await bodyText()).toContain('停止记录');
-    await $('//button[contains(., "停止记录")]').click();
-    await browser.pause(1000);
+    expect(await bodyText()).toContain('导出采样数据');
     await rail('历史');
     await browser.pause(400);
     await shot('14-history-1440');

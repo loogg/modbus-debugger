@@ -22,7 +22,7 @@ it('makes samples beyond 500 reachable, identifies both sources, and resets pagi
       const large = cmd.type === 'history.sessionData' && cmd.sessionId === 'large';
       return { ok: true, value: { detail: { ...sessions[large ? 0 : 1], schema }, samples: Array.from({ length: large ? 502 : 1 }, (_, i) => ({ signalId: i % 2 ? 'slave' : 'master', tMs: i * 1000, value: i === 501 ? 9876.543 : i })), events: [], rawComm: [] } as T };
     },
-    snapshot: { revision: 1, workspace: emptyWorkspace(), workspacePath: null, dirty: false, connections: {}, blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, recording: null, warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '', sessions },
+    snapshot: { revision: 1, workspace: emptyWorkspace(), workspacePath: null, dirty: false, connections: {}, blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '', sessions },
   });
   render(<HistoryScreen />);
   expect(await screen.findByText('第 1 / 2 页 · 共 502 个数值样本 · 每页 500 条')).toBeInTheDocument();

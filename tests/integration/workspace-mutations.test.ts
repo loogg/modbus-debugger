@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import path from 'node:path';
 import { createScratch } from '../../tools/test-paths.mjs';
 import { commandSchema } from '../../src/shared/commands';
@@ -9,6 +9,17 @@ import { WorkspaceService } from '../../src/main/services/workspace';
 import { HistoryStore } from '../../src/main/services/history';
 import { FakeTransport } from '../support/fake';
 import { templateWorkspace } from '../support/template-workspace';
+
+it('rejects stale edits of the same point while preserving unrelated concurrent changes', () => {
+  const workspace = templateWorkspace();
+  const original = workspace.templates[0]!.points[0]!;
+  const latest = mutateWorkspace(workspace, { type: 'template.upsertPoint', templateId: 't1', point: { ...original, name: 'First editor' }, expected: original });
+  expect(() => mutateWorkspace(latest, { type: 'template.upsertPoint', templateId: 't1', point: { ...original, unit: 'V' }, expected: original })).toThrow('其他页面');
+  const other = workspace.templates[0]!.points[1]!;
+  const both = mutateWorkspace(latest, { type: 'template.upsertPoint', templateId: 't1', point: { ...other, unit: 'A' }, expected: other });
+  expect(both.templates[0]!.points[0]!.name).toBe('First editor');
+  expect(both.templates[0]!.points[1]!.unit).toBe('A');
+});
 
 async function harness(initial = templateWorkspace()) {
   const root = createScratch('workspace-mutations-');
@@ -186,8 +197,10 @@ it('waits for the old transport to close before connecting a replacement', async
     }
 
     override async close(): Promise<void> {
-      this.closeStarted = true;
-      if (this.delayClose) await this.closeGate;
+      if (this.connected) {
+        this.closeStarted = true;
+        if (this.delayClose) await this.closeGate;
+      }
       await super.close();
     }
   }
@@ -204,8 +217,7 @@ it('waits for the old transport to close before connecting a replacement', async
   } });
   manager.start();
   try {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(transports[0]?.connected).toBe(true);
+    await vi.waitFor(() => expect(transports[0]?.connected).toBe(true));
     const connection = { ...workspace.current.connections[0]!, timeoutMs: 900 };
     expect(await manager.handleCommand(commandSchema.parse({ type: 'connection.upsert', connection }))).toMatchObject({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 0));

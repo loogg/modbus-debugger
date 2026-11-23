@@ -5,7 +5,7 @@ import { DiagnosticsStore } from '../../src/main/runtime/diagnostics';
 import { FakeTransport, hex } from '../support/fake';
 import { buildRtuAdu, encodeResponsePdu } from '../../src/domain/protocol';
 
-it('stopped RTU scan drains a late response before the queued read uses the same Unit/FC', async () => {
+it('stopped RTU scan diagnoses an idle late response before the queued read uses the same Unit/FC', async () => {
   const transport = new FakeTransport('rtu');
   const diagnostics = new DiagnosticsStore();
   const runtime = new ConnectionRuntime({
@@ -30,7 +30,7 @@ it('stopped RTU scan drains a late response before the queued read uses the same
   } finally { await runtime.stop(); }
 });
 
-it('ordinary RTU timeout drains a late same-Unit/same-FC reply before the next read', async () => {
+it('ordinary RTU timeout diagnoses an idle late reply and preserves the next confirmed read', async () => {
   const transport = new FakeTransport('rtu');
   const diagnostics = new DiagnosticsStore();
   const runtime = new ConnectionRuntime({
@@ -57,7 +57,7 @@ it('ordinary RTU timeout drains a late same-Unit/same-FC reply before the next r
     expect(diagnostics.recentTransactions(2).map((tx) => tx.responsePduHex)).toEqual([null, '03020007']);
     const late = diagnostics.recentParseEvents(10).find((ev) => ev.rawHex === hex(stale));
     expect(late).toMatchObject({
-      connectionId: 'rtu', kind: 'unexpected', reason: expect.stringContaining('bounded drain'),
+      connectionId: 'rtu', kind: 'unexpected', reason: expect.stringContaining('no in-flight request'),
       rawHex: hex(stale), discarded: stale.length, recoveredCount: 0,
       traceId: timedOut.traceId, unitId: 1, functionCode: 3, sourceKind: 'temporary-read',
     });
@@ -87,7 +87,7 @@ it('records RTU resync prefix bytes and recovered frame count without inventing 
   } finally { await runtime.stop(); }
 });
 
-it('an RTU write timeout drains its late ack, reads back once and still reports an unknown write result', async () => {
+it('an RTU write timeout diagnoses its idle late ack and allows a separate refresh', async () => {
   const transport = new FakeTransport('rtu');
   const diagnostics = new DiagnosticsStore();
   const cache = new BlockCache();
@@ -106,7 +106,7 @@ it('an RTU write timeout drains its late ack, reads back once and still reports 
   const recordTransaction = diagnostics.recordTransaction.bind(diagnostics);
   const recordSpy = vi.spyOn(diagnostics, 'recordTransaction').mockImplementation((transaction) => {
     recordTransaction(transaction);
-    // Deliver the late ack at the precise timeout boundary, inside the quiet window.
+    // Deliver the late ack at the timeout boundary while no request owns the receive path.
     if (transaction.sourceKind === 'write' && transaction.result === 'timeout') transport.inject(ack);
   });
   await runtime.start();
@@ -115,13 +115,13 @@ it('an RTU write timeout drains its late ack, reads back once and still reports 
     const timedOutWrite = diagnostics.recentTransactions(10).find((tx) => tx.sourceKind === 'write' && tx.result === 'timeout');
     expect(timedOutWrite).toBeDefined();
     expect(outcome.result).toBe('timeout');
-    expect(outcome.readBack?.result).toBe('ok');
-    expect(outcome.readBack?.response?.kind === 'registers' && outcome.readBack.response.registers).toEqual([42]);
-    expect(transport.sent.map((request) => request[1])).toEqual([6, 3]);
-    expect(diagnostics.recentTransactions(10).filter((tx) => tx.sourceKind === 'readback')).toHaveLength(1);
+    expect(outcome.readBack).toBeNull();
+    expect(transport.sent.map((request) => request[1])).toEqual([6]);
+    expect(diagnostics.recentTransactions(10).filter((tx) => tx.sourceKind === 'readback')).toHaveLength(0);
     expect(diagnostics.recentParseEvents(10)).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'unexpected', rawHex: hex(ack), discarded: ack.length, traceId: timedOutWrite?.traceId }),
     ]));
+    await runtime.refresh(slave.id, block.id);
     const confirmed = cache.get('s1::b1')?.memory;
     expect(confirmed?.kind === 'registers' && confirmed.registers[0]).toBe(42);
   } finally { recordSpy.mockRestore(); await runtime.stop(); }

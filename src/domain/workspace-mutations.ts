@@ -2,14 +2,14 @@ import { copyTemplate } from './template-copy';
 import { workspaceSchema, type BlockDef, type ConnectionDef, type DeviceTemplate, type PointDef, type SlaveDef, type TrendGroup, type Workspace } from './model';
 
 export type WorkspaceMutation =
-  | { type: 'connection.upsert'; connection: ConnectionDef }
-  | { type: 'slave.upsert'; slave: SlaveDef }
+  | { type: 'connection.upsert'; connection: ConnectionDef; expected?: ConnectionDef | null }
+  | { type: 'slave.upsert'; slave: SlaveDef; expected?: SlaveDef | null }
   | { type: 'template.add'; template: DeviceTemplate }
   | { type: 'template.copy'; sourceTemplateId: string; newId: string; name: string }
-  | { type: 'template.upsertBlock'; templateId: string; block: BlockDef }
+  | { type: 'template.upsertBlock'; templateId: string; block: BlockDef; expected?: BlockDef | null }
   | { type: 'template.patchBlock'; templateId: string; blockId: string; patch: Partial<Pick<BlockDef, 'name' | 'start' | 'length' | 'periodMs'>> }
   | { type: 'template.importContent'; templateId: string; blocks: BlockDef[]; points: PointDef[] }
-  | { type: 'template.upsertPoint'; templateId: string; point: PointDef }
+  | { type: 'template.upsertPoint'; templateId: string; point: PointDef; expected?: PointDef | null }
   | { type: 'trend.upsertGroup'; group: TrendGroup }
   | { type: 'trend.deleteGroup'; groupId: string }
   | { type: 'trend.addSignals'; groupId: string; signals: TrendGroup['signals'] }
@@ -29,6 +29,10 @@ function upsertById<T extends { id: string }>(items: T[], item: T): T[] {
     : [...items, item];
 }
 
+function checkExpected(actual: unknown, expected: unknown) {
+  if (expected !== undefined && JSON.stringify(actual ?? null) !== JSON.stringify(expected)) throw new Error('此对象已在其他页面修改或删除。草稿已保留，请重新打开最新版本后编辑。');
+}
+
 function rejectPointIdsFromOtherTemplates(workspace: Workspace, templateId: string, points: PointDef[]): void {
   const otherIds = new Set(workspace.templates.filter((template) => template.id !== templateId).flatMap((template) => template.points.map((point) => point.id)));
   const duplicate = points.find((point) => otherIds.has(point.id));
@@ -43,6 +47,7 @@ function validateTrendReferences(workspace: Workspace, group: TrendGroup): void 
     if (!template?.points.some((point) => point.id === ref.pointId)) {
       throw new Error(`Trend signal references missing point or slave: ${signal.id}`);
     }
+    if (template.points.find(point => point.id === ref.pointId)?.access === 'wo') throw new Error('只写点位提供命令结果，趋势请选择可读点位');
   }
 }
 
@@ -51,9 +56,11 @@ export function mutateWorkspace(workspace: Workspace, mutation: WorkspaceMutatio
   let next: Workspace;
   switch (mutation.type) {
     case 'connection.upsert':
+      checkExpected(workspace.connections.find(c => c.id === mutation.connection.id), mutation.expected);
       next = { ...workspace, connections: upsertById(workspace.connections, mutation.connection) };
       break;
     case 'slave.upsert':
+      checkExpected(workspace.slaves.find(s => s.id === mutation.slave.id), mutation.expected);
       if (!workspace.connections.some((connection) => connection.id === mutation.slave.connectionId)) {
         throw new Error(`Connection does not exist: ${mutation.slave.connectionId}`);
       }
@@ -80,7 +87,7 @@ export function mutateWorkspace(workspace: Workspace, mutation: WorkspaceMutatio
       break;
     }
     case 'template.upsertBlock':
-      requiredTemplate(workspace, mutation.templateId);
+      checkExpected(requiredTemplate(workspace, mutation.templateId).blocks.find(b => b.id === mutation.block.id), mutation.expected);
       next = {
         ...workspace,
         templates: workspace.templates.map((template) => template.id === mutation.templateId
@@ -114,6 +121,7 @@ export function mutateWorkspace(workspace: Workspace, mutation: WorkspaceMutatio
     }
     case 'template.upsertPoint': {
       const template = requiredTemplate(workspace, mutation.templateId);
+      checkExpected(template.points.find(p => p.id === mutation.point.id), mutation.expected);
       if (!template.blocks.some((block) => block.id === mutation.point.blockId)) {
         throw new Error(`Block does not exist: ${mutation.point.blockId}`);
       }

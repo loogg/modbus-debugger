@@ -4,18 +4,18 @@
 
 ## 主站 / 从站 Runtime
 
-`ConnectionDef.role` 可选 `master` / `slave`，缺省按主站解释，保持 schema v1 的旧文件兼容。`RuntimeManager` 根据角色创建 `ConnectionRuntime` 或 `SlaveRuntime`，共用现有关闭屏障、Block Cache、DiagnosticsStore、Snapshot/delta 与 Recorder。下文 Scheduler、主动写回读和扫描规则适用于主站。
+`ConnectionDef.role` 可选 `master` / `slave`，缺省按主站解释，保持 schema v1 的旧文件兼容。`RuntimeManager` 根据角色创建 `ConnectionRuntime` 或 `SlaveRuntime`，共用现有关闭屏障、Block Cache、DiagnosticsStore、Snapshot/delta 与采样缓冲。下文 Scheduler、主动写入和扫描规则适用于主站。
 
 ```text
 Renderer --Command--> RuntimeManager
                          +-- master: ConnectionRuntime -> Scheduler -> Transport
                          +-- slave:  SlaveRuntime <- TCP Server / SerialTransport
                                          |        请求 Framer -> PDU 校验 -> 原子读写
-                                   Block Cache -> 响应 / Snapshot / delta
-                                         +------> Trend / Recorder
+                                   Block Cache -> 响应 / 最新值读取
+                                         +------> 点位采样缓冲 -> Host 读取 / CSV
 ```
 
-请求解码/执行位于纯 TS `domain/protocol/slave.ts`，验证完整 PDU、数量、ByteCount、地址和值后执行；通过同步内存适配器预验证全部连续段，再提交缓存。02/04 的只读语义约束线协议，独立的 `slave.setValues` 命令允许在 Main 设置四类本机内存；未提交草稿不写入 Cache。`point.write` 在从站角色进行本地原子映射编辑，主站仍执行设备写入与回读。
+请求解码/执行位于纯 TS `domain/protocol/slave.ts`，验证完整 PDU、数量、ByteCount、地址和值后，通过同步内存适配器预验证全部连续段并提交缓存。网络读取使用同一点位可读范围计划，FC22 在本机内存执行原子掩码更新。独立的 `slave.setValues` 命令允许在 Main 设置四类本机内存，`point.write` 在从站角色进行本地原子映射编辑。主站通过设备写应答结算命令结果。
 
 TCP Server 每个客户端独立 Framer，保留请求 TID，最多 32 个客户端，单客户端发送积压上限 64 KiB。RTU 复用正式 SerialTransport，按请求预期长度/CRC/可信边界/有界等待分帧，不依赖字符间隔；响应串行发送，队列最多 128 项。长输入按 ADU 上限分段送入缓冲；截断 TCP 候选超时后保留后续可信帧。
 
@@ -36,9 +36,13 @@ flowchart LR
     MOD --> TR["RTU / TCP Transport"]
     APP --> DB["Workspace / SQLite"]
     SCH --> CACHE["Block Cache"]
-    CACHE --> RT["Realtime"]
-    CACHE --> TREND["Trend"]
-    CACHE --> REC["Recorder"]
+    CACHE --> RT["data.read 最新值"]
+    CACHE --> BUFFER["实例点位环形缓冲"]
+    BUFFER --> TREND["data.read 时序"]
+    BUFFER --> EXPORT["CSV 文件"]
+    RT --> FRONT["前端共享缓存 / 独立周期 Host"]
+    TREND --> FRONT
+    DB --> HISTORY["旧历史读取 / 备注"]
 ```
 
 ## 跨进程契约与工作区编辑
@@ -46,10 +50,24 @@ flowchart LR
 - `src/shared/contracts.ts`、`commands.ts` 和 `snapshot.ts` 定义跨 Main / Preload / Renderer 的类型与命令；Main 内部类型不得被 Renderer 或 Shared 反向引用，ESLint 对此设边界检查。
 - 连接、从站、模板、数据块、点位和趋势编辑通过细粒度命令进入 Main。`mutateWorkspace()` 基于 Main 当前 Workspace 生成并验证新状态；生产界面不提交完整 Workspace。`workspace.apply` 只保留给隔离的测试 fixture 和内部工具，正式打包的 IPC 默认拒绝此命令。
 - 工作区变更发布 Snapshot / delta；连接配置替换须等旧传输关闭后才启动新传输。历史记录、Block Cache 与 Scheduler 仍由 Main 统一维护。
-- Block Cache 为每次目标绑定维护独立 generation 和 Runtime 所有权。地址区、地址、长度、Unit 或 Runtime 变化及删除重建会使旧操作失效；排队操作、轮询成功/错误、RMW 预读后发写及写后回读均核对代次。名称等非寻址属性修改不丢弃合法读结果。
-- Main 的 `PointWriteResult` 区分 `not-sent`（预读失败、未发写包）、`rejected`、`unknown` 和 `confirmed`。Renderer 消费命令终态以结束等待，设备确认值仍仅来自 Block Cache；不伪造 write 事务表示预读失败。
+- Block Cache 为每次目标绑定维护独立 generation 和 Runtime 所有权。地址区、地址、长度、Unit、Runtime、读取计划变化及删除重建使旧操作失效，排队操作、轮询成功/错误、RMW 预读及发写均核对代次。Main 另外维护写入绑定 epoch，点位权限、映射和换算的 A→B→A 修改也会撤销旧在途命令的显示结果。
+- Main 的 `PointWriteResult` 区分 `not-sent`（预读失败、未发写包）、`rejected`、`unknown` 和 `confirmed`。匹配的正常写应答表示 confirmed，设备确认值来自 Block Cache。Main 的 `PointWriteReceipt` 随最新点位读取携带最近尝试及最近成功命令，供只写控件投影，运行结束释放该记录。
+
+```text
+写控件 -> point.write -> [读写部分字段的最新预读] -> FC05/06/16 或 FC22
+                                                       |
+                                                 匹配写应答
+                                                       |
+Main 命令记录 -> Host 最新值读取 -> 成功/拒绝/未知与上次成功命令
+
+可读范围轮询 -> 实际设备响应 -> Block Cache 有效地址 -> 点位值与采样缓冲
+```
+
+读取计划位于 `domain/point-access.ts`。完整块中仅由 wo 映射占用的地址被排除，可读别名保留实际读取。所有映射均为 wo 时计划为空，写入目标继续有效。连续范围按协议上限分片，尽量保持每个映射完整，重叠长映射通过补充覆盖范围保证每个样本具有完整响应依据。缓存按响应合并和维护有效地址，曲线只追加本次范围完整覆盖的可读点位。
 
 ## 开发 Browser Review
+
+组态画布与工作台相关 Browser Review 同样使用真实 Backend。`canvas.*` 与 `workbench.saveLayout` 的显式或隐式保存路径须位于本次审查根目录，不能通过新命令绕过文件边界。
 
 - 原生 IPC 与独立审查服务复用 `AppBackendService`。Bridge 只绑定回环地址，WebSocket 握手校验准确 Origin 白名单和每次启动随机生成的会话凭据；鉴权前不提供 Snapshot、版本或事件。普通健康检查不披露会话信息。
 - 本机 `temp/dev-bridge-session.json` 保存带凭据 fragment 的 `reviewUrl`；Renderer 用 WebSocket subprotocol 提交凭据，拒绝向非回环目标发送凭据。凭据不出现在 HTTP 查询参数或启动日志中；缺少凭据时明确失败，不回退 Mock。
@@ -59,7 +77,7 @@ flowchart LR
 ## Modbus Client Core
 
 - `domain/protocol` 自研纯 TypeScript PDU / RTU / TCP Codec 与 request/result model。
-- 正式范围：FC01 / 02 / 03 / 04 / 05 / 06 / 15 / 16。
+- 正式范围包含 FC01 / 02 / 03 / 04 / 05 / 06 / 15 / 16 / 22。写应答需匹配地址、写值或数量，FC22 需匹配 AND/OR 掩码。
 - 接收路径分层为 `Transport → Streaming Framer / Parser → ADU Validator → PDU Decoder`；Transport 只交付任意 byte chunk，不承担“一次 read/recv = 一帧”的假设。
 - **TCP Framer**：基于 MBAP Header 的 Protocol ID / Length 等字段判断候选帧长度；不足一帧继续缓存，完整后逐帧 emit，并继续解析同一 buffer 中后续帧。非法 MBAP / Length 必须触发受控 Resync，不能无条件 `buffer.clear()`。
 - **RTU Framer（不依赖字符间隔时序）**：本实现**不使用 t1.5 / t3.5 作为分帧判决，也不作为诊断 hint**，且不保留任何 strict/时序模式开关。理由：USB 串口驱动与操作系统调度会把字符间隔拉伸到远超协议值，以间隔判帧会在真实链路上产生大量假“不完整帧”。分帧依据固定为四条：
@@ -70,24 +88,30 @@ flowchart LR
 - 标准尺寸边界固定为 PDU ≤ 253 bytes、RTU ADU ≤ 256 bytes、TCP ADU ≤ 260 bytes；TCP / RTU 的 buffer 上限和异常等待边界必须围绕这些协议上限设计，超长 Length、连续垃圾数据或永远不完整的候选帧不能导致无限等待或内存增长。
 - 合法 Exception Response 单独归类，不得误判为 malformed frame；结构合法但与当前 in-flight request 不匹配的响应归为 `Unexpected Response`。协议结果至少区分 `OK / Exception Response / Unexpected Response / Timeout / CRC Error / Malformed Frame / Transport Error`。
 - TCP 使用 MBAP Transaction ID 做线上请求关联，但它与应用 `traceId` 分离；迟到的旧响应可依据 Transaction ID 识别并丢弃/记录，不得关联到后续请求。
-- RTU 没有 Transaction ID。发生 Timeout、截断帧或严重帧错误后，Connection Runtime 必须进入**有界 drain / quiet recovery**：在确认串口接收重新达到可信静默边界前，不把迟到字节关联到下一请求；恢复完成后再继续调度。即使 Unit ID / Function 相同，也不得仅凭字段相似把 Timeout 后迟到的旧响应当作新请求响应。
+- RTU 超时即结束本次等待并清理过期半包，保留超时事务上下文供空闲期间的 late/unexpected 诊断使用。发送下一条前再次清理事务间残留，并根据最近串口收发活动满足发送侧帧间静默。接收分帧继续依据长度和 CRC。RTU 同站号、功能码、长度的迟到读取应答存在归属歧义，用户配置的超时应覆盖设备正常处理时间，固定附加恢复窗口的保护范围有限，现行实现已移除该窗口。
 - 对当前请求已知的 Unit ID、Function Code、预期响应形态/长度要作为 Framing 与匹配上下文，减少噪声或旧响应被误接受的风险。
 - Framer / Validator 不得静默吞掉协议异常：至少输出结构化 parse/error event，记录错误类型、原因、相关 Raw Bytes、Resync 丢弃字节数/范围以及关联的 connection/request context；诊断层据此生成 Transaction / communication diagnostic 记录。
 
 ## Connection Scheduler
 
 - 每 Connection 独立 Runtime / Scheduler，当前 RTU / TCP 均 `maxInFlight = 1`。
+- Block.periodMs 允许 0–60000 ms 整数，0 表示尽快采集。周期从选中该块时计算，下次到期后参与调度，同到期时间按上次调度顺序公平轮转。任务完成通过 `setImmediate` 唤醒调度并让出 I/O，未来块和轮询重试按各自截止时间唤醒。5 ms 定时检查继续处理分帧维护和重连。
+- Connection.retryDelayMs 允许 0–60000 ms 整数，旧工作区缺省按 50 ms 解释。常规轮询的失败重试释放执行槽，在连接级间隔到期后重新参与轮询，同一块保留一个重试状态。混合块每个读取片段结束后重新参与调度，周期从首片段选中时计算。事务的 pollCycleStart 标记首次片段的首次尝试，块实际周期按该标记统计，各片段的耗时及失败继续纳入通信诊断。手工读取、扫描及 RMW 预读沿用连接重试间隔，停止连接或扫描取消对应等待。
+- Connection.interFrameMs 表示上次请求结束到下一次发送的最短间隔，缺省 0 ms，界面位于高级连接参数。请求间隔、重试间隔和 RTU 发送静默按各自截止时间重叠计算。
 - 优先级：写确认序列 → Temporary Read / 手工诊断 → Periodic Poll。
 - RTU Scanner 独占该 Connection；扫描期间暂停 Poll，结束后恢复。
 - 从站扫描按输入范围（1–247）依次发送读取探测。默认 FC03 / Start=0 / Qty=1 / timeout=150 ms / 重试沿用 Connection.retries；扫描页 Unit 范围下方提供默认折叠的“高级扫描配置”，可选择 FC01/02/03/04、0-based 起始地址（0–65535）、超时（10–10000 ms）、重试（沿用连接或 0–5 次）。Qty 固定为 1，FC01/02 表示 1 位，FC03/04 表示 1 个寄存器。设置仅覆盖本次扫描，不修改连接配置；扫描与停止收尾期间锁定控件，折叠不会重置设置。
-- `device.scan.options` 使用共享 Zod schema 做 IPC / Runtime 校验，拒绝写功能码、非整数、越界值和非固定数量；未携带 options 的旧命令沿用默认行为。生效后的 options 存入 Main 扫描 Snapshot，页面重新打开时能显示正在执行的参数。超时/传输失败按本次生效 retries 重试，间隔 50 ms；正常响应与合法异常响应均算发现设备，结果保留异常码。无响应只能说明本次探测未发现，不能断定从站不存在。
-- Scanner 阻止当前连接新增 Poll / 手工请求进入执行，等待正在执行的事务或 Write/RMW→Read Back 原子组完成后再占用执行槽。`device.stopScan` 请求停止：当前已发出探测正常收尾，不再重试或发送下一个地址；保留已发现结果，释放执行槽并恢复队列/轮询。RTU 仍遵守超时 drain，迟到响应不能被恢复后的请求接收。断开连接也结束扫描；同一连接拒绝重复扫描。
+- `device.scan.options` 使用共享 Zod schema 做 IPC / Runtime 校验，拒绝写功能码、非整数、越界值和非固定数量；未携带 options 的旧命令沿用默认行为。生效后的 options 存入 Main 扫描 Snapshot，页面重新打开时能显示正在执行的参数。超时/传输失败按本次生效 retries 和连接 retryDelayMs 重试。扫描按目标从站应答登记发现结果及异常码，网关错误保存于诊断。
+- Scanner 阻止当前连接新增 Poll / 手工请求进入执行，等待正在执行的事务或 RMW/Write 原子组完成后再占用执行槽。`device.stopScan` 请求停止，当前已发出探测正常收尾，取消重试等待，保留已发现结果，释放执行槽并唤醒队列/轮询。RTU 发送继续遵守帧间静默。断开连接也结束扫描，同一连接拒绝重复扫描。
 - 扫描进度、停止状态、实际已检查地址数和部分结果由 Main Runtime 保存，通过 Connection Snapshot / delta 下发；切换页面再返回仍可查看并停止当前扫描，Renderer 不设后台查询 Timer。
 - 临时读取默认 FC03 / Start=0 / Qty=10，用户可修改数量；只发起一次手工读取操作，沿用连接的超时/重试策略，不新增周期轮询。
 - 临时读取 UI 禁止重复提交，离线/扫描中说明不可读取原因；Main 离线调用立即拒绝。停止连接或传输中断时必须 reject 尚未发送的排队操作，防止 Renderer 永久等待。读取失败显示 Main 结果分类、异常码/含义与请求上下文，允许进入通信诊断查看原始记录；timeout 文案表述为“未收到有效匹配的响应”，不能断定设备没有发送任何字节。重试失败清除旧结果，成功数据和保存 Block 操作绑定提交时参数。
 - `Write → Read Back` 不可被 Poll 插入；部分寄存器 `Read latest → Mask/Merge → Write → Read Back` 是原子调度组；Write Timeout 后 Read Back 仍属于同一确认序列。
 - 周期、Timeout、latency 使用 monotonic clock；展示/持久化同时保存 UTC wall-clock timestamp。
 - 连接生命周期：`connection.connect` / `connection.disconnect` 记录**用户意图**（RuntimeManager.userOffline）。配置编辑会重建 ConnectionRuntime，重建时保留该意图：显式断开后保存不会自动重连，必须再次点击「连接」；应用启动时意图集合为空，按原有行为自动建立链路。
+- Connection.reconnectIntervalMs 为每次失败或断开后到下一次自动尝试的固定等待，允许 0–60000 ms，旧工作区缺省 1000 ms。主站和本机从站均使用该值，重复 error/close 事件保留首次截止时间。成功后仍采用同一间隔。0 表示在下次调度检查时继续尝试。
+- Connection.connectTimeoutMs 允许 1–60000 ms，旧工作区缺省 3000 ms，用于 TCP 建连、RTU 打开和 flush 就绪，以及本机 TCP 监听启动。Connection.timeoutMs 对单次 Modbus 请求等待应答计时。连接成功后清理建连定时器，超时、手动取消和迟到回调按各次尝试的资源身份处理。
+- TCP 在握手完成前保存 Socket，以支持取消待连接请求。SerialTransport 保留尚未完成的驱动打开操作，超时或取消后结算调用，迟到打开成功后立即关闭，新的驱动打开等待旧操作释放。主站 Snapshot 与手动连接结果包含实际错误原因。连接设置页在 connecting 状态提供断开操作。
 - 设置页锁定：连接处于 online / connecting 时参数表单整体禁用（含串口/波特率下拉），避免运行中改参数撕裂传输；断开后可编辑，保存后仍保持离线直到用户连接。扫描 / 临时读取同样要求连接状态。
 
 ## Transaction
@@ -121,27 +145,73 @@ flowchart LR
 
 ## Snapshot / Delta 与渲染性能
 
-Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 delta**，Renderer 侧按切片订阅：
+### 多实例视图与原生窗口
 
-- `collectDelta()` 的每 tick 成本必须是 O(变化量)，不是 O(全量)：
-  - 事务 / 帧事件使用 DiagnosticsStore 的**绝对游标**（`transactionTotal` / `parseEventTotal` + `transactionsSince(from)`），环形缓冲写满后仍能正确推进。
-  - `buildSnapshot()` 会把游标对齐到当前 total，因此快照里已含的记录不会被随后的 delta 重复推送。
+- `appStore` 初始化统一传输，接收工作区、连接、通信诊断等状态增量。`FrontendDataCache` 合并 Host 的批量读取并复用确认值和时序缓存。每页通过 `AppStoreContext` 持有独立显示快照，`useHostData` 按页面周期发布最新值、块内存及曲线数据。后台标签暂停显示更新，已保存的曲线引用继续在 Main 采样。
+- `workbench/workbench.tsx` 为每页维护稳定 DOM 挂载点和 React Portal。首次激活时先连接并显示挂载点，再挂载页面，避免尺寸组件和虚拟表格在无布局尺寸时缓存错误偏移。之后切换页面保留组件树。隐藏画布的几何定义更新延迟到再次可见时应用。弹出时把挂载点移到同源窗口宿主页，回入时移回主工作台，保留组件状态与滚动。子页入口不再初始化 App/Backend。
+- `view-windows.ts` 由 Main 允许应用自身的宿主 URL，维持 sandbox、contextIsolation、禁用 nodeIntegration。窗口关闭由 Main 发出 typed 请求，Renderer 移回视图后确认关闭；Main 页面重载/退出回收子窗口。窗口坐标经显示器边界约束后保存在本机偏好。
+- 所属 document/window/弹层容器由 `ViewEnvironmentContext` 提供；下拉、对话框、全局键盘和侧栏拖动按所属窗口注册。ECharts 跨文档移动时重建绘图实例，样本和页面视角仍由保留的视图状态提供。每页错误边界允许局部重试，避免单个页面异常卸载整个工作台。
+- `src/shared/workbench.ts` 校验模块、选择状态与当前页引用。持久化仅发送 `workbench.saveLayout`；临时草稿、React 回调、运行数值和窗口坐标不进入可移植布局。
+
+### 画布编辑与元数据更新
+
+- `domain/canvas.ts` 定义受限控件与画布 schema；不支持工作区内的任意 JavaScript/HTML 执行。Renderer 保留编辑基线、草稿和最多 100 步撤销历史，通过 `canvas.create/edit/delete` 提交。
+- 容器以 `parentId` 和相对坐标保存，`canvas-geometry.ts` 统一祖先、世界坐标和选择子树运算。`CanvasScene` 为每个控件保留稳定 Portal 挂载点，在所属容器连接且可见后挂载尺寸组件，重挂父级保留写入草稿。`CanvasItem` 用 Pointer Capture 处理拖动并集成 `re-resizable` 处理尺寸，支持 DOM 跨原生窗口移动后的事件。Main 校验层级、深度、边界及全部曲线信号引用。
+- 每张画布的 `grid` 保存 visible、snap 和 size，缺省开启显示及吸附、间距 8 px，可配置 2–128 px。`canvas-grid.ts` 在画布坐标中吸附移动边缘，容器原点和缩放统一换算；Alt 临时自由调整，方向键微调 1 px，Shift+方向键按当前间距移动。显示点阵按背景明暗选择对比颜色。尺寸手柄拦截先到达的 Pointer 事件，后续 Mouse/Touch 事件交由尺寸组件处理。
+- 六种对齐以同一容器内的选择根控件包围范围计算，容器后代沿用相对坐标。水平/垂直等间距固定按位置排序后的首尾控件，均分边缘空隙，计算后校验边界再进入统一撤销历史。网格和排列均经现有 `canvas.edit` 版本检查保存。
+- 曲线读取共享 `live` 样本；暂停时复制已选信号及时间边界，避免滚动缓冲淘汰已暂停数据。ECharts 增加缩放、十字游标和图例交互，跨文档重建前保存缩放/图例状态；不创建独立轮询。
+- 仪表样式与输入类型保存为 `gaugeStyle` / `inputMode`，共享原有控件和绑定模型。Main 在输入类型变化时重新校验绑定，即使点位 ID 未变。枚举确认值从 Main 的 rawNumber / boolValue 取得，标签沿用 enumMap。紧凑下拉使用 Radix Popper，弹层放在所属视图根节点，按触发器的实际屏幕边界定位，跨 document 时重建内部监听，运行草稿保留在控件中。
+- 指示灯的二态、规则、默认状态和渐变保存为控件的 `lamp` 配置，Main 通过共享 Zod schema 校验规则 ID、有限值、边界和颜色。`canvas-lamp.ts` 只基于确认值做纯函数匹配，Renderer 将选中状态渲染为灯面与文字。旧配置缺省为二态且亮色跟随原主题色。编辑器在本地数值/颜色仍有草稿时保留基线，组合框键盘事件交给其所属控件处理。
+- 编辑态预览仅由 `CanvasEditor` 的 React 状态持有，按控件 ID 注入显示投影，正式定义及 `diffCanvas` 不包含它。`preview.ts` 生成数值/文本/Bool/枚举的临时显示数据，灯可强制查看被前序规则覆盖的状态与默认状态；曲线生成局部示例数组，不追加到共享 `live`。写入入口仍检查编辑态，模拟外观不授予操作权限，画布内预览控件退出 Tab 焦点顺序，模拟输入不创建运行草稿。进入运行时清空映射，显示组件也独立忽略非编辑态的预览参数。稳定视图 Portal 在弹出/回入时保留映射；画布或视图卸载时释放，不引入 Main/IPC/存储契约。
+- `canvas.edit` 为带 `expectedRevision` 的原子批量变更（元数据、控件 upsert/remove/order），Main 基于当前定义应用并校验边界、重复 ID、量程和新绑定；不会替换其他画布或工作区对象。过期版本拒绝，既有失效绑定保留供界面修复。
+- 工作台/画布修改不重建 Runtime，也不清除缓存。Main 发布 `workspaceMetadataOnly` delta；Renderer 合并可能同时到达的点位增量，保留未变的离线确认值，且不制造趋势样本。
+- 普通配置变更仍使用完整绑定更新语义。可并行编辑的对象 upsert 接受可选 `expected` 基线；生产编辑表单携带基线，Main 拒绝同对象的过期提交，互不相关的编辑可继续。
+
+各 ConnectionRuntime 按请求完成和到期时间唤醒调度，Block 配置周期支持 0 ms 尽快采集，5 ms tick 负责定时维护。成功确认数据写入 Block Cache 后触发 `onConfirmed`，`SampleBuffers` 当次追加有效样本。RuntimeManager 的 100 ms tick 聚合诊断、连接、从站与块状态，点位值和原始块内存通过 `data.read` 按需读取。
+
+主站积木脚本在 Workspace 保存 Blockly JSON 图。Main 将保存修订编译为受限步骤，通过 `script.*` 单独保存、计划和控制运行，最近一次运行通过 Snapshot/delta 同步。保存变量与判断直接读取共享缓存的最新有效确认值。「等待新采样」订阅覆盖完整点位范围的后续缓存确认。「等待条件」在订阅后立即检查，相关采样和从站状态通知到达时同步复查。等待步骤各设一个超时计时器，成功、失败、停止或超时时释放订阅。写入复用点位校验和 ConnectionRuntime，停止信号在发送前校验且可移除队列项。Renderer 通过 Blockly 生成 Lua 预览。
+
+图中的 `breakpoints` 保存可执行积木 ID。Main 为每次运行维护独立的断点集合。在步骤边界暂停时，Main 发布当前积木、已赋值变量和冻结的待写值，挂起该脚本的 Promise。「继续」「单步」必须同时匹配运行 ID 和本次暂停的一次性令牌。「暂停」在下一步生效，`AbortSignal` 可结束暂停、取消后续执行。每条脚本日志复用步骤记录并带上 Main 的 UTC 毫秒时间，读取点位始终复用确认缓存。
+
+Blockly 的默认值积木与已连接的值积木共用同一槽。编辑层将默认值保存为原有字段，Main 仅在执行时读取动态操作数。高风险动态写冻结实际值并通过运行 ID 和一次性确认令牌结算。Main 记录本次运行各条件最近一次求值事实，分段缓存按地址保留确认时间。主循环在每轮末尾让出 I/O，尝试执行的处理区只处理操作失败，停止和跳出信号按各自作用域传递。
+
+从站通信状态由 ConnectionRuntime 根据匹配应答和完成的块轮询推进。重新连接或从站绑定改变后重新确认。轮询分片和重试在整块结束时归并失败，设备有效应答清空各块失败次数。RuntimeManager 按 `slaveId` 发布 `slaveStates` 快照及稀疏增量。设备页、实时/趋势和画布复用该状态。画布只保存指示灯的从站引用，运行状态在 Main 内存中维护。
+
+### Host 读取与共享缓冲
+
+- `shared/point-data.ts` 定义读取、容量、样本分页和导出结果。`sampleBuffers` 保存实例点位容量，缺省 10,000 点，单点 10–100,000，总启用容量 2,000,000 点。旧工作区缺省启用已有趋势与画布曲线引用，资源超限明确返回错误，允许逐步缩小导入配置。
+- `SampleBuffers` 按实例点位建环形缓冲，`onConfirmed` 每次保留数值/Bool/枚举/String 有效值，重复值保留独立序号。状态/元数据变动不生成样本。缓存绑定代次、映射或工程转换变化会更换缓冲代次，修改名称和容量保留序号。
+- 工作区引用与临时曲线需求合并。临时需求按客户端登记，每 20 秒续租，60 秒未续租释放。工作区中的持久引用独立于页面可见性。容量按引用去重，修改入口共用 `buffer.configure`，使用期望容量检测并发编辑。
+- `data.read` 批量返回所需最新值、块内存、缓冲信息及新增样本。生产 Host 使用 `columns-v1`，数值样本为 Float64 UTC 毫秒时间、序号和值，每样本正文 24 字节。Bool 使用 Uint8 值列，String 保持实际文本。Main 保留原始单调时间，CSV 直接读取 Main 原始缓冲。
+- 采样每批最多 10,000 点、256 KiB 正文，String 计入 UTF-8 JSON 转义后的字节数。该预算针对采样列，控制头、最新值和块信息按数量另行限制。前端每批最多请求 128 个最新点位、32 个块、32 路曲线和 32 个缓冲状态。容量、引用及错误元信息带版本，首次和版本变化时同步。
+- 首次按可见时间窗读取，扩大窗口时补取历史。同点多个 Host 的重叠范围合并，不相交范围分别查询，前端以范围和需求标识维护各自进度。可选 queryId 关联同一消息内同一点位的多个查询，返回键使用 queryId，省略时采用原有实例点位键。UTC 顺序增长时二分定位窗口起点，时间倒退后按真实序号精确过滤。分页固定 throughSeq，通过 nextSeq、hasMore、gap 和代次处理续读、覆盖与重置。续页保持首次读取的时效，完成后继续拉取分页期间新增的样本。
+- 前端每点按最近核对时间复用缓存，统一在途请求。新样本增量转换成显示数据，按需要的时间窗淘汰旧样本，扩大窗口或 UTC 倒退时整理时间顺序。每个 Host 在自己的周期到达时增量更新显示数组，未变化时复用数组与样本元组。失效后忽略旧响应，错误退避重试。各 Host 周期 50–10,000 ms，普通控件批量读取 Main 最新缓存值及命令记录，写入完成后使这份前端最新值缓存失效并重新获取。
+- Electron 的 typed API 经 structured clone 返回 TypedArray。Browser Review 使用带请求 ID 的 MDC1 二进制 WebSocket 帧，小型 JSON 头描述状态和列位置，后接对齐的二进制列。两个通道消费同一共享 DTO 和 Main 实现。现有对象式读取供旧调用方及单次缓冲详情使用。
+- ECharts 绘制按可见范围保留极值并限制点数。光标以完整原始数据二分查找，在可见曲线中选最近真实时间，分别标记各信号的最近样本。提示框列出毫秒时间、序号和值，跨 document 时重建图形及事件。
+- 画布与趋势页在实时跟随状态下缩放时推进时间边界，暂停保存绘图快照及固定时间范围，恢复后重建最新窗口。每个 Host 的显示投影按自己的范围裁取。后台有效序号推进时清理实时数据，暂停快照具有独立显示生命周期。范围状态 available/partial/expired 与有效时间范围支持覆盖提示，UTC 非单调时采用真实序号过滤。
+- `buffer.export` 在 Main 捕获样本引用与来源元数据的稳定快照，分批写临时 CSV 后原子替换目标。输出包含连接、实例/点位 ID、UTC 毫秒时间、单调时间、代次、序号、原值和单位。导出支持闭区间过滤，Bridge 输出仍受审查目录限制。
+- 趋势 UI 使用缓冲导出。旧历史 Session 通过独立读取服务打开，支持备注更新。Main 的确认回调向点位缓冲追加样本。
+
+- collectDelta() 按块版本、连接和配置变更聚合轻量状态。
+  - 诊断事务和解析事件各在 Main 保留最多 5,000 条明细，通信页通过 diagnostics.read 查询。查询携带代次、绝对游标、分页上界和连接范围，响应报告覆盖、重置及续页状态。事务及解析明细各页正文预算 128 KiB，初次返回近期记录，后续按游标增量读取。
+  - UI 启动通过 getSnapshot({ includeDiagnostics: false }) 获取轻量快照。显式兼容调用可获取带近期明细的快照。写命令结果通过 pointWrites 同步，包含终态、原因类别、下发时间和值，前端本地在途写入由其命令完成结果结算。
   - 连接视图的“最后成功响应时间”由 `recordTransaction` 增量维护（`lastOkUtcFor`，O(1) 读），不再每 tick 过滤整环。
   - 点位索引 `pointIndex()` 按 `WorkspaceService.revision` 缓存；工作区对象每次编辑整体替换，因此 revision 是安全失效键。
   - 连接健康 `healthFor()` 每连接最多 1 Hz 重算（`healthForCached`），delta 只在缓存代次变化时推送；告警检查 5 s 一次。
+  - 健康统计独立保存 60 秒的紧凑事务和事件窗口，按连接和开始时间组织秒桶，明细覆盖不改变统计结果。短窗口查询独立过滤，后台定期释放过期桶。RTU 占用按实际波特率及起始/数据/校验/停止位计算，TCP 显示 Modbus 收发字节吞吐，时延统计保持 P50/P95。
   - 每次健康重算会记录一个 `HealthSample`（1 Hz，环形 600 点 = 10 min），供“连接健康”页 5 分钟曲线通过 `diagnostics.healthSeries` 命令拉取；曲线是真实测量值，不是占位数据。
-- `diagnostics.clear` 递增 `diagRev`，Renderer 收到后清空本地事务 / 帧事件副本（delta 只能追加，无法表达“清空”）。
+- diagnostics.clear 更新诊断代次和 diagRev，并清空统计窗口及健康缓存。可见通信页重新查询近期明细，旧在途结果按读取生命周期丢弃，暂停显示保留自己的记录副本。
 - `AppSnapshot.revision` 是所有 delta 的全局顺序号；Renderer 忽略不大于当前 revision 的迟到或重放 delta，防止事务重复和旧 Workspace 覆盖。它不作为工作区编辑的并发版本。
-- 点位 `decimalPlaces` 只控制 Numeric 文本格式（默认最多 3 位，配置范围 0–12）。Main 的 `engText` 与 Renderer 的趋势 Tooltip/历史回放共用纯格式化规则；`engNumber`、Block Cache、Recorder 样本及 CSV 保留原始精度。Session Schema Snapshot 包含当时的精度。
+- 点位 `decimalPlaces` 只控制 Numeric 文本格式（默认最多 3 位，配置范围 0–12）。Main 的 `engText` 与 Renderer 的趋势 Tooltip/历史回放共用纯格式化规则；`engNumber`、Block Cache、历史样本及 CSV 保留原始精度。Session Schema Snapshot 包含当时的精度。
 - `prefs` / `dirty` / `warnings` 由 Main 权威维护，且**不随 workspace revision 变化**，因此各自带独立变更追踪（`WorkspaceService.prefsRevision`、`sentDirty`、`warningsDirty`），变化时进 delta；`buildSnapshot()` 把追踪器对齐到快照已携带的值。
 - Renderer `applyDelta` 必须在事务分支的 early return **之前**应用 prefs：轮询期间 `prefs.set` 产生的 delta 经常与新事务同批到达，若先走事务分支 return，prefs 会被静默丢弃。回归测试：`tests/unit/store-prefs.test.ts`、`tests/integration/manager-delta.test.ts`（含“轮询洪水中的 prefs delta”与“不每 tick 重发 prefs”用例）。
 - Renderer 订阅规则（强制）：
   - 根组件 `App` 只订阅 `useSnapshotReady()`。订阅整个 `snapshot` 会让每次 delta 重渲染整棵树，并使下层所有窄选择器失效。
-  - 组件使用 `store/app.ts` 导出的切片 hook（`useWorkspace` / `usePoints` / `useBlocks` / `useConnectionStates` / `useTransactions` / `useHealth` / `useSessions` / `useRecording` / `usePrefs` …）或返回原始值的选择器；`applyDelta` 对未携带的切片保留原引用，因此 Object.is 比较可以让组件跳过重渲染。
+  - 组件使用 `store/app.ts` 导出的切片 hook（`useWorkspace` / `usePoints` / `useBlocks` / `useConnectionStates` / `useTransactions` / `useHealth` / `useSessions` / `usePrefs` …）或返回原始值的选择器；`applyDelta` 对未携带的切片保留原引用，因此 Object.is 比较可以让组件跳过重渲染。
   - 表格行必须可 memo：`DataTable` 的行组件按 row 身份 + columns 身份比较，调用方的 `columns` 必须用 `useMemo` 保持身份稳定；`onRowClick` 由内部 ref 转成稳定回调。
   - 实时表的行组件按**实际绘制的原始值**（engText / rawText / enumLabel / …）比较，因为一次轮询会为整块生成新的 view 对象；虚拟列表的定位放在外层 wrapper，滚动不会打穿行 memo。
-  - 趋势缓冲 `live` 就地 push + 前端裁剪（5000 点 / 2000 事件）；此前每个 delta 对每个点位做一次 5000 元素数组复制，是渲染端最大热点。
-  - ECharts `setOption` 合并到最多 4 Hz（250 ms）。
+  - `live` 由 Host 周期发布，使用 Main 样本的 UTC 时间与序号，状态轨道压缩相同状态的连续显示。
+  - ECharts `setOption` 按 Host 周期合并，既有非 Host 图表缺省 250 ms。绘图保留极值，光标和导出读取完整数据。
 - Hook 顺序：所有 Hook 必须位于任何 early return 之前。`react-hooks/rules-of-hooks` 已设为 error —— 条件 Hook 会让 React 抛错并卸载整棵树，表现为窗口白屏。
 
 ## 显示时区与多语言
@@ -164,19 +234,19 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 
 ## 历史存储：sql.js
 
-- `history.db` 由 sql.js（SQLite WASM）承载，落盘仍为标准 SQLite 文件；写入采用事务和去抖原子落盘。`serialport` 使用 N-API prebuilds。
+- `history.db` 由 sql.js（SQLite WASM）承载，采用标准 SQLite 文件保存既有会话，备注更新使用事务和去抖原子落盘。`serialport` 使用 N-API prebuilds。
 - `sql.js` 在 `vite.main.config.ts` 中声明为 external，由 Forge `packageAfterCopy` 复制进包；`sql-wasm.wasm` 通过 `createRequire(...).resolve('sql.js')` 的同目录解析定位。打包版须验证两种运行时模块实际加载。
 - 当前 `flush()` 会同步导出并原子替换整个数据库文件；百万样本的实测成本、方法与适用边界见[容量基准](benchmarks/history-capacity-2026-09-25.md)。10 GB 是提醒阈值，不代表已验证可在该容量下流畅记录或回放。新增长期记录能力前须先确定容量与响应预算。
-- 主动 Record Session 内的每笔事务将 `traceId`、来源、功能码、结果和耗时写入 `transaction_meta`；Raw Communication 开启时同一数据库事务再写关联 ADU/PDU，否则不保存帧字节。旧库启动时增量补表/列；会话外诊断维持有界内存记录。当前目标容量为单会话 100 万样本，图表显示用极值保留降采样，游标从原始样本精确查找，CSV 仍导出完整样本。
+- 旧库启动时增量补表/列，读取 `samples`、`events`、`raw_comm` 与 `transaction_meta`。生产历史服务提供备注写入，当前通信诊断使用有界内存。已有会话按保存的 Schema Snapshot 解释数据，图表采用极值保留降采样，游标从原始样本查找，CSV 导出完整样本。
 
 
 ## 重试与日志级别语义
 
 - 重试策略（Connection Scheduler）：
-  - 读类请求（周期轮询 / 临时读取 / 扫描 / 回读 / RMW 读）：仅在 `timeout` 或 `transport` 时追加尝试，默认按 `connection.retries`，扫描可单次覆盖；退避 50 ms，`exception` 不重试（设备已明确拒绝）。
-  - 写请求：任何失败均不自动重试；`transport.write()` 报错也可能发生在部分或全部字节发出之后，不能据此认定设备未执行。除明确拒绝的 Exception 外，尝试 Read Back，结果不明时保留“未知”状态。
+  - 读类请求（周期轮询 / 临时读取 / 扫描 / RMW 读）在 `timeout` 或 `transport` 时按 `connection.retries` 追加尝试，扫描可单次覆盖次数，间隔采用 `connection.retryDelayMs ?? 50`。周期轮询的重试重新参与调度，其他原子任务保持执行槽。合法 `exception` 直接结束该次读取。
+  - 写请求发送一次，`transport.write()` 报错也可能发生在部分或全部字节发出之后。匹配正常应答结算成功，设备异常应答结算拒绝，其余结果保持未知，设备值由后续正常采集提供。
   - 收到合法 Exception Response **立即结算**，不再等到超时；坏帧 / 不匹配帧仍按超时路径处理。
-- 超时取值：`attemptRequest` 使用 `opts.timeoutMs ?? connection.timeoutMs`，即**连接配置的超时对轮询 / 临时读取 / RMW / 写 / 回读全部生效**；Unit Scanner 显式传入本次探测超时（默认 150 ms，可配置）。
+- `attemptRequest` 使用 `opts.timeoutMs ?? connection.timeoutMs`，连接应答超时对轮询、临时读取、RMW 和写请求生效。Unit Scanner 显式传入本次探测超时（默认 150 ms，可配置）。
 - 日志级别（连接级 logLevel）：
   - info：事务仅记录到应用内通信诊断（UI）。
   - debug：额外将每次 TX/RX 原始 ADU hex、Validator 判决、重试决策写入 electron-log（落盘位置见下节：执行目录 `logs/main.log`）。
@@ -209,7 +279,7 @@ Main 以 100 ms tick 驱动 Scheduler，但**只有真正变化的切片才进 d
 
 更新状态独立于连接调度，由 RuntimeManager 附加到主快照/增量流；下载不会新增 Modbus Poll。重复检查/下载被互斥锁拒绝；切换页面不影响 Main 下载。取消会中止请求和写入，正常退出等待更新服务结束，再停止连接并写回工作区/历史库。
 
-完整包使用版本化文件名写入 `data/updates/`，中间文件在 `temp/updates/`。流式下载并计算摘要，只有大小和摘要一致才提交完整文件；安装前再次验证。Windows 更新助手复制到独立 `temp/self-update/install-<UUID>/`，先验证、准备新文件，再等待 Main 保存工作区、停止 Runtime/Recorder、关闭历史库、提交令牌并退出。ZIP 按清单逐文件替换，Portable 验证真实父进程并替换外层 EXE，Setup 使用 `/S /D=<原目录>`。
+完整包使用版本化文件名写入 `data/updates/`，中间文件在 `temp/updates/`。流式下载并计算摘要，只有大小和摘要一致才提交完整文件；安装前再次验证。Windows 更新助手复制到独立 `temp/self-update/install-<UUID>/`，先验证、准备新文件，再等待 Main 保存工作区、停止 Runtime、关闭历史库、提交令牌并退出。ZIP 按清单逐文件替换，Portable 验证真实父进程并替换外层 EXE，Setup 使用 `/S /D=<原目录>`。
 
 Forge postPackage 生成带版本和逐文件 SHA-256 的 `resources/app-files.json`，make 同步输出 `*-manifest.json` 辅助附件供 Setup 预检；其摘要也由 GitHub Release metadata 校验。禁止路径越界、链接、清单重复、用户文件冲突与覆盖显式数据路径。NSIS 卸载逐文件删除、仅移除空程序目录。旧程序备份在 `data/updates/backups/`，Setup 同时保存安装注册表项；新版本加载原工作区并完成 Renderer 挂载后通过受限令牌确认启动，否则助手恢复旧程序并重启。结果保存到 `data/updates/last-install.json`。普通启动不做联网检查。
 

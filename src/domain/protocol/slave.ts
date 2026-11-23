@@ -12,10 +12,14 @@ const invalid = (message: string): never => { throw new SlaveRequestError(3, mes
 export function decodeSlaveRequest(pdu: Uint8Array): ModbusRequest {
   if (pdu.length === 0 || pdu.length > LIMITS.MAX_PDU) invalid('PDU length out of range');
   const fc = pdu[0]!;
-  if (![1, 2, 3, 4, 5, 6, 15, 16].includes(fc)) throw new SlaveRequestError(1, 'Unsupported function');
+  if (![1, 2, 3, 4, 5, 6, 15, 16, 22].includes(fc)) throw new SlaveRequestError(1, 'Unsupported function');
   if (pdu.length < 5) invalid('Truncated request');
   const address = word(pdu, 1);
   const value = word(pdu, 3);
+  if (fc === 22) {
+    if (pdu.length !== 7) invalid('Invalid mask write length');
+    return { kind: 'maskWrite', fc: 0x16, address, andMask: value, orMask: word(pdu, 5) };
+  }
   if (fc <= 6 && pdu.length !== 5) invalid('Invalid request length');
   if (fc <= 4) {
     if (value < 1 || value > (fc <= 2 ? 2000 : 125)) invalid('Invalid read quantity');
@@ -39,6 +43,7 @@ export interface SlaveMemory {
   /** Null means at least one address is undefined. Writes must be atomic across the range. */
   read(area: 1 | 2 | 3 | 4, start: number, quantity: number): number[] | null;
   write(area: 1 | 3, start: number, values: number[]): boolean;
+  maskWrite?(address: number, andMask: number, orMask: number): boolean;
 }
 
 export function slaveRequestRange(request: ModbusRequest): { area: 1 | 2 | 3 | 4; start: number; quantity: number; write: boolean } {
@@ -59,6 +64,13 @@ export function executeSlaveRequest(request: ModbusRequest, memory: SlaveMemory)
     return encodeResponsePdu(request.fc <= 2
       ? { kind: 'bits', fc: request.fc, bits: values.map(Boolean) }
       : { kind: 'registers', fc: request.fc, registers: values });
+  }
+  if (request.kind === 'maskWrite') {
+    const old = memory.maskWrite ? null : memory.read(3, request.address, 1);
+    const written = memory.maskWrite ? memory.maskWrite(request.address, request.andMask, request.orMask)
+      : old !== null && memory.write(3, request.address, [(old[0]! & request.andMask) | (request.orMask & ~request.andMask & 0xffff)]);
+    if (!written) throw new SlaveRequestError(2, 'Undefined mask address');
+    return encodeResponsePdu({ kind: 'maskWriteAck', fc: 0x16, address: request.address, andMask: request.andMask, orMask: request.orMask });
   }
   const values = request.kind === 'writeCoil' ? [Number(request.value)] : request.kind === 'writeRegister' ? [request.value]
     : request.kind === 'writeCoils' ? request.values.map(Number) : request.values;

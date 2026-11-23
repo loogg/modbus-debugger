@@ -1,0 +1,2044 @@
+{
+  "schemaVersion": 2,
+  "name": "泵站打压联调",
+  "connections": [
+    {
+      "id": "bench-field",
+      "name": "现场从站服务",
+      "transport": "tcp",
+      "role": "slave",
+      "tcp": {
+        "host": "127.0.0.1",
+        "port": 15032
+      },
+      "timeoutMs": 300,
+      "retries": 0,
+      "reconnect": "manual",
+      "interFrameMs": 0,
+      "rtsControl": "none",
+      "logLevel": "info"
+    },
+    {
+      "id": "bench-master",
+      "name": "泵站主站",
+      "transport": "tcp",
+      "role": "master",
+      "tcp": {
+        "host": "127.0.0.1",
+        "port": 15032
+      },
+      "timeoutMs": 200,
+      "retries": 0,
+      "reconnect": "auto",
+      "connectTimeoutMs": 700,
+      "reconnectIntervalMs": 500,
+      "interFrameMs": 0,
+      "rtsControl": "none",
+      "logLevel": "info"
+    }
+  ],
+  "slaves": [
+    {
+      "id": "pump-field",
+      "connectionId": "bench-field",
+      "unitId": 1,
+      "name": "现场泵控",
+      "templateId": "pump-template",
+      "enabled": true,
+      "initialValues": [
+        {
+          "blockId": "pump-bits",
+          "area": 1,
+          "start": 0,
+          "values": [
+            0,
+            0
+          ]
+        },
+        {
+          "blockId": "pump-holding",
+          "area": 3,
+          "start": 0,
+          "values": [
+            30
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sensor-field",
+      "connectionId": "bench-field",
+      "unitId": 2,
+      "name": "现场压力变送器",
+      "templateId": "pt-template",
+      "enabled": true,
+      "initialValues": [
+        {
+          "blockId": "pt-holding",
+          "area": 3,
+          "start": 100,
+          "values": [
+            0,
+            20564
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pump",
+      "connectionId": "bench-master",
+      "unitId": 1,
+      "name": "泵组控制器",
+      "templateId": "pump-template",
+      "enabled": true
+    },
+    {
+      "id": "sensor",
+      "connectionId": "bench-master",
+      "unitId": 2,
+      "name": "出口压力变送器",
+      "templateId": "pt-template",
+      "enabled": true
+    }
+  ],
+  "templates": [
+    {
+      "id": "pump-template",
+      "name": "泵组控制器",
+      "version": "1.0",
+      "description": "",
+      "blocks": [
+        {
+          "id": "pump-bits",
+          "name": "泵控输出",
+          "area": 1,
+          "start": 0,
+          "length": 2,
+          "periodMs": 150
+        },
+        {
+          "id": "pump-holding",
+          "name": "压力指令",
+          "area": 3,
+          "start": 0,
+          "length": 1,
+          "periodMs": 150
+        }
+      ],
+      "points": [
+        {
+          "id": "enable",
+          "blockId": "pump-bits",
+          "name": "泵使能",
+          "mapping": {
+            "rawType": "Bool",
+            "offset": 0,
+            "registerCount": 1,
+            "wordOrder": "ABCD",
+            "byteSelector": "low",
+            "bitOffset": 0,
+            "bitWidth": 1,
+            "stringLength": 0,
+            "stringEncoding": "ascii"
+          },
+          "scale": 1,
+          "offset": 0,
+          "unit": "",
+          "access": "rw",
+          "displayFormat": "auto",
+          "enumMap": {},
+          "highRisk": false,
+          "description": ""
+        },
+        {
+          "id": "alarm",
+          "blockId": "pump-bits",
+          "name": "报警锁存",
+          "mapping": {
+            "rawType": "Bool",
+            "offset": 1,
+            "registerCount": 1,
+            "wordOrder": "ABCD",
+            "byteSelector": "low",
+            "bitOffset": 0,
+            "bitWidth": 1,
+            "stringLength": 0,
+            "stringEncoding": "ascii"
+          },
+          "scale": 1,
+          "offset": 0,
+          "unit": "",
+          "access": "rw",
+          "displayFormat": "auto",
+          "enumMap": {},
+          "highRisk": false,
+          "description": ""
+        },
+        {
+          "id": "sp",
+          "blockId": "pump-holding",
+          "name": "压力给定",
+          "mapping": {
+            "rawType": "UInt16",
+            "offset": 0,
+            "registerCount": 1,
+            "wordOrder": "ABCD",
+            "byteSelector": "low",
+            "bitOffset": 0,
+            "bitWidth": 16,
+            "stringLength": 0,
+            "stringEncoding": "ascii"
+          },
+          "scale": 0.01,
+          "offset": 0,
+          "unit": "MPa",
+          "access": "rw",
+          "displayFormat": "auto",
+          "decimalPlaces": 2,
+          "enumMap": {},
+          "highRisk": false,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "id": "pt-template",
+      "name": "出口压力变送器",
+      "version": "1.0",
+      "description": "",
+      "blocks": [
+        {
+          "id": "pt-holding",
+          "name": "压力反馈与型号",
+          "area": 3,
+          "start": 100,
+          "length": 2,
+          "periodMs": 150
+        }
+      ],
+      "points": [
+        {
+          "id": "pv",
+          "blockId": "pt-holding",
+          "name": "出口压力",
+          "mapping": {
+            "rawType": "UInt16",
+            "offset": 0,
+            "registerCount": 1,
+            "wordOrder": "ABCD",
+            "byteSelector": "low",
+            "bitOffset": 0,
+            "bitWidth": 16,
+            "stringLength": 0,
+            "stringEncoding": "ascii"
+          },
+          "scale": 0.01,
+          "offset": 0,
+          "unit": "MPa",
+          "access": "ro",
+          "displayFormat": "auto",
+          "decimalPlaces": 2,
+          "enumMap": {},
+          "highRisk": false,
+          "description": ""
+        },
+        {
+          "id": "pt-id",
+          "blockId": "pt-holding",
+          "name": "台架型号",
+          "mapping": {
+            "rawType": "UInt16",
+            "offset": 1,
+            "registerCount": 1,
+            "wordOrder": "ABCD",
+            "byteSelector": "low",
+            "bitOffset": 0,
+            "bitWidth": 16,
+            "stringLength": 0,
+            "stringEncoding": "ascii"
+          },
+          "scale": 1,
+          "offset": 0,
+          "unit": "",
+          "access": "ro",
+          "displayFormat": "hex",
+          "enumMap": {},
+          "highRisk": false,
+          "description": ""
+        }
+      ]
+    }
+  ],
+  "trendGroups": [
+    {
+      "id": "pressure-trend",
+      "name": "压力给定与反馈",
+      "windowSec": 30,
+      "description": "",
+      "signals": [
+        {
+          "id": "sp-line",
+          "pointRef": {
+            "connectionId": "bench-master",
+            "slaveId": "pump",
+            "pointId": "sp"
+          },
+          "visible": true
+        },
+        {
+          "id": "pv-line",
+          "pointRef": {
+            "connectionId": "bench-master",
+            "slaveId": "sensor",
+            "pointId": "pv"
+          },
+          "visible": true
+        }
+      ]
+    }
+  ],
+  "sampleBuffers": [
+    {
+      "slaveId": "pump",
+      "pointId": "sp",
+      "capacity": 2000
+    },
+    {
+      "slaveId": "sensor",
+      "pointId": "pv",
+      "capacity": 2000
+    }
+  ],
+  "canvases": [
+    {
+      "id": "pressure-bench",
+      "name": "泵站操作台",
+      "revision": 0,
+      "width": 806,
+      "height": 522,
+      "background": "#F3F6F7",
+      "grid": {
+        "visible": false,
+        "snap": true,
+        "size": 8
+      },
+      "widgets": [
+        {
+          "id": "title",
+          "kind": "text",
+          "x": 18,
+          "y": 19,
+          "width": 300,
+          "height": 32,
+          "parentId": null,
+          "label": "泵站打压试验台",
+          "text": "泵站打压试验台",
+          "binding": null,
+          "signals": [],
+          "color": "#1E3444",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 24,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": "bold",
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "pump-status",
+          "kind": "lamp",
+          "x": 513,
+          "y": 14,
+          "width": 118,
+          "height": 43,
+          "parentId": null,
+          "label": "泵控 · 1 号站",
+          "text": "文本",
+          "binding": {
+            "slaveId": "pump",
+            "kind": "slave-status"
+          },
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": true,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": true,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "states",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": [
+              {
+                "label": "离线",
+                "color": "#B43B36",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "offline",
+                "match": "equals",
+                "value": 0,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              },
+              {
+                "label": "在线",
+                "color": "#14775A",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "online",
+                "match": "equals",
+                "value": 1,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              },
+              {
+                "label": "待确认",
+                "color": "#6B7882",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "pending",
+                "match": "equals",
+                "value": 2,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              },
+              {
+                "label": "连接中",
+                "color": "#A56313",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "connecting",
+                "match": "equals",
+                "value": 3,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              },
+              {
+                "label": "停用",
+                "color": "#77808B",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "disabled",
+                "match": "equals",
+                "value": 4,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "sensor-status",
+          "kind": "lamp",
+          "x": 665,
+          "y": 14,
+          "width": 118,
+          "height": 43,
+          "parentId": null,
+          "label": "变送器 · 2 号站",
+          "text": "文本",
+          "binding": {
+            "slaveId": "sensor",
+            "kind": "slave-status"
+          },
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": true,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": true,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "states",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": [
+              {
+                "label": "离线",
+                "color": "#B43B36",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "offline",
+                "match": "equals",
+                "value": 0,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              },
+              {
+                "label": "在线",
+                "color": "#14775A",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "online",
+                "match": "equals",
+                "value": 1,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              },
+              {
+                "label": "待确认",
+                "color": "#6B7882",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "pending",
+                "match": "equals",
+                "value": 2,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              },
+              {
+                "label": "连接中",
+                "color": "#A56313",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "connecting",
+                "match": "equals",
+                "value": 3,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              },
+              {
+                "label": "停用",
+                "color": "#77808B",
+                "fill": {
+                  "type": "solid",
+                  "secondary": "#FFFFFF",
+                  "angle": 135
+                },
+                "id": "disabled",
+                "match": "equals",
+                "value": 4,
+                "lower": null,
+                "upper": null,
+                "includeLower": true,
+                "includeUpper": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "command-panel",
+          "kind": "container",
+          "x": 12,
+          "y": 68,
+          "width": 368,
+          "height": 170,
+          "parentId": null,
+          "label": "设定与操作",
+          "text": "文本",
+          "binding": null,
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": true,
+          "showBorder": true,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": "#D5DFE4",
+          "borderWidth": 1,
+          "borderRadius": 8,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "command-title",
+          "kind": "text",
+          "x": 14,
+          "y": 10,
+          "width": 164,
+          "height": 24,
+          "parentId": "command-panel",
+          "label": "泵组操作",
+          "text": "泵组操作",
+          "binding": null,
+          "signals": [],
+          "color": "#1E3444",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 16,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": "bold",
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "setpoint-input",
+          "kind": "input",
+          "x": 14,
+          "y": 43,
+          "width": 197,
+          "height": 80,
+          "parentId": "command-panel",
+          "label": "压力给定（MPa）",
+          "text": "文本",
+          "binding": {
+            "slaveId": "pump",
+            "pointId": "sp"
+          },
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": true,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0.1,
+          "max": 0.6,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 0.01,
+          "limitInput": true,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "pump-output",
+          "kind": "lamp",
+          "x": 232,
+          "y": 43,
+          "width": 116,
+          "height": 44,
+          "parentId": "command-panel",
+          "label": "泵使能输出",
+          "text": "文本",
+          "binding": {
+            "slaveId": "pump",
+            "pointId": "enable"
+          },
+          "signals": [],
+          "color": "#157859",
+          "background": "#FFFFFF",
+          "showLabel": true,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": true,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "已开启",
+              "color": "#14775A",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "已关闭",
+              "color": "#788592",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "manual-stop",
+          "kind": "button",
+          "x": 14,
+          "y": 118,
+          "width": 110,
+          "height": 34,
+          "parentId": "command-panel",
+          "label": "手动停泵",
+          "text": "手动停泵",
+          "binding": {
+            "slaveId": "pump",
+            "pointId": "enable"
+          },
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "0",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "outline",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "alarm-reset",
+          "kind": "button",
+          "x": 231,
+          "y": 118,
+          "width": 110,
+          "height": 34,
+          "parentId": "command-panel",
+          "label": "复位报警",
+          "text": "复位报警",
+          "binding": {
+            "slaveId": "pump",
+            "pointId": "alarm"
+          },
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "0",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "outline",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "process-panel",
+          "kind": "container",
+          "x": 392,
+          "y": 68,
+          "width": 402,
+          "height": 170,
+          "parentId": null,
+          "label": "过程反馈",
+          "text": "文本",
+          "binding": null,
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": true,
+          "showBorder": true,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": "#D5DFE4",
+          "borderWidth": 1,
+          "borderRadius": 8,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "process-title",
+          "kind": "text",
+          "x": 14,
+          "y": 10,
+          "width": 150,
+          "height": 24,
+          "parentId": "process-panel",
+          "label": "出口压力",
+          "text": "出口压力",
+          "binding": null,
+          "signals": [],
+          "color": "#1E3444",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 16,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": "bold",
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "measured-pressure",
+          "kind": "value",
+          "x": 14,
+          "y": 44,
+          "width": 171,
+          "height": 44,
+          "parentId": "process-panel",
+          "label": "出口压力",
+          "text": "文本",
+          "binding": {
+            "slaveId": "sensor",
+            "pointId": "pv"
+          },
+          "signals": [],
+          "color": "#144F68",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 29,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "pressure-gauge",
+          "kind": "gauge",
+          "x": 192,
+          "y": 8,
+          "width": 193,
+          "height": 148,
+          "parentId": "process-panel",
+          "label": "压力表",
+          "text": "文本",
+          "binding": {
+            "slaveId": "sensor",
+            "pointId": "pv"
+          },
+          "signals": [],
+          "color": "#287B91",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 0.6,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "alarm-lamp",
+          "kind": "lamp",
+          "x": 14,
+          "y": 101,
+          "width": 155,
+          "height": 51,
+          "parentId": "process-panel",
+          "label": "试验报警",
+          "text": "文本",
+          "binding": {
+            "slaveId": "pump",
+            "pointId": "alarm"
+          },
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": true,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": true,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "已锁存",
+              "color": "#B43B36",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "正常",
+              "color": "#14775A",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "chart-panel",
+          "kind": "container",
+          "x": 12,
+          "y": 251,
+          "width": 782,
+          "height": 259,
+          "parentId": null,
+          "label": "压力曲线",
+          "text": "文本",
+          "binding": null,
+          "signals": [],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": false,
+          "showBackground": true,
+          "showBorder": true,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 60,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": "#D5DFE4",
+          "borderWidth": 1,
+          "borderRadius": 8,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        },
+        {
+          "id": "pressure-curve",
+          "kind": "trend",
+          "x": 8,
+          "y": 6,
+          "width": 766,
+          "height": 247,
+          "parentId": "chart-panel",
+          "label": "给定与反馈（MPa）",
+          "text": "文本",
+          "binding": null,
+          "signals": [
+            {
+              "slaveId": "pump",
+              "pointId": "sp",
+              "color": "#0078D4"
+            },
+            {
+              "slaveId": "sensor",
+              "pointId": "pv",
+              "color": "#D97706"
+            }
+          ],
+          "color": "#0078D4",
+          "background": "#FFFFFF",
+          "showLabel": true,
+          "showBackground": false,
+          "showBorder": false,
+          "showStateText": false,
+          "showConfirmed": true,
+          "fontSize": 20,
+          "min": 0,
+          "max": 100,
+          "onValue": "1",
+          "offValue": "0",
+          "windowSec": 15,
+          "gaugeStyle": "arc",
+          "inputMode": "number",
+          "step": 1,
+          "limitInput": false,
+          "appearance": "auto",
+          "textSize": null,
+          "textColor": null,
+          "textWeight": null,
+          "textAlign": null,
+          "borderColor": null,
+          "borderWidth": 1,
+          "borderRadius": 6,
+          "padding": 0,
+          "lamp": {
+            "mode": "binary",
+            "on": {
+              "label": "ON",
+              "color": null,
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "off": {
+              "label": "OFF",
+              "color": "#BFC6CE",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "fallback": {
+              "label": "未知",
+              "color": "#94A3B8",
+              "fill": {
+                "type": "solid",
+                "secondary": "#FFFFFF",
+                "angle": 135
+              }
+            },
+            "rules": []
+          }
+        }
+      ]
+    }
+  ],
+  "masterScripts": [
+    {
+      "id": "hydrotest",
+      "name": "升压、达标与卸压",
+      "revision": 0,
+      "graph": {
+        "blocks": {
+          "languageVersion": 0,
+          "blocks": [
+            {
+              "type": "mb_start",
+              "id": "start",
+              "x": 32,
+              "y": 24,
+              "next": {
+                "block": {
+                  "type": "mb_try",
+                  "id": "pressure-cycle",
+                  "inputs": {
+                    "BODY": {
+                      "block": {
+                        "type": "mb_if",
+                        "id": "check-lockout",
+                        "inputs": {
+                          "CONDITION": {
+                            "block": {
+                              "type": "mb_point_value",
+                              "id": "alarm-active",
+                              "fields": {
+                                "POINT": "[\"pump\",\"alarm\"]"
+                              }
+                            }
+                          },
+                          "YES": {
+                            "block": {
+                              "type": "mb_log",
+                              "id": "locked-log",
+                              "fields": {
+                                "TEXT": "报警已锁存，请在画布复位"
+                              },
+                              "next": {
+                                "block": {
+                                  "type": "mb_stop",
+                                  "id": "locked-stop"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "next": {
+                          "block": {
+                            "type": "mb_read_var",
+                            "id": "capture-sp",
+                            "fields": {
+                              "POINT": "[\"pump\",\"sp\"]",
+                              "VARIABLE": "本轮目标"
+                            },
+                            "next": {
+                              "block": {
+                                "type": "mb_assert",
+                                "id": "validate-sp",
+                                "inputs": {
+                                  "CONDITION": {
+                                    "block": {
+                                      "type": "mb_range",
+                                      "id": "safe-sp",
+                                      "fields": {
+                                        "POINT": "[\"pump\",\"sp\"]",
+                                        "MIN": 0.1,
+                                        "MAX": 0.6
+                                      }
+                                    }
+                                  }
+                                },
+                                "next": {
+                                  "block": {
+                                    "type": "mb_read",
+                                    "id": "fresh-before-start",
+                                    "fields": {
+                                      "POINT": "[\"sensor\",\"pv\"]",
+                                      "TIMEOUT": 1800
+                                    },
+                                    "next": {
+                                      "block": {
+                                        "type": "mb_assert",
+                                        "id": "check-empty",
+                                        "inputs": {
+                                          "CONDITION": {
+                                            "block": {
+                                              "type": "mb_compare",
+                                              "id": "start-low",
+                                              "fields": {
+                                                "POINT": "[\"sensor\",\"pv\"]",
+                                                "OP": "le",
+                                                "VALUE": "0.02"
+                                              }
+                                            }
+                                          }
+                                        },
+                                        "next": {
+                                          "block": {
+                                            "type": "mb_write",
+                                            "id": "enable-pump",
+                                            "fields": {
+                                              "POINT": "[\"pump\",\"enable\"]",
+                                              "VALUE": "1"
+                                            },
+                                            "next": {
+                                              "block": {
+                                                "type": "mb_log",
+                                                "id": "rise-log",
+                                                "fields": {
+                                                  "TEXT": "开始升压，目标 MPa"
+                                                },
+                                                "inputs": {
+                                                  "OPERAND": {
+                                                    "block": {
+                                                      "type": "mb_variable",
+                                                      "id": "log-target",
+                                                      "fields": {
+                                                        "VARIABLE": "本轮目标"
+                                                      }
+                                                    }
+                                                  }
+                                                },
+                                                "next": {
+                                                  "block": {
+                                                    "type": "mb_wait",
+                                                    "id": "wait-for-pressure",
+                                                    "fields": {
+                                                      "TIMEOUT": 6500
+                                                    },
+                                                    "inputs": {
+                                                      "CONDITION": {
+                                                        "block": {
+                                                          "type": "mb_compare",
+                                                          "id": "threshold",
+                                                          "fields": {
+                                                            "POINT": "[\"sensor\",\"pv\"]",
+                                                            "OP": "ge",
+                                                            "VALUE": "0"
+                                                          },
+                                                          "inputs": {
+                                                            "OPERAND": {
+                                                              "block": {
+                                                                "type": "mb_variable",
+                                                                "id": "target-reading",
+                                                                "fields": {
+                                                                  "VARIABLE": "本轮目标"
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    },
+                                                    "next": {
+                                                      "block": {
+                                                        "type": "mb_log",
+                                                        "id": "target-log",
+                                                        "fields": {
+                                                          "TEXT": "压力达标 MPa"
+                                                        },
+                                                        "inputs": {
+                                                          "OPERAND": {
+                                                            "block": {
+                                                              "type": "mb_point_value",
+                                                              "id": "peak-reading",
+                                                              "fields": {
+                                                                "POINT": "[\"sensor\",\"pv\"]"
+                                                              }
+                                                            }
+                                                          }
+                                                        },
+                                                        "next": {
+                                                          "block": {
+                                                            "type": "mb_write",
+                                                            "id": "disable-pump",
+                                                            "fields": {
+                                                              "POINT": "[\"pump\",\"enable\"]",
+                                                              "VALUE": "0"
+                                                            },
+                                                            "next": {
+                                                              "block": {
+                                                                "type": "mb_wait",
+                                                                "id": "wait-for-zero",
+                                                                "fields": {
+                                                                  "TIMEOUT": 5000
+                                                                },
+                                                                "inputs": {
+                                                                  "CONDITION": {
+                                                                    "block": {
+                                                                      "type": "mb_compare",
+                                                                      "id": "zero-pressure",
+                                                                      "fields": {
+                                                                        "POINT": "[\"sensor\",\"pv\"]",
+                                                                        "OP": "le",
+                                                                        "VALUE": "0"
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                },
+                                                                "next": {
+                                                                  "block": {
+                                                                    "type": "mb_log",
+                                                                    "id": "end-log",
+                                                                    "fields": {
+                                                                      "TEXT": "卸压完成 MPa"
+                                                                    },
+                                                                    "inputs": {
+                                                                      "OPERAND": {
+                                                                        "block": {
+                                                                          "type": "mb_point_value",
+                                                                          "id": "zero-reading",
+                                                                          "fields": {
+                                                                            "POINT": "[\"sensor\",\"pv\"]"
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "ERROR": {
+                      "block": {
+                        "type": "mb_if",
+                        "id": "classify",
+                        "inputs": {
+                          "CONDITION": {
+                            "block": {
+                              "type": "mb_error_is",
+                              "id": "error-timeout",
+                              "fields": {
+                                "CODE": "timeout"
+                              }
+                            }
+                          },
+                          "YES": {
+                            "block": {
+                              "type": "mb_log",
+                              "id": "timeout-log",
+                              "fields": {
+                                "TEXT": "压力反馈超时"
+                              }
+                            }
+                          },
+                          "NO": {
+                            "block": {
+                              "type": "mb_log",
+                              "id": "other-log",
+                              "fields": {
+                                "TEXT": "试验条件或设备操作异常"
+                              }
+                            }
+                          }
+                        },
+                        "extraState": {
+                          "elseIfCount": 0,
+                          "hasElse": true
+                        },
+                        "next": {
+                          "block": {
+                            "type": "mb_try",
+                            "id": "recover",
+                            "inputs": {
+                              "BODY": {
+                                "block": {
+                                  "type": "mb_write",
+                                  "id": "trip-stop",
+                                  "fields": {
+                                    "POINT": "[\"pump\",\"enable\"]",
+                                    "VALUE": "0"
+                                  },
+                                  "next": {
+                                    "block": {
+                                      "type": "mb_write",
+                                      "id": "trip-alarm",
+                                      "fields": {
+                                        "POINT": "[\"pump\",\"alarm\"]",
+                                        "VALUE": "1"
+                                      },
+                                      "next": {
+                                        "block": {
+                                          "type": "mb_log",
+                                          "id": "trip-confirmed",
+                                          "fields": {
+                                            "TEXT": "控制器已应答停泵和报警锁存"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "ERROR": {
+                                "block": {
+                                  "type": "mb_log",
+                                  "id": "trip-unknown",
+                                  "fields": {
+                                    "TEXT": "停泵或报警锁存未获确认，需核对现场状态"
+                                  }
+                                }
+                              }
+                            },
+                            "next": {
+                              "block": {
+                                "type": "mb_stop",
+                                "id": "abort-cycle"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "workbench": {
+    "activeId": "view-mwsv35h5-j9yl4",
+    "views": [
+      {
+        "id": "view-mwsv2jde-quowo",
+        "module": "devices",
+        "selection": {
+          "canvasId": null,
+          "connectionId": null,
+          "slaveId": null,
+          "blockId": null,
+          "templateId": null,
+          "groupId": null,
+          "sessionId": null,
+          "commView": "messages",
+          "historyTab": "trend",
+          "trendTab": "signals",
+          "realtimeScope": "device",
+          "trendWindowSec": null,
+          "deviceView": "topology",
+          "templateEditing": false,
+          "editBlockId": null
+        }
+      },
+      {
+        "id": "view-mwsv35h5-j9yl4",
+        "module": "scripts",
+        "selection": {
+          "canvasId": null,
+          "connectionId": null,
+          "slaveId": null,
+          "blockId": null,
+          "templateId": null,
+          "groupId": null,
+          "sessionId": null,
+          "commView": "messages",
+          "historyTab": "trend",
+          "trendTab": "signals",
+          "realtimeScope": "device",
+          "trendWindowSec": null,
+          "deviceView": "topology",
+          "templateEditing": false,
+          "editBlockId": null
+        }
+      }
+    ]
+  },
+  "layout": {
+    "module": "devices",
+    "selection": {}
+  }
+}

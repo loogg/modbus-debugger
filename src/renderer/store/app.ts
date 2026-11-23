@@ -1,37 +1,27 @@
-import { create } from 'zustand';
-import type { Workspace } from '../../domain/model';
+import { create, useStore } from 'zustand';
+import { createContext, useContext } from 'react';
+import type { ModuleId, WorkbenchView, ViewSelection } from '../../shared/workbench';
+import type { SlaveDef, Workspace } from '../../domain/model';
 import type {
   AppDelta,
   AppSnapshot,
   BlockViewState,
   ConnectionStateView,
   PointViewState,
-  RecordingView,
+  SlaveCommunicationState,
 } from '../../shared/snapshot';
 import type { ParseEventRecord, TransactionRecord, ConnectionHealth, Prefs, SessionSummary } from '../../shared/contracts';
 import type { Command, CommandResult } from '../../shared/commands';
 import type { ModbusApi } from '../../shared/preload-api';
 import { setDisplayTimeZone } from '../time';
-import { applyLanguage } from '../i18n';
+import { applyLanguage, i18n } from '../i18n';
 import { pointKey } from '../../shared/point-key';
+import type { BufferInfo, DataPointRef } from '../../shared/point-data';
+import { dataCacheFor } from './data-cache';
 
-export type ModuleId = 'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates' | 'settings' | 'about';
+export type { ModuleId } from '../../shared/workbench';
 
-export interface Selection {
-  connectionId: string | null;
-  slaveId: string | null;
-  blockId: string | null;
-  templateId: string | null;
-  groupId: string | null;
-  sessionId: string | null;
-  commView: 'messages' | 'health' | 'trace';
-  historyTab: 'trend' | 'events' | 'data' | 'signals';
-  trendTab: 'signals' | 'chart';
-  realtimeScope: 'device' | 'block';
-  deviceView: 'topology' | 'scan' | 'temp' | 'memory';
-  templateEditing: boolean;
-  editBlockId: string | null;
-}
+export type Selection = ViewSelection;
 
 export type Overlay =
   | { kind: 'dialog'; id: 'add-connection'; connectionId?: string }
@@ -39,10 +29,12 @@ export type Overlay =
   | { kind: 'dialog'; id: 'edit-block'; templateId: string; blockId?: string }
   | { kind: 'dialog'; id: 'new-trend-group' }
   | { kind: 'dialog'; id: 'save-as-block'; connectionId: string; unitId: number; area: 1 | 2 | 3 | 4; start: number; quantity: number; registers: number[] }
-  | { kind: 'dialog'; id: 'confirm'; title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }
+  | { kind: 'dialog'; id: 'confirm'; title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void; onCancel?: () => void }
   | { kind: 'drawer'; id: 'edit-point'; templateId: string; blockId: string; pointId?: string }
   | { kind: 'drawer'; id: 'inspector'; pointId: string }
-  | { kind: 'dialog'; id: 'add-signal'; groupId: string }
+  | { kind: 'dialog'; id: 'add-signal'; groupId: string; initialPoints?: DataPointRef[] }
+  | { kind: 'dialog'; id: 'point-buffer'; pointRef: DataPointRef }
+  | { kind: 'dialog'; id: 'buffer-export'; points: DataPointRef[]; name: string }
   | { kind: 'screen'; id: 'import-registers'; templateId: string };
 
 export interface PointWriteState {
@@ -73,6 +65,10 @@ interface AppState {
   writeStates: Record<string, PointWriteState>;
   selectedPoints: Record<string, boolean>;
   live: Record<string, LiveSeries>;
+  dataManaged: boolean;
+  dataEpoch: number;
+  dataError: string | null;
+  dataBuffers: Record<string, BufferInfo>;
   init: (api: ModbusApi) => Promise<void>;
   applyDelta: (d: AppDelta) => void;
   setModule: (m: ModuleId) => void;
@@ -89,52 +85,34 @@ interface AppState {
 
 let toastSeq = 1;
 
+function connectionStatusChanged(previous: AppSnapshot['connections'], next: AppSnapshot['connections']): boolean {
+  if (Object.keys(previous).length !== Object.keys(next).length) return true;
+  return Object.entries(next).some(([id, value]) => {
+    const before = previous[id];
+    return !before || before.state !== value.state || before.detail !== value.detail || before.clientCount !== value.clientCount || JSON.stringify(before.scan) !== JSON.stringify(value.scan);
+  });
+}
+
 export interface LiveSeries {
-  samples: Array<[number, number]>;
-  events: Array<{ t: number; value: string }>;
+  rangeStatus?: 'available' | 'partial' | 'expired';
+  firstTimeMs?: number | null;
+  lastTimeMs?: number | null;
+  firstSeq?: number;
+  samples: Array<[number, number, number?]>;
+  events: Array<{ t: number; value: string; seq?: number }>;
+  generation?: string;
+  gap?: boolean;
+  loading?: boolean;
 }
 
-const MAX_SAMPLES = 5000;
-const MAX_EVENTS = 2000;
-
-/**
- * Appends the newest confirmed values to the in-memory trend buffers.
- *
- * The buffers are mutated in place and trimmed from the front: copying a 5000-sample
- * array per point on every delta (10 Hz) was the single largest renderer hot spot.
- * Consumers always read the array fresh during render, and the enclosing `live` map
- * is replaced so subscriptions still update.
- */
-function appendLive(live: Record<string, LiveSeries>, points: AppSnapshot['points'] | undefined): Record<string, LiveSeries> {
-  if (!points) return live;
-  const now = Date.now();
-  const out = { ...live };
-  for (const [id, view] of Object.entries(points)) {
-    if (!view.hasValue) continue;
-    const cur = out[id] ?? { samples: [], events: [] };
-    if (view.engNumber !== null) {
-      cur.samples.push([now, view.engNumber]);
-      if (cur.samples.length > MAX_SAMPLES) cur.samples.splice(0, cur.samples.length - MAX_SAMPLES);
-    } else {
-      const value = view.boolValue !== null ? String(view.boolValue) : view.stringValue ?? view.enumLabel ?? String(view.rawNumber);
-      const last = cur.events[cur.events.length - 1];
-      if (!last || last.value !== value) {
-        cur.events.push({ t: now, value });
-        if (cur.events.length > MAX_EVENTS) cur.events.splice(0, cur.events.length - MAX_EVENTS);
-      }
-    }
-    out[id] = cur;
-  }
-  return out;
-}
-
-export const useApp = create<AppState>((set, get) => ({
+const createAppStore = () => create<AppState>((set, get) => ({
   commSlaveFilter: {},
   commResultFilter: { ok: true, timeout: true, exception: true, other: true },
   api: null,
   snapshot: null,
   module: 'devices',
   selection: {
+    canvasId: null,
     connectionId: null,
     slaveId: null,
     blockId: null,
@@ -144,6 +122,7 @@ export const useApp = create<AppState>((set, get) => ({
     commView: 'messages',
     historyTab: 'trend',
     trendTab: 'signals',
+    trendWindowSec: null,
     realtimeScope: 'device',
     templateEditing: false,
     deviceView: 'topology',
@@ -155,9 +134,13 @@ export const useApp = create<AppState>((set, get) => ({
   writeStates: {},
   selectedPoints: {},
   live: {},
+  dataManaged: false,
+  dataEpoch: 0,
+  dataError: null,
+  dataBuffers: {},
 
   init: async (api) => {
-    const snapshot = await api.getSnapshot();
+    const snapshot = await api.getSnapshot({ includeDiagnostics: false });
     setDisplayTimeZone(snapshot.prefs.timezone);
     applyLanguage(snapshot.prefs.language);
     set({ api, snapshot, sidebarWidth: snapshot.prefs.sidebarWidth || 244 });
@@ -172,16 +155,29 @@ export const useApp = create<AppState>((set, get) => ({
     if (d.revision <= prev.revision) return;
     // diagnostics.clear bumps diagRev: the local ring copies must be dropped, not appended to.
     const cleared = d.diagRev !== undefined && d.diagRev !== prev.diagRev;
+    const replaceRuntime = d.workspace && !d.workspaceMetadataOnly;
+    if (replaceRuntime && get().api) dataCacheFor(get().api!).invalidate();
+    let slaveStates = prev.slaveStates;
+    if (d.slaveStates) {
+      const states = new Map(Object.entries(prev.slaveStates ?? {}));
+      for (const [id, view] of Object.entries(d.slaveStates)) {
+        if (view) states.set(id, view);
+        else states.delete(id);
+      }
+      slaveStates = Object.fromEntries(states);
+    }
     const next: AppSnapshot = {
       ...prev,
       revision: d.revision,
       update: d.update ?? prev.update,
+      scriptRun: d.scriptRun === undefined ? prev.scriptRun : d.scriptRun,
       workspace: d.workspace ?? prev.workspace,
       workspacePath: d.workspacePath !== undefined ? d.workspacePath : prev.workspacePath,
       dirty: d.dirty !== undefined ? d.dirty : prev.dirty,
-      connections: d.workspace ? d.connections ?? prev.connections : d.connections ? { ...prev.connections, ...d.connections } : prev.connections,
-      blocks: d.workspace ? d.blocks ?? {} : d.blocks ? { ...prev.blocks, ...d.blocks } : prev.blocks,
-      points: d.workspace ? d.points ?? {} : d.points ? { ...prev.points, ...d.points } : prev.points,
+      connections: replaceRuntime ? d.connections ?? prev.connections : d.connections ? { ...prev.connections, ...d.connections } : prev.connections,
+      slaveStates,
+      blocks: replaceRuntime ? d.blocks ?? {} : d.blocks ? { ...prev.blocks, ...d.blocks } : prev.blocks,
+      points: replaceRuntime ? d.points ?? {} : d.points ? { ...prev.points, ...d.points } : prev.points,
       diagRev: d.diagRev ?? prev.diagRev,
       transactions: cleared
         ? (d.transactions ?? []).slice(-500)
@@ -194,11 +190,13 @@ export const useApp = create<AppState>((set, get) => ({
           ? [...prev.parseEvents, ...d.parseEvents].slice(-200)
           : prev.parseEvents,
       health: d.health ? { ...prev.health, ...d.health } : prev.health,
-      recording: d.recording !== undefined ? d.recording : prev.recording,
       sessions: d.sessions ?? prev.sessions,
       warnings: d.warnings ?? prev.warnings,
       prefs: d.prefs ?? prev.prefs,
     };
+    const statusChanged = connectionStatusChanged(prev.connections, next.connections)
+      || Object.entries(d.blocks ?? {}).some(([key, block]) => prev.blocks[key]?.status !== block.status || prev.blocks[key]?.exceptionCode !== block.exceptionCode);
+    if (!replaceRuntime && statusChanged && get().api) dataCacheFor(get().api!).invalidateLatest();
     // Display prefs must be applied before the transactions branch below: that branch
     // early-returns, and while polling a prefs.set delta is routinely bundled with new
     // transactions. Applying it late silently dropped timezone/language changes.
@@ -207,6 +205,18 @@ export const useApp = create<AppState>((set, get) => ({
       applyLanguage(d.prefs.language);
     }
     // derive transient write states from newly appended transactions
+    if (d.pointWrites) {
+      const writeStates = { ...get().writeStates };
+      for (const [key, receipt] of Object.entries(d.pointWrites)) {
+        if (writeStates[key]?.phase === 'writing') continue;
+        const reason = receipt.phase !== 'not-sent' ? undefined : receipt.result === 'exception'
+          ? i18n.t('ui.valueCell.preReadException', { code: `0x${(receipt.exceptionCode ?? 0).toString(16).toUpperCase().padStart(2, '0')}` })
+          : i18n.t(receipt.result === 'timeout' ? 'ui.valueCell.preReadTimeout' : 'ui.valueCell.preReadTransport');
+        writeStates[key] = { phase: receipt.phase, attempted: receipt.attempted, at: receipt.atMs, exceptionCode: receipt.exceptionCode, reason };
+      }
+      set({ snapshot: next, writeStates, ...(replaceRuntime ? { live: {}, dataBuffers: {}, dataEpoch: get().dataEpoch + 1 } : {}) });
+      return;
+    }
     if (d.transactions) {
       const hasWriteTx = d.transactions.some((t) => t.sourceKind === 'write' || t.sourceKind === 'readback');
       const writeStates = hasWriteTx ? { ...get().writeStates } : get().writeStates;
@@ -216,7 +226,7 @@ export const useApp = create<AppState>((set, get) => ({
         const slave = next.workspace.slaves.find(s => s.connectionId === tx.connectionId && s.unitId === tx.unitId);
         const writeKey = pointKey(slave?.id, tx.sourceId);
         if (tx.sourceKind === 'write') {
-          if (tx.result === 'ok') writeStates[writeKey] = { phase: 'writing', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: null };
+          if (tx.result === 'ok') writeStates[writeKey] = { phase: 'confirmed', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: null };
           else if (tx.result === 'exception') writeStates[writeKey] = { phase: 'rejected', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: tx.exceptionCode };
           else writeStates[writeKey] = { phase: 'unknown', attempted: writeStates[writeKey]?.attempted ?? '', at: now, exceptionCode: null };
         } else if (tx.sourceKind === 'readback') {
@@ -227,23 +237,26 @@ export const useApp = create<AppState>((set, get) => ({
         if (v.phase === 'confirmed' && now - v.at > 2500) delete writeStates[k];
         if ((v.phase === 'rejected' || v.phase === 'unknown') && now - v.at > 10000) delete writeStates[k];
       }
-      const live = appendLive(get().live, d.points);
-      set({ snapshot: next, writeStates, live });
+      set({ snapshot: next, writeStates, ...(replaceRuntime ? { live: {}, dataBuffers: {}, dataEpoch: get().dataEpoch + 1 } : {}) });
       return;
     }
-    const live = d.points ? appendLive(get().live, d.points) : get().live;
-    set({ snapshot: next, live });
+    set({ snapshot: next, ...(replaceRuntime ? { live: {}, dataBuffers: {}, dataEpoch: get().dataEpoch + 1 } : {}) });
   },
 
   setModule: (m) => set({ module: m }),
-  select: (patch) => set({ selection: { ...get().selection, ...(patch.templateId !== undefined ? {templateEditing:false,editBlockId:null} : {}), ...patch }, ...(patch.slaveId !== undefined && patch.slaveId !== get().selection.slaveId ? { selectedPoints: {} } : {}) }),
+  select: (patch) => set({ selection: { ...get().selection, ...(patch.templateId !== undefined ? {templateEditing:false,editBlockId:null} : {}), ...(patch.groupId !== undefined && patch.groupId !== get().selection.groupId ? { trendWindowSec: null } : {}), ...patch }, ...(patch.slaveId !== undefined && patch.slaveId !== get().selection.slaveId ? { selectedPoints: {} } : {}) }),
   setSidebarWidth: (w) => {
     const clamped = Math.min(320, Math.max(220, w));
     set({ sidebarWidth: clamped });
+    if (get() !== appStore.getState()) appStore.setState({ sidebarWidth: clamped });
     void get().command({ type: 'prefs.set', patch: { sidebarWidth: clamped } });
   },
   openOverlay: (o) => set({ overlay: o }),
-  closeOverlay: () => set({ overlay: null }),
+  closeOverlay: () => {
+    const overlay = get().overlay;
+    if (overlay?.kind === 'dialog' && overlay.id === 'confirm') overlay.onCancel?.();
+    set({ overlay: null });
+  },
   toast: (t) => {
     const id = toastSeq++;
     set({ toasts: [...get().toasts, { ...t, id }] });
@@ -257,6 +270,7 @@ export const useApp = create<AppState>((set, get) => ({
     try { res = await api.command<T>(cmd); }
     catch (error) { res = { ok: false, error: String(error) }; }
     if (!res.ok) get().toast({ kind: 'error', title: '操作失败', message: res.error });
+    if (res.ok && ['point.write', 'slave.setValues', 'connection.connect', 'connection.disconnect', 'device.refresh'].includes(cmd.type)) dataCacheFor(api).invalidateLatest();
     return res;
   },
   togglePointSelected: (pointId) => {
@@ -267,6 +281,47 @@ export const useApp = create<AppState>((set, get) => ({
   },
   clearPointSelection: () => set({ selectedPoints: {} }),
 }));
+
+/** One data subscription; each view owns only its navigation and transient UI state. */
+export const appStore = createAppStore();
+export type AppStore = ReturnType<typeof createAppStore>;
+export const AppStoreContext = createContext<AppStore | null>(null);
+export const useViewStore = (): AppStore => useContext(AppStoreContext) ?? appStore;
+export const useApp = Object.assign(function useApp<T>(selector: (state: AppState) => T): T {
+  return useStore(useViewStore(), selector);
+}, { getState: appStore.getState, setState: appStore.setState, subscribe: appStore.subscribe });
+
+export function createViewStore(view: Pick<WorkbenchView, 'module' | 'selection'>) {
+  const store = createAppStore();
+  const sync = () => {
+    const { snapshot, api, live, writeStates, dataEpoch } = appStore.getState();
+    const previous = store.getState();
+    if (previous.dataManaged && snapshot) {
+      const reset = previous.dataEpoch !== dataEpoch;
+      const retained = previous.snapshot;
+      const beforeBlocks = retained?.blocks ?? {};
+      let blocks: Record<string, BlockViewState> = reset ? {} : beforeBlocks;
+      if (!reset) {
+        for (const [key, block] of Object.entries(snapshot.blocks)) {
+          const before = beforeBlocks[key];
+          if (before && (before.status !== block.status || before.exceptionCode !== block.exceptionCode)) {
+            if (blocks === beforeBlocks) blocks = { ...beforeBlocks };
+            blocks[key] = { ...before, status: block.status, exceptionCode: block.exceptionCode };
+          }
+        }
+      }
+      const connections = retained && !connectionStatusChanged(retained.connections, snapshot.connections) ? retained.connections : snapshot.connections;
+      store.setState({ snapshot: { ...snapshot, points: reset ? {} : retained?.points ?? {}, blocks, connections }, api, writeStates, dataEpoch,
+        ...(reset ? { live: {}, dataBuffers: {} } : {}) });
+    } else store.setState({ snapshot, api, live, writeStates, dataEpoch });
+  };
+  sync();
+  store.setState({ module: view.module, sidebarWidth: appStore.getState().sidebarWidth, selection: { ...store.getState().selection, ...view.selection } });
+  let stop: (() => void) | undefined;
+  const connect = () => { sync(); stop ??= appStore.subscribe(sync); };
+  const dispose = () => { stop?.(); stop = undefined; };
+  return { store, connect, dispose };
+}
 
 /* ------------------------------------------------------------------ *
  * Stable slice selectors
@@ -299,10 +354,24 @@ export const useTransactions = (): TransactionRecord[] => useApp((s) => s.snapsh
 export const useParseEvents = (): ParseEventRecord[] => useApp((s) => s.snapshot?.parseEvents ?? EMPTY_PARSE_EVENTS);
 export const useSessions = (): SessionSummary[] => useApp((s) => s.snapshot?.sessions ?? EMPTY_SESSIONS);
 export const useWarnings = (): string[] => useApp((s) => s.snapshot?.warnings ?? EMPTY_WARNINGS);
-export const useRecording = (): RecordingView | null => useApp((s) => s.snapshot?.recording ?? null);
 export const usePrefs = (): Prefs | null => useApp((s) => s.snapshot?.prefs ?? null);
 export const useHistoryDbPath = (): string => useApp((s) => s.snapshot?.historyDbPath ?? '');
 
 /** Connection state of one connection as a primitive, so status dots do not re-render on value deltas. */
 export const useConnectionState = (connectionId: string | null | undefined): ConnectionStateView['state'] =>
   useApp((s) => (connectionId ? s.snapshot?.connections[connectionId]?.state ?? 'offline' : 'offline'));
+
+export function slaveCommunicationState(
+  snapshot: Pick<AppSnapshot, 'connections' | 'slaveStates'> | null | undefined,
+  slave?: SlaveDef,
+): SlaveCommunicationState {
+  if (!slave) return 'offline';
+  if (!slave.enabled) return 'disabled';
+  const state = snapshot?.slaveStates?.[slave.id]?.state;
+  if (state) return state;
+  const link = snapshot?.connections[slave.connectionId]?.state;
+  return link === 'online' ? 'pending' : link === 'connecting' ? 'connecting' : 'offline';
+}
+
+export const useSlaveState = (slave?: SlaveDef): SlaveCommunicationState =>
+  useApp(state => slaveCommunicationState(state.snapshot, slave));

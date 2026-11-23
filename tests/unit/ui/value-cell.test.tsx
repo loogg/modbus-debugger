@@ -46,14 +46,28 @@ afterEach(() => {
 });
 
 describe('ValueCell write semantics', () => {
-  it('does not mark the old displayed value confirmed before the Main read-back delta arrives',async()=>{
+  it('marks the write successful on acknowledgement while retaining the last sampled value',async()=>{
     let resolveResult!: (value:{ok:true;value:PointWriteResult})=>void;
     const response=new Promise<{ok:true;value:PointWriteResult}>(resolve=>{resolveResult=resolve;});
     const api:ModbusApi={command:async<T,>()=>await response as {ok:true;value:T},getSnapshot:async()=>{throw new Error('unexpected snapshot');},onDelta:()=>()=>{},versions:async()=>({app:'test',electron:'test',node:'test'})};
     useApp.setState({api});render(<ValueCell point={point} view={view({slaveId:'s1'})}/>);
     fireEvent.doubleClick(screen.getByText('1500'));const input=screen.getByDisplayValue('1500');fireEvent.change(input,{target:{value:'1600'}});fireEvent.keyDown(input,{key:'Enter'});
     await act(async()=>{resolveResult({ok:true,value:{phase:'confirmed',result:'ok',exceptionCode:null}});await response;});
-    expect(screen.queryByText('✓')).toBeNull();expect(document.querySelector('.spin')).not.toBeNull();
+    expect(screen.getByText('✓')).toBeVisible();
+    expect(screen.getByText('1500')).toBeVisible();
+    expect(document.querySelector('.spin')).toBeNull();
+  });
+  it('shows an accepted write-only command and preserves it after an unknown attempt', () => {
+    render(<ValueCell point={{ ...point, access: 'wo' }} view={view({ hasValue: false, engText: '—', lastWrite: {
+      phase: 'unknown', attempted: '1700', atMs: 1000, exceptionCode: null,
+      accepted: { value: 1600, engineering: 1600, text: '1600', atMs: 900 },
+    } })} />);
+    expect(screen.getByText('1600')).toBeVisible();
+    expect(screen.getByText('上次写入')).toBeVisible();
+    expect(screen.queryByText('1700')).toBeNull();
+    expect(screen.getByTitle(/结果未知/)).toBeInTheDocument();
+    fireEvent.doubleClick(screen.getByText('1600'));
+    expect(screen.getByDisplayValue('1600')).toBeVisible();
   });
   it.each(['exception','timeout','transport'] as const)('ends the pending state when the pre-read returns %s without a write',async result=>{
     const response: PointWriteResult={phase:'not-sent',result,exceptionCode:result==='exception'?2:null};

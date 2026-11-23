@@ -8,6 +8,7 @@ import { WorkspaceService } from '../../src/main/services/workspace';
 import { HistoryStore } from '../../src/main/services/history';
 import { createScratch } from '../../tools/test-paths.mjs';
 import type { PointViewState } from '../../src/shared/snapshot';
+import type { DataReadResult } from '../../src/shared/point-data';
 import type { Command } from '../../src/shared/commands';
 import type { ModbusRequest } from '../../src/domain/protocol';
 
@@ -37,8 +38,11 @@ for (const transport of ['tcp', 'rtu'] as const) describe.skipIf(transport === '
   };
   const command = async (cmd: Command) => { const result = await manager.handleCommand(cmd); expect(result.ok, result.ok ? '' : result.error).toBe(true); return result; };
   const refresh = () => command({ type: 'device.refresh', slaveId: masterId });
-  const write = (id: string, value: number | boolean | string, slaveId = masterId) => command({ type: 'point.write', slaveId, pointId: id,
-    engineering: typeof value === 'number' ? value : null, boolValue: typeof value === 'boolean' ? value : null, stringValue: typeof value === 'string' ? value : null });
+  const write = async (id: string, value: number | boolean | string, slaveId = masterId) => {
+    const result = await command({ type: 'point.write', slaveId, pointId: id, engineering: typeof value === 'number' ? value : null, boolValue: typeof value === 'boolean' ? value : null, stringValue: typeof value === 'string' ? value : null });
+    if (slaveId === masterId) await refresh();
+    return result;
+  };
   const wire = (request: ModbusRequest, unit = 1) => {
     const runtime = manager.runtimeFor(`${transport}-master`)!;
     let result: Awaited<ReturnType<typeof runtime.executeRequest>>;
@@ -170,29 +174,28 @@ for (const transport of ['tcp', 'rtu'] as const) describe.skipIf(transport === '
     expect(point('Float32-ABCD-holding')?.engNumber).toBe(12.25);
   }, 15000);
 
-  it('records Numeric/Bool/Enum/String from both ends and persists raw requests with correct directions', async () => {
-    await command({ type: 'prefs.set', patch: { persistRawComm: true } });
-    await command({ type: 'trend.startRecording', groupId: `${transport}-trend` });
-    const id = manager.buildSnapshot().recording!.sessionId;
-    await new Promise(resolve => setTimeout(resolve, 150));
+  it('buffers Numeric/Bool/Enum/String from both ends and exports confirmed samples', async () => {
+    const group = manager.buildSnapshot().workspace.trendGroups.find(item => item.id === `${transport}-trend`)!;
+    const refs = group.signals.map(signal => ({ slaveId: signal.pointRef.slaveId, pointId: signal.pointRef.pointId }));
     await write('Float32-ABCD-holding', 12.25); await write('coils-0', false); await write('Enum-holding', 2); await write('UTF8-holding', '闭环🙂');
     await new Promise(resolve => setTimeout(resolve, 200));
-    await command({ type: 'trend.stopRecording' });
-    const schema = history.getSession(id)!.schema;
-    expect(schema).toHaveLength(10);
-    expect(history.readSamples(id).some(row => row.value === 12.25)).toBe(true);
-    expect(history.readSamples(id).some(row => row.value === 2.345678901234)).toBe(true);
-    const events = history.readEvents(id);
-    for (const kind of ['bool', 'enum', 'string']) expect(events.some(row => row.kind === kind), kind).toBe(true);
-    const metadata = history.readTransactionMetadata(id), raw = history.readRawComm(id);
-    for (const tx of metadata) {
-      const original = manager.diagnostics.findTransaction(tx.traceId)!;
-      const request = raw.find(frame => frame.traceId === tx.traceId && frame.hex === original.requestAduHex)!;
-      expect(request.direction, tx.sourceKind).toBe(tx.sourceKind === 'slave' ? 'rx' : 'tx');
-      if (original.responseAduHex) expect(raw.find(frame => frame.traceId === tx.traceId && frame.hex === original.responseAduHex && frame.direction === (tx.sourceKind === 'slave' ? 'tx' : 'rx'))).toBeDefined();
-    }
-    expect(metadata.some(tx => tx.sourceKind === 'slave')).toBe(true);
-    const file = path.join(root, 'result.json'); fs.writeFileSync(file, JSON.stringify({ transport, typeCases: loopVectors.map(vector => vector.id), session: history.getSession(id), transactions: metadata.length }, null, 2));
+    const result = await command({ type: 'data.read', points: [], blocks: [], buffers: refs, series: refs.map(ref => ({ ...ref, limit: 2000 })) });
+    if (!result.ok) throw new Error(result.error);
+    const data = result.value as DataReadResult;
+    expect(Object.keys(data.series)).toHaveLength(10);
+    const samples = Object.values(data.series).flatMap(series => series.samples);
+    for (const expected of [12.25, 2.345678901234, false, 2, '闭环🙂']) expect(samples.some(sample => sample.value === expected), String(expected)).toBe(true);
+    const csvPath = path.join(root, 'buffer-samples.csv');
+    await command({ type: 'buffer.export', points: refs, path: csvPath });
+    const csv = fs.readFileSync(csvPath, 'utf8');
+    for (const expected of ['12.25', '2.345678901234', '闭环🙂']) expect(csv).toContain(expected);
+    const transactions = manager.diagnostics.recentTransactions(200);
+    expect(transactions.some(tx => tx.sourceKind === 'slave' && tx.requestAduHex && tx.responseAduHex)).toBe(true);
+    expect(transactions.some(tx => tx.sourceKind === 'poll' && tx.responseAduHex)).toBe(true);
+    expect(transactions.some(tx => tx.sourceKind === 'readback')).toBe(false);
+    expect(history.listSessions()).toEqual([]);
+    const file = path.join(root, 'result.json');
+    fs.writeFileSync(file, JSON.stringify({ transport, typeCases: loopVectors.map(vector => vector.id), buffers: data.buffers, samples: samples.length }, null, 2));
   }, 15000);
 
   it('handles stopped slave timeouts and recovers without discarding the last confirmed value', async () => {

@@ -1,6 +1,9 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { connectionSchema, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_RECONNECT_INTERVAL_MS, type ConnectionDef } from '../../domain/model';
+import { useDirtyGuard } from '../workbench/view-context';
+import { useConfirm } from '../workbench/use-confirm';
 import { useApp, useConnectionStates, useHealth, useWorkspace } from '../store/app';
-import { Button, ComboInput, EmptyState, Field, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput, formatClock, slaveStatus } from '../components/ui';
+import { Button, ComboInput, EmptyState, Field, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, SlaveStatusDot, StatusDot, TextInput, formatClock } from '../components/ui';
 import { DataTable } from '../components/table';
 import { AREAS } from '../../domain/address';
 import { useTranslation } from '../i18n';
@@ -11,13 +14,16 @@ import type { RequestOutcome } from '../../shared/contracts';
 import type { Command } from '../../shared/commands';
 import { BAUD_PRESETS } from '../features/devices/baud-presets';
 import { SlaveMemoryView } from '../features/devices/slave-memory';
+import { useHostData } from '../workbench/host-data';
+import { bufferReferences } from '../../domain/point-buffers';
+import { InstanceBuffers } from '../features/buffers/buffer-ui';
+import { readExceptionReason } from '../features/devices/communication-status';
 
 
 export function DevicesScreen() {
   const { t } = useTranslation();
   const workspace = useWorkspace();
   const health = useHealth();
-  const connStates = useConnectionStates();
   const selection = useApp((s) => s.selection);
   const select = useApp((s) => s.select);
   const openOverlay = useApp((s) => s.openOverlay);
@@ -33,12 +39,17 @@ export function DevicesScreen() {
   const connection = workspace?.connections.find((c) => c.id === slave?.connectionId);
   const activeConnection =
     workspace?.connections.find((c) => c.id === selection.connectionId) ?? connection ?? workspace?.connections[0];
+  const template = workspace?.templates.find((item) => item.id === slave?.templateId);
+  const lastResponseUtc = useApp(s => slave ? s.snapshot?.slaveStates?.[slave.id]?.lastResponseUtc : null);
+  useHostData({
+    points: slave ? (template?.points ?? []).map(point => ({ slaveId: slave.id, pointId: point.id })) : [],
+    blocks: slave ? (template?.blocks ?? []).map(block => ({ slaveId: slave.id, blockId: block.id })) : [],
+    buffers: workspace ? [...bufferReferences(workspace).values()].filter(ref => ref.slaveId === slave?.id) : [],
+  });
 
   if (selection.deviceView === 'scan' && activeConnection && activeConnection.role !== 'slave') return <ScanView key={activeConnection.id} connectionId={activeConnection.id} />;
   if (selection.deviceView === 'temp' && activeConnection && activeConnection.role !== 'slave') return <TempReadView key={activeConnection.id} connectionId={activeConnection.id} />;
   if (selection.deviceView === 'memory' && slave && connection?.role === 'slave') return <SlaveMemoryView key={slave.id} slaveId={slave.id} />;
-  const template = workspace?.templates.find((t) => t.id === slave?.templateId);
-  const connState = slave ? connStates[slave.connectionId] : undefined;
 
   if (!workspace || workspace.connections.length === 0) {
     return (
@@ -98,7 +109,8 @@ export function DevicesScreen() {
           { label: t('devices.colDeviceTemplate'), value: template ? <button className="focus-ring cursor-pointer text-accent hover:underline" onClick={() => { select({ templateId: template.id }); setModule('templates'); }}>{template.name} · v{template.version}</button> : t('devices.unbound') },
           {
             label: t('devices.colDeviceState'),
-            value: <StatusDot tone={connState?.state === 'online' ? 'ok' : connState?.state === 'error' ? 'err' : 'idle'} label={connState?.state === 'online' ? t('devices.stateOnlineLast', { time: formatClock(connState.lastResponseUtc) }) : connState?.state === 'connecting' ? t('devices.stateConnecting') : t('devices.stateOffline')} />,
+            value: <SlaveStatusDot slave={slave} />,
+            sub: lastResponseUtc && <span className="text-ink2">{t('devices.lastDeviceResponse', { time: formatClock(lastResponseUtc) })}</span>,
           },
         ]}
       />
@@ -132,6 +144,7 @@ export function DevicesScreen() {
           ))}
         </div>
       )}
+      <InstanceBuffers slaveId={slave.id} />
     </>
   );
 }
@@ -308,10 +321,6 @@ const READ_ERROR_KEYS = {
   timeout: 'devices.tempTimeout', transport: 'devices.tempTransport', crc: 'devices.tempCrc',
   malformed: 'devices.tempMalformed', unexpected: 'devices.tempUnexpected',
 } as const;
-const READ_EXCEPTION_KEYS: Record<number, 'devices.tempIllegalFunction' | 'devices.tempIllegalAddress' | 'devices.tempIllegalValue' | 'devices.tempDeviceFailure' | 'devices.tempDeviceBusy' | 'devices.tempUnknownException'> = {
-  1: 'devices.tempIllegalFunction', 2: 'devices.tempIllegalAddress', 3: 'devices.tempIllegalValue',
-  4: 'devices.tempDeviceFailure', 6: 'devices.tempDeviceBusy',
-};
 
 export function TempReadView(props: { connectionId: string }) {
   const { t } = useTranslation();
@@ -362,7 +371,7 @@ export function TempReadView(props: { connectionId: string }) {
       let message: string;
       if (outcome.result === 'exception') {
         const code = outcome.exceptionCode ?? (payload?.kind === 'exception' ? payload.code : null);
-        message = t('devices.tempException', { code: code === null ? '—' : `0x${code.toString(16).padStart(2, '0')}`, reason: t(READ_EXCEPTION_KEYS[code ?? -1] ?? 'devices.tempUnknownException') });
+        message = t('devices.tempException', { code: code === null ? '—' : `0x${code.toString(16).padStart(2, '0')}`, reason: readExceptionReason(code) });
       } else {
         message = t(outcome.result === 'ok' ? 'devices.tempMalformed' : READ_ERROR_KEYS[outcome.result], { timeout: String(conn?.timeoutMs ?? 500), retries: String(conn?.retries ?? 0) });
       }
@@ -454,6 +463,13 @@ export function TempReadView(props: { connectionId: string }) {
   );
 }
 
+function connectionFields(conn: ConnectionDef | undefined) {
+  return { name: conn?.name ?? '', role: conn?.role ?? 'master', port: conn?.rtu?.port ?? '', baud: String(conn?.rtu?.baudRate ?? 115200),
+    host: conn?.tcp?.host ?? '', tcpPort: String(conn?.tcp?.port ?? 502), timeout: String(conn?.timeoutMs ?? 500), retries: String(conn?.retries ?? 1),
+    retryDelay: String(conn?.retryDelayMs ?? 50), connectTimeout: String(conn?.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS), reconnectInterval: String(conn?.reconnectIntervalMs ?? DEFAULT_RECONNECT_INTERVAL_MS),
+    reconnect: conn?.reconnect ?? 'auto', rts: conn?.rtsControl ?? 'none', logLevel: conn?.logLevel ?? 'info', interFrame: String(conn?.interFrameMs ?? 0) };
+}
+
 function ConnectionSettingsView(props: { connectionId: string }) {
   const { t } = useTranslation();
   const workspace = useWorkspace();
@@ -463,6 +479,8 @@ function ConnectionSettingsView(props: { connectionId: string }) {
   const select = useApp((s) => s.select);
   const openOverlay = useApp((s) => s.openOverlay);
   const conn = workspace?.connections.find((c) => c.id === props.connectionId);
+  const [base, setBase] = useState(conn);
+  const confirm = useConfirm();
   const state = connStates[props.connectionId]?.state ?? 'offline';
   const [name, setName] = useState(conn?.name ?? '');
   const [role, setRole] = useState<'master' | 'slave'>(conn?.role ?? 'master');
@@ -473,11 +491,35 @@ function ConnectionSettingsView(props: { connectionId: string }) {
   const [tcpPort, setTcpPort] = useState(String(conn?.tcp?.port ?? 502));
   const [timeout, setTimeoutMs] = useState(String(conn?.timeoutMs ?? 500));
   const [retries, setRetries] = useState(String(conn?.retries ?? 1));
+  const [retryDelay, setRetryDelay] = useState(String(conn?.retryDelayMs ?? 50));
+  const validRetryDelay = retryDelay.trim() !== '' && Number.isInteger(Number(retryDelay)) && Number(retryDelay) >= 0 && Number(retryDelay) <= 60000;
   const [reconnect, setReconnect] = useState<'auto' | 'manual'>(conn?.reconnect ?? 'auto');
+  const [connectTimeout, setConnectTimeout] = useState(String(conn?.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS));
+  const [reconnectInterval, setReconnectInterval] = useState(String(conn?.reconnectIntervalMs ?? DEFAULT_RECONNECT_INTERVAL_MS));
+  const validConnectTimeout = connectTimeout.trim() !== '' && connectionSchema.shape.connectTimeoutMs.safeParse(Number(connectTimeout)).success;
+  const validReconnectInterval = reconnectInterval.trim() !== '' && connectionSchema.shape.reconnectIntervalMs.safeParse(Number(reconnectInterval)).success;
+  const validTiming = validConnectTimeout && (reconnect === 'manual' || validReconnectInterval);
   const [rts, setRts] = useState<'none' | 'toggle'>(conn?.rtsControl ?? 'none');
   const [logLevel, setLogLevel] = useState<'info' | 'debug'>(conn?.logLevel ?? 'info');
   const [interFrame, setInterFrame] = useState(String(conn?.interFrameMs ?? 0));
-  const [busy, setBusy] = useState(false);
+  const [linkAction, setLinkAction] = useState<'connect' | 'disconnect' | null>(null);
+  const dirty = JSON.stringify({ name, role, port, baud, host, tcpPort, timeout, retries, retryDelay, connectTimeout, reconnectInterval, reconnect, rts, logLevel, interFrame }) !== JSON.stringify(connectionFields(base));
+  useDirtyGuard(dirty);
+  const sync = useRef({ received: conn, dirty });
+  sync.current.dirty = dirty;
+  const resetTo = useCallback((next: ConnectionDef) => {
+    const fields = connectionFields(next);
+    setBase(next); setName(fields.name); setRole(fields.role); setPort(fields.port); setBaud(fields.baud);
+    setHost(fields.host); setTcpPort(fields.tcpPort); setTimeoutMs(fields.timeout); setRetries(fields.retries);
+    setRetryDelay(fields.retryDelay);
+    setConnectTimeout(fields.connectTimeout); setReconnectInterval(fields.reconnectInterval);
+    setReconnect(fields.reconnect); setRts(fields.rts); setLogLevel(fields.logLevel); setInterFrame(fields.interFrame);
+  }, []);
+  useEffect(() => {
+    if (!conn || JSON.stringify(conn) === JSON.stringify(sync.current.received)) return;
+    sync.current.received = conn;
+    if (!sync.current.dirty) resetTo(conn);
+  }, [conn, resetTo]);
 
   const refreshPorts = useCallback(() => {
     void command<{ path: string; manufacturer: string | null }[]>({ type: 'serial.list' }).then((res) => {
@@ -490,36 +532,40 @@ function ConnectionSettingsView(props: { connectionId: string }) {
   // tear the transport down mid-flight. Disconnect first, edit, save, then connect again.
   const live = state === 'online' || state === 'connecting';
   const local = conn.role === 'slave';
-  const stateLabel = state === 'online' ? local ? conn.transport === 'tcp' ? t('slave.listening', { count: connStates[conn.id]?.clientCount ?? 0 }) : t('slave.running') : t('devices.stateConnected') : state === 'connecting' ? local ? t('slave.starting') : t('devices.stateConnecting') : state === 'error' ? t('devices.stateError') : local ? t('slave.stopped') : t('devices.stateDisconnected');
+  const stateLabel = state === 'online' ? local ? conn.transport === 'tcp' ? t('slave.listening', { count: connStates[conn.id]?.clientCount ?? 0 }) : t('slave.running') : t('devices.stateConnected') : state === 'connecting' ? local ? t('slave.starting') : t('ui.slaveStatus.connecting') : state === 'error' ? t('devices.stateError') : local ? t('slave.stopped') : t('devices.stateDisconnected');
   const slaves = workspace.slaves.filter((sl) => sl.connectionId === conn.id);
 
   const save = async () => {
-    if (live) return;
+    if (live || !base || !validTiming || (role !== 'slave' && !validRetryDelay)) return;
     const updated = {
-      ...conn,
+      ...base,
       name,
       role,
       rtu: conn.transport === 'rtu' ? { port, baudRate: Number(baud), dataBits: conn.rtu?.dataBits ?? (8 as 7 | 8), parity: conn.rtu?.parity ?? ('none' as 'none' | 'even' | 'odd'), stopBits: conn.rtu?.stopBits ?? (1 as 1 | 2) } : undefined,
       tcp: conn.transport === 'tcp' ? { host, port: Number(tcpPort) } : undefined,
       timeoutMs: Number(timeout),
       retries: Number(retries),
+      retryDelayMs: validRetryDelay ? Number(retryDelay) : base.retryDelayMs ?? 50,
       reconnect,
+      connectTimeoutMs: Number(connectTimeout),
+      reconnectIntervalMs: validReconnectInterval ? Number(reconnectInterval) : base.reconnectIntervalMs ?? DEFAULT_RECONNECT_INTERVAL_MS,
       rtsControl: rts,
       logLevel,
       interFrameMs: Number(interFrame) || 0,
     };
-    const result = await command({ type: 'connection.upsert', connection: updated });
+    const result = await command({ type: 'connection.upsert', connection: updated, expected: base });
     if (!result.ok) return;
+    resetTo(connectionSchema.parse(updated));
     toast({ kind: 'success', title: t('devices.toastConnUpdated'), message: t('devices.toastConnUpdatedMsg') });
   };
 
   const toggleLink = async () => {
-    setBusy(true);
-    const res = live
-      ? await command({ type: 'connection.disconnect', connectionId: conn.id })
-      : await command({ type: 'connection.connect', connectionId: conn.id });
-    setBusy(false);
-    if (!res.ok) toast({ kind: 'error', title: live ? t('devices.toastDisconnectFailed') : t('devices.toastConnectFailed'), message: res.error });
+    const action = live ? 'disconnect' : 'connect';
+    setLinkAction(action);
+    await command(action === 'disconnect'
+      ? { type: 'connection.disconnect', connectionId: conn.id }
+      : { type: 'connection.connect', connectionId: conn.id });
+    setLinkAction(current => current === action ? null : current);
   };
 
   return (
@@ -534,8 +580,8 @@ function ConnectionSettingsView(props: { connectionId: string }) {
             </span>
             {!local ? <><Button disabled={!live} title={live ? undefined : t('devices.scanRequiresLink')} onClick={() => select({ connectionId: conn.id, deviceView: 'scan' })}>{t('devices.scan')}</Button>
             <Button disabled={!live} title={live ? undefined : t('devices.tempRequiresLink')} onClick={() => select({ connectionId: conn.id, deviceView: 'temp' })}>{t('devices.tempRead')}</Button></> : null}
-            <Button disabled={busy} onClick={() => void toggleLink()}>{local ? live ? t('slave.stop') : t('slave.start') : live ? t('devices.disconnect') : t('devices.connect')}</Button>
-            <Button variant="primary" disabled={live || busy} title={live ? local ? t('slave.liveLock') : t('devices.saveRequiresDisconnect') : undefined} onClick={() => void save()}>{t('devices.save')}</Button>
+            <Button disabled={linkAction === 'disconnect' || (linkAction === 'connect' && state !== 'connecting')} onClick={() => void toggleLink()}>{local ? live ? t('slave.stop') : t('slave.start') : live ? t('devices.disconnect') : t('devices.connect')}</Button>
+            <Button variant="primary" disabled={live || linkAction !== null || !validTiming || (role !== 'slave' && !validRetryDelay)} title={live ? local ? t('slave.liveLock') : t('devices.saveRequiresDisconnect') : undefined} onClick={() => void save()}>{t('devices.save')}</Button>
           </>
         }
       />
@@ -544,6 +590,7 @@ function ConnectionSettingsView(props: { connectionId: string }) {
           ? local ? t('slave.liveLock') : t('devices.liveLockHint')
           : local ? t('slave.setupHint') : t('devices.offlineEditHint')}
       </InfoBand>
+      {dirty && JSON.stringify(conn) !== JSON.stringify(base) && <div role="alert" className="my-3 text-sm text-warn">连接参数已被其他页面修改，当前草稿已保留。<button className="focus-ring ml-2 text-accent" onClick={async () => { if (await confirm('重新载入会丢弃当前连接参数草稿，是否继续？')) resetTo(conn); }}>重新载入连接参数</button></div>}
       {state === 'error' && connStates[conn.id]?.detail ? <div role="alert" className="my-3 text-sm text-err break-all">{connStates[conn.id]?.detail}</div> : null}
       <InfoBand>
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
@@ -566,11 +613,22 @@ function ConnectionSettingsView(props: { connectionId: string }) {
           )}
           {role !== 'slave' ? <><Field label={t('devices.fieldTimeoutMs')}><TextInput data-testid="timeout-input" disabled={live} value={timeout} onChange={(e) => setTimeoutMs(e.target.value)} /></Field>
           <Field label={t('devices.retries')}><TextInput disabled={live} value={retries} onChange={(e) => setRetries(e.target.value)} /></Field></> : null}
+          {role !== 'slave' ? <Field label={t('devices.retryDelay')} hint={t('devices.retryDelayHint')}><TextInput aria-label={t('devices.retryDelay')} type="number" min={0} max={60000} step={1} disabled={live} value={retryDelay} aria-invalid={!validRetryDelay} onChange={e => setRetryDelay(e.target.value)} /></Field> : null}
+          <Field label={t(role === 'slave' ? 'devices.startTimeout' : 'devices.connectTimeout')} hint={t(role === 'slave' ? 'devices.startTimeoutHint' : 'devices.connectTimeoutHint')}><TextInput aria-label={t(role === 'slave' ? 'devices.startTimeout' : 'devices.connectTimeout')} type="number" min={1} max={60000} step={1} disabled={live} value={connectTimeout} aria-invalid={!validConnectTimeout} onChange={e => setConnectTimeout(e.target.value)} /></Field>
           <Field label={t('devices.fieldReconnect')}><Select disabled={live} value={reconnect} onChange={(v) => setReconnect(v as 'auto' | 'manual')} options={[{ value: 'auto', label: t('devices.reconnectAuto') }, { value: 'manual', label: t('devices.reconnectManual') }]} /></Field>
-          {conn.transport === 'rtu' ? <Field label={t('devices.fieldRts')}><Select disabled={live} value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field> : null}
-          <Field label={t('devices.fieldLogLevel')}><Select disabled={live} value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
-          {role !== 'slave' ? <Field label={t('devices.fieldInterFrame')}><TextInput disabled={live} value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field> : null}
+          <Field label={t('devices.reconnectInterval')} hint={t('devices.reconnectIntervalHint')}><TextInput aria-label={t('devices.reconnectInterval')} type="number" min={0} max={60000} step={1} disabled={live || reconnect === 'manual'} value={reconnectInterval} aria-invalid={reconnect === 'auto' && !validReconnectInterval} onChange={e => setReconnectInterval(e.target.value)} /></Field>
         </div>
+        {role !== 'slave' && !validRetryDelay ? <div role="alert" className="mt-2 text-xs text-err">{t('devices.retryDelayError')}</div> : null}
+        {!validConnectTimeout ? <div role="alert" className="mt-2 text-xs text-err">{t('devices.connectTimeoutError')}</div> : null}
+        {reconnect === 'auto' && !validReconnectInterval ? <div role="alert" className="mt-2 text-xs text-err">{t('devices.reconnectIntervalError')}</div> : null}
+        <details className="mt-4">
+          <summary className="cursor-pointer text-sm text-ink2">{t('devices.advancedConnection')}</summary>
+          <div className="mt-3 grid grid-cols-2 gap-4 md:grid-cols-3">
+            {conn.transport === 'rtu' ? <Field label={t('devices.fieldRts')}><Select disabled={live} value={rts} onChange={(v) => setRts(v as 'none' | 'toggle')} options={[{ value: 'none', label: 'None' }, { value: 'toggle', label: 'Toggle' }]} /></Field> : null}
+            <Field label={t('devices.fieldLogLevel')}><Select disabled={live} value={logLevel} onChange={(v) => setLogLevel(v as 'info' | 'debug')} options={[{ value: 'info', label: 'Info' }, { value: 'debug', label: 'Debug' }]} /></Field>
+            {role !== 'slave' ? <Field label={t('devices.fieldInterFrame')} hint={t('devices.requestGapHint')}><TextInput type="number" min={0} max={100} disabled={live} value={interFrame} onChange={(e) => setInterFrame(e.target.value)} /></Field> : null}
+          </div>
+        </details>
       </InfoBand>
       <SectionTitle right={<Button variant="primary" onClick={() => openOverlay({ kind: 'dialog', id: 'add-slave', connectionId: conn.id })}>{t('devices.addSlavePlus')}</Button>}>{t('devices.slaveLabel')}</SectionTitle>
       {slaves.length === 0 ? (
@@ -583,7 +641,7 @@ function ConnectionSettingsView(props: { connectionId: string }) {
               <button key={sl.id} className="focus-ring cursor-pointer rounded-card border border-line bg-surface p-4 text-left hover:border-accent" onClick={() => select({ connectionId: conn.id, slaveId: sl.id, deviceView: 'topology' })}>
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-bold">{sl.name}</span>
-                  <StatusDot {...slaveStatus(sl.enabled, state)} />
+                  <SlaveStatusDot slave={sl} />
                 </div>
                 <div className="text-xs text-ink2 mt-1">{t('devices.slaveCardMeta', { unit: String(sl.unitId), template: tpl ? tpl.name : t('devices.unboundTemplate') })}</div>
               </button>

@@ -10,6 +10,10 @@
 | 核对 Figma 与规范优先级 | [设计与规范来源](design-source.md) | 只引用正式设计页 |
 | 做正式发布验收 | [现行验收条件](acceptance.md) | 仅定义条件，不填写历史 PASS |
 | 查看本机从站增量的范围、进度与验证结果 | [从站功能任务](acceptance/slave-mode.md) | 当前任务统一维护，不代替正式发布验收 |
+| 查看组态画布、多实例标签与弹出窗口的范围和验证 | [画布与工作台任务](acceptance/canvas-workbench.md) | 区分浏览器、原生与打包版证据 |
+| 查看 Host 拉取、共享采样缓冲、光标、导出和会话写入清理 | [Host 数据与缓冲任务](acceptance/host-data-buffers.md) | 区分确认采样、历史读取、界面周期和验证规模 |
+| 查看 Blockly 主站积木脚本的范围和验证 | [主站积木脚本](acceptance/master-scripts.md) | 区分编辑、真实通信及原生发布验证 |
+| 运行完整泵站工控联调 | [示例工作区](examples/pressure-bench.workspace.json) · [运行方法与验收结果](acceptance/pressure-bench.md) | 从画布写入、从站反馈到流程和故障恢复 |
 | 查容量实测与复现方法 | [历史库容量基准](benchmarks/history-capacity-2026-09-25.md) | 保留测量日期、环境与适用边界 |
 | 查旧版本的执行结果 | [历史记录索引](archive/README.md) | 按版本保存，不反向覆盖现行规范 |
 

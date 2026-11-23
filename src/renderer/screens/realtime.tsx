@@ -1,13 +1,19 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useApp, useBlocks, usePoints, useWorkspace } from '../store/app';
-import { Button, Checkbox, InfoBand, PageHeader, StatusDot, TextInput, formatClock, useCompact } from '../components/ui';
+import * as ContextMenu from '@radix-ui/react-context-menu';
+import { useApp, useBlocks, useConnectionState, usePoints, useSlaveState, useWorkspace, useViewStore } from '../store/app';
+import { Button, Checkbox, InfoBand, PageHeader, StatusDot, TextInput, formatClock, slaveStatus, useCompact } from '../components/ui';
 import { ValueCell } from '../components/value-cell';
 import { AREAS } from '../../domain/address';
 import type { BlockDef, PointDef, SlaveDef } from '../../domain/model';
-import type { BlockViewState, PointViewState } from '../../shared/snapshot';
+import type { BlockViewState, PointViewState, SlaveCommunicationState } from '../../shared/snapshot';
+import { blockReadIssue } from '../features/devices/communication-status';
 import { useTranslation } from '../i18n';
 import { pointKey } from '../../shared/point-key';
+import { HostDataStatus, HostRefreshControl, useHostData } from '../workbench/host-data';
+import { bufferReferences } from '../../domain/point-buffers';
+import { scriptPointKey } from '../../domain/master-script';
+import { useViewDocument } from '../workbench/view-context';
 
 interface Row {
   type: 'group' | 'point';
@@ -20,31 +26,6 @@ const EMPTY_BLOCKS_LIST: BlockDef[] = [];
 const ROW_H = 38;
 const COL = { sel: 40, offset: 76, point: 180, type: 110, value: 170, unit: 70, access: 80 } as const;
 const TOTAL_WIDTH = Object.values(COL).reduce((a, b) => a + b, 0);
-
-const statusTone = (st?: string) => (st === 'ok' ? 'ok' : st === 'timeout' ? 'warn' : st === 'exception' ? 'err' : 'idle');
-type StatusLabels = Readonly<Record<'ok' | 'timeout' | 'exception' | 'disabled' | 'idle', string>>;
-
-/**
- * Status captions live in the dictionary, but this helper stays at module scope: it takes the
- * already-resolved labels instead of calling a hook, so the memoised rows keep their props.
- */
-const statusLabel = (labels: StatusLabels, st?: string): string =>
-  st === 'ok' ? labels.ok : st === 'timeout' ? labels.timeout : st === 'exception' ? labels.exception : st === 'disabled' ? labels.disabled : labels.idle;
-
-/** Resolves the block-status captions once per render for the module-scope helper above. */
-function useStatusLabels(): StatusLabels {
-  const { t } = useTranslation();
-  return useMemo(
-    () => ({
-      ok: t('realtime.statusOk'),
-      timeout: t('realtime.statusTimeout'),
-      exception: t('realtime.statusException'),
-      disabled: t('realtime.statusDisabled'),
-      idle: t('realtime.statusIdle'),
-    }),
-    [t],
-  );
-}
 
 /**
  * One point row. Memoised on the values it actually paints: a poll cycle produces a new
@@ -59,10 +40,13 @@ const PointRow = React.memo(
     view: PointViewState | undefined;
     checked: boolean;
     onToggle: (pointId: string) => void;
+    findWrites?: (pointId: string) => void;
   }) {
     const { point, view, checked, onToggle } = props;
     const { t } = useTranslation();
+    const doc = useViewDocument();
     const m = point.mapping;
+    const nameCell = <div style={{ width: COL.point }} className={`px-3 sticky left-0 z-10 text-sm font-medium truncate ${checked ? 'bg-accentsoft' : 'bg-surface'}`}>{point.name}</div>;
     return (
       <div className={`flex h-full w-full items-center border-t border-[#E7EAEE] ${checked ? 'bg-accentsoft/40' : ''}`}>
         <div style={{ width: COL.sel }} className="px-3">
@@ -73,7 +57,10 @@ const PointRow = React.memo(
             ? `+${m.offset}${m.bitOffset ? `.${m.bitOffset}:${m.bitOffset + m.bitWidth - 1}` : ''}`
             : `+${m.offset}`}
         </div>
-        <div style={{ width: COL.point }} className={`px-3 sticky left-0 z-10 text-sm font-medium truncate ${checked ? 'bg-accentsoft' : 'bg-surface'}`}>{point.name}</div>
+        {props.findWrites ? <ContextMenu.Root><ContextMenu.Trigger asChild>{nameCell}</ContextMenu.Trigger>
+          <ContextMenu.Portal container={doc.body}><ContextMenu.Content className="z-50 rounded-ctl border border-line bg-surface p-1 shadow-lg">
+            <ContextMenu.Item className="cursor-pointer rounded px-3 py-2 text-sm outline-none focus:bg-accentsoft" onSelect={() => props.findWrites?.(point.id)}>查找写入此点位的积木</ContextMenu.Item>
+          </ContextMenu.Content></ContextMenu.Portal></ContextMenu.Root> : nameCell}
         <div style={{ width: COL.type }} className="px-3 text-xs text-ink2">
           {m.rawType}
           {m.rawType === 'BitField' ? m.bitWidth : ''}
@@ -81,8 +68,8 @@ const PointRow = React.memo(
         </div>
         <div style={{ width: COL.value }} className="px-3"><ValueCell point={point} view={view} /></div>
         <div style={{ width: COL.unit }} className="px-3 text-xs text-ink2">{point.unit || '—'}</div>
-        <div style={{ width: COL.access }} className={`px-3 text-xs ${point.access === 'rw' ? 'text-accent font-medium' : 'text-ink2'}`}>
-          {point.access === 'rw' ? t('realtime.accessRw') : t('realtime.accessRo')}
+        <div style={{ width: COL.access }} className={`px-3 text-xs ${point.access !== 'ro' ? 'text-accent font-medium' : 'text-ink2'}`}>
+          {point.access === 'wo' ? t('realtime.accessWo') : point.access === 'rw' ? t('realtime.accessRw') : t('realtime.accessRo')}
         </div>
       </div>
     );
@@ -91,18 +78,20 @@ const PointRow = React.memo(
     a.point === b.point &&
     a.checked === b.checked &&
     a.onToggle === b.onToggle &&
+    a.findWrites === b.findWrites &&
     a.view?.hasValue === b.view?.hasValue &&
     a.view?.engText === b.view?.engText &&
     a.view?.rawText === b.view?.rawText &&
     a.view?.enumLabel === b.view?.enumLabel &&
     a.view?.boolValue === b.view?.boolValue &&
-    a.view?.stringValue === b.view?.stringValue,
+    a.view?.stringValue === b.view?.stringValue &&
+    a.view?.lastWrite === b.view?.lastWrite,
 );
 
-const GroupRow = React.memo(function GroupRow(props: { block: BlockDef; state: BlockViewState | undefined; local?: boolean }) {
+const GroupRow = React.memo(function GroupRow(props: { block: BlockDef; state: BlockViewState | undefined; deviceState: SlaveCommunicationState; local?: boolean }) {
   const st = props.state;
   const { t } = useTranslation();
-  const statusLabels = useStatusLabels();
+  const issue = blockReadIssue(props.deviceState, st);
   return (
     <div className="flex h-full w-full items-center justify-between bg-accentsoft/70 px-3">
       <span className="text-sm font-bold">{props.block.name}</span>
@@ -110,15 +99,15 @@ const GroupRow = React.memo(function GroupRow(props: { block: BlockDef; state: B
         <span className="text-xs text-ink2 mono">
           {AREAS[props.block.area]} · {props.block.start}–{props.block.start + props.block.length - 1} · {props.local ? t('slave.actualMemory') : `${props.block.periodMs} ms`}
         </span>
-        <StatusDot tone={statusTone(st?.status)} label={statusLabel(statusLabels, st?.status)} />
+        <StatusDot {...(issue ?? { tone: st?.status === 'ok' ? 'ok' : 'idle', label: t(st?.status === 'ok' ? 'realtime.statusOk' : 'realtime.statusIdle') })} />
       </span>
     </div>
   );
 });
 
 export function RealtimeScreen() {
+  const viewStore = useViewStore();
   const { t } = useTranslation();
-  const statusLabels = useStatusLabels();
   const workspace = useWorkspace();
   const blockStates = useBlocks();
   const points = usePoints();
@@ -144,10 +133,24 @@ export function RealtimeScreen() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const slave = workspace?.slaves.find((s) => s.id === selection.slaveId);
+  const lookupSlaveId = slave?.id;
+  const findWrites = useCallback((pointId: string) => {
+    if (!lookupSlaveId) return;
+    select({ scriptPointLookup: scriptPointKey({ slaveId: lookupSlaveId, pointId }) });
+    setModule('scripts');
+  }, [lookupSlaveId, select, setModule]);
   const template = workspace?.templates.find((t) => t.id === slave?.templateId);
   const local = workspace?.connections.find(connection => connection.id === slave?.connectionId)?.role === 'slave';
+  const deviceState = useSlaveState(slave);
+  const canRefresh = useConnectionState(slave?.connectionId) === 'online' && Boolean(slave?.enabled);
+  const readState = local && slave?.enabled ? 'online' : deviceState;
   const blocks = template?.blocks ?? EMPTY_BLOCKS_LIST;
   const scopeBlock = selection.realtimeScope === 'block' ? blocks.find((b) => b.id === selection.blockId) : undefined;
+  useHostData({
+    points: slave ? (template?.points ?? []).filter(point => !scopeBlock || point.blockId === scopeBlock.id).map(point => ({ slaveId: slave.id, pointId: point.id })) : [],
+    blocks: slave ? (scopeBlock ? [scopeBlock] : blocks).map(block => ({ slaveId: slave.id, blockId: block.id })) : [],
+    buffers: workspace ? [...bufferReferences(workspace).values()].filter(ref => ref.slaveId === slave?.id) : [],
+  });
 
   // Row list depends only on the workspace/search, never on polled values: rebuilding it
   // (plus a per-block points filter) on every delta was the second hot spot on this screen.
@@ -176,14 +179,16 @@ export function RealtimeScreen() {
   const selectedCount = Object.keys(selectedPoints).length;
   const focusKey = slave && scopeBlock ? `${slave.id}::${scopeBlock.id}` : null;
   const focusState = focusKey ? blockStates[focusKey] : undefined;
+  const focusIssue = blockReadIssue(readState, focusState);
+  const focusLabel = t(focusState?.status === 'ok' ? 'realtime.statusOk' : 'realtime.statusIdle');
 
   const selectAll = useCallback(() => {
-    useApp.setState((s) => {
+    viewStore.setState((s) => {
       const next = { ...s.selectedPoints };
       for (const r of rows) if (r.type === 'point' && r.point) next[r.point.id] = true;
       return { selectedPoints: next };
     });
-  }, [rows]);
+  }, [rows, viewStore]);
 
   if (!workspace) return null;
   if (!slave || !template) {
@@ -211,10 +216,7 @@ export function RealtimeScreen() {
     const added = ids.filter((id) => !existing.has(pointKey(slave.id, id)));
     const signals = added.map((pointId) => ({ id: `sig-${Date.now().toString(36)}-${pointId.slice(-4)}`, pointRef: { connectionId: slave.connectionId, slaveId: slave.id, pointId }, visible: true }));
     if (!signals.length) return;
-    const result = await command({ type: 'trend.addSignals', groupId: group.id, signals });
-    if (!result.ok) return;
-    clearSelection();
-    toast({ kind: 'success', title: t('realtime.joinedTrend', { name: group.name }), message: t('realtime.joinedTrendMsg', { count: added.length }) });
+    viewStore.getState().openOverlay({ kind: 'dialog', id: 'add-signal', groupId: group.id, initialPoints: signals.map(signal => signal.pointRef) });
   };
 
   return (
@@ -224,14 +226,16 @@ export function RealtimeScreen() {
         subtitle={scopeBlock ? t('realtime.subtitleBlock', { slave: slave.name, block: scopeBlock.name }) : t('realtime.subtitleAll', { unitId: slave.unitId, template: template.name, blocks: blocks.length, points: template.points.length })}
         actions={
           <>
+            <HostRefreshControl />
             {scopeBlock && !local ? (
               <span className="inline-flex h-10 items-center rounded-ctl bg-accentsoft px-4 text-sm text-accent font-medium">● {scopeBlock.periodMs} ms</span>
             ) : null}
-            {local ? <Button onClick={() => { select({ deviceView: 'memory' }); setModule('devices'); }}>{t('slave.openMemory')}</Button> : <Button onClick={async () => { const res = await command({ type: 'device.refresh', slaveId: slave.id, blockId: scopeBlock?.id }); if (res.ok) toast({ kind: 'info', title: t('realtime.refreshTriggered') }); }}>{scopeBlock ? t('realtime.refreshOnce') : t('realtime.refreshAll')}</Button>}
+            {local ? <Button onClick={() => { select({ deviceView: 'memory' }); setModule('devices'); }}>{t('slave.openMemory')}</Button> : <Button disabled={!canRefresh} onClick={async () => { const res = await command({ type: 'device.refresh', slaveId: slave.id, blockId: scopeBlock?.id }); if (res.ok) toast({ kind: 'info', title: t('realtime.refreshTriggered') }); }}>{scopeBlock ? t('realtime.refreshOnce') : t('realtime.refreshAll')}</Button>}
             {!scopeBlock ? <Button variant="primary" onClick={() => void joinTrend()}>{t('realtime.joinTrend')}</Button> : null}
           </>
         }
       />
+      <HostDataStatus />
       {scopeBlock ? (
         <div className="text-xs text-ink2 -mt-3 mb-4 mono">{t('realtime.scopeMeta', { area: AREAS[scopeBlock.area], start: scopeBlock.start, end: scopeBlock.start + scopeBlock.length - 1, count: scopeBlock.length })}</div>
       ) : null}
@@ -248,7 +252,8 @@ export function RealtimeScreen() {
         ) : (
           <span className="text-xs text-ink2">{t('realtime.lastUpdate', { time: formatClock(focusState?.lastUpdateUtc) })}</span>
         )}
-        <StatusDot tone={statusTone(focusState?.status ?? 'ok')} label={local ? t('slave.actualMemory') : scopeBlock ? statusLabel(statusLabels, focusState?.status) : t('realtime.bgContinuous')} />
+        {scopeBlock ? <StatusDot {...(focusIssue ?? { tone: focusState?.status === 'ok' ? 'ok' : 'idle', label: focusLabel })} />
+          : local && slave.enabled ? <StatusDot tone="ok" label={t('slave.actualMemory')} /> : <StatusDot {...slaveStatus(deviceState)} />}
       </div>
 
       <div ref={scrollRef} className="overflow-auto rounded-card border border-line bg-surface" style={{ maxHeight: 'calc(100vh - 320px)', minHeight: 260 }}>
@@ -269,14 +274,14 @@ export function RealtimeScreen() {
               if (row.type === 'group' && row.block) {
                 return (
                   <div key={vi.key} className="absolute left-0 w-full" style={{ top: vi.start, height: vi.size }}>
-                    <GroupRow block={row.block} state={blockStates[`${slave.id}::${row.block.id}`]} local={local} />
+                    <GroupRow block={row.block} state={blockStates[`${slave.id}::${row.block.id}`]} deviceState={readState} local={local} />
                   </div>
                 );
               }
               const point = row.point as PointDef;
               return (
                 <div key={vi.key} className="absolute left-0 w-full" style={{ top: vi.start, height: vi.size }}>
-                  <PointRow point={point} view={points[pointKey(slave.id, point.id)]} checked={!!selectedPoints[point.id]} onToggle={togglePoint} />
+                  <PointRow point={point} view={points[pointKey(slave.id, point.id)]} checked={!!selectedPoints[point.id]} onToggle={togglePoint} findWrites={local ? undefined : findWrites} />
                 </div>
               );
             })}
@@ -289,11 +294,11 @@ export function RealtimeScreen() {
         <div className="text-sm font-bold text-accent mb-1.5">{scopeBlock ? t('realtime.runStatus') : t('realtime.pollStatus')}</div>
         <div className="text-sm">
           {scopeBlock
-            ? t('realtime.blockPollStatus', { period: scopeBlock.periodMs, updated: formatClock(focusState?.lastUpdateUtc), timeouts: focusState?.status === 'timeout' ? t('realtime.hasTimeout') : t('realtime.noTimeout') })
+            ? t('realtime.blockPollStatus', { period: scopeBlock.periodMs, updated: formatClock(focusState?.lastUpdateUtc), status: focusIssue?.label ?? focusLabel })
             : t('realtime.allPollStatus', { count: blocks.length, periods: blocks.map((b) => b.periodMs).join(' / '), updated: formatClock(slaveLastUpdate(blockStates, slave.id)) })}
         </div>
         <div className="text-xs text-ink2 mt-1">
-          {t('realtime.focusPrefix')}{scopeBlock ? t('realtime.focusBlock', { name: scopeBlock.name, points: template.points.filter((p) => p.blockId === scopeBlock.id).length, writable: template.points.filter((p) => p.blockId === scopeBlock.id && p.access === 'rw').length }) : t('realtime.focusAllBlocks', { name: slave.name })}
+          {t('realtime.focusPrefix')}{scopeBlock ? t('realtime.focusBlock', { name: scopeBlock.name, points: template.points.filter((p) => p.blockId === scopeBlock.id).length, writable: template.points.filter((p) => p.blockId === scopeBlock.id && p.access !== 'ro').length }) : t('realtime.focusAllBlocks', { name: slave.name })}
           {' · '}{t('realtime.bgPollingPrefix')}{blocks.map((b) => `${b.name} ${b.periodMs} ms`).join(' · ')}
         </div>
       </InfoBand>}

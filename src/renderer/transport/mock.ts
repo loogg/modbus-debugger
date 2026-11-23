@@ -1,5 +1,5 @@
 import type { AppTransport, TransportState } from './types';
-import type { AppDelta, AppSnapshot, BlockViewState, ConnectionStateView, PointViewState } from '../../shared/snapshot';
+import type { AppDelta, AppSnapshot, BlockViewState, ConnectionStateView, PointViewState, SlaveStateView } from '../../shared/snapshot';
 import type { Command, CommandResult } from '../../shared/commands';
 import type { AppVersions } from '../../shared/preload-api';
 import { emptyWorkspace, connectionSchema, pointSchema, blockSchema, type Workspace, type BlockDef, type PointDef } from '../../domain/model';
@@ -10,6 +10,14 @@ import { mutateWorkspace } from '../../domain/workspace-mutations';
 import packageJson from '../../../package.json';
 
 export type MockFixtureName = 'default' | 'empty' | 'loading' | 'error' | 'timeout' | 'large-data' | 'warning';
+
+function mockSlaveStates(workspace: Workspace, connections: AppSnapshot['connections']): Record<string, SlaveStateView> {
+  return Object.fromEntries(workspace.slaves.map(slave => {
+    const connection = connections[slave.connectionId];
+    const state = !slave.enabled ? 'disabled' : connection?.state === 'online' ? 'online' : 'offline';
+    return [slave.id, { state, lastResponseUtc: state === 'online' ? connection?.lastResponseUtc ?? null : null }];
+  }));
+}
 
 function mkPoint(id: string, name: string, blockId: string, offset: number, rawType: 'Float32' | 'UInt16' | 'Bool', unit = ''): PointDef {
   return pointSchema.parse({
@@ -281,20 +289,19 @@ export class MockTransport implements AppTransport {
       workspacePath: '/mock/workspace.json',
       dirty: false,
       connections,
+      slaveStates: mockSlaveStates(ws, connections),
       blocks,
       points,
       transactions: [],
       parseEvents: [],
       diagRev: 0,
       health,
-      recording: null,
       sessions: [],
       warnings: fixture === 'warning' ? ['history.db 已超过 10 GB（当前 10.0 GB），请考虑归档。'] : [],
       prefs: {
         window: { x: 100, y: 100, width: 1440, height: 900 },
         sidebarWidth: 244,
         historyDbPath: null,
-        persistRawComm: false,
         lastWorkspacePath: null,
         timezone: 'local',
         language: 'zh-CN',
@@ -420,8 +427,13 @@ export class MockTransport implements AppTransport {
           ? cmd.workspace
           : mutateWorkspace(this.snapshot.workspace, cmd);
         const revision = ++this.revision;
-        this.snapshot = { ...this.snapshot, revision, workspace, dirty: true };
-        const delta: AppDelta = { revision, workspace, dirty: true };
+        const slaveStates = mockSlaveStates(workspace, this.snapshot.connections);
+        const removed = Object.keys(this.snapshot.slaveStates ?? {}).filter(id => !Object.hasOwn(slaveStates, id));
+        this.snapshot = { ...this.snapshot, revision, workspace, slaveStates, dirty: true };
+        const delta: AppDelta = { revision, workspace, dirty: true, slaveStates: {
+          ...Object.fromEntries(removed.map(id => [id, null])),
+          ...slaveStates,
+        } };
         for (const listener of this.deltaListeners) listener(delta);
         return { ok: true, value: null as T };
       } catch (error) {
@@ -429,17 +441,14 @@ export class MockTransport implements AppTransport {
       }
     }
 
-    if (cmd.type === 'connection.connect') {
-      const conn: ConnectionStateView = { state: 'online', detail: null, lastResponseUtc: new Date().toISOString() };
-      this.snapshot = { ...this.snapshot, connections: { ...this.snapshot.connections, [cmd.connectionId]: conn } };
-      for (const l of this.deltaListeners) l({ revision: ++this.revision, connections: { [cmd.connectionId]: conn } });
-      return { ok: true, value: null as T };
-    }
-
-    if (cmd.type === 'connection.disconnect') {
-      const conn: ConnectionStateView = { state: 'offline', detail: null, lastResponseUtc: null };
-      this.snapshot = { ...this.snapshot, connections: { ...this.snapshot.connections, [cmd.connectionId]: conn } };
-      for (const l of this.deltaListeners) l({ revision: ++this.revision, connections: { [cmd.connectionId]: conn } });
+    if (cmd.type === 'connection.connect' || cmd.type === 'connection.disconnect') {
+      const online = cmd.type === 'connection.connect';
+      const conn: ConnectionStateView = { state: online ? 'online' : 'offline', detail: null, lastResponseUtc: online ? new Date().toISOString() : null };
+      const connections = { ...this.snapshot.connections, [cmd.connectionId]: conn };
+      const slaveStates = mockSlaveStates(this.snapshot.workspace, connections);
+      const revision = ++this.revision;
+      this.snapshot = { ...this.snapshot, revision, connections, slaveStates };
+      for (const listener of this.deltaListeners) listener({ revision, connections: { [cmd.connectionId]: conn }, slaveStates });
       return { ok: true, value: null as T };
     }
 

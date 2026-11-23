@@ -3,9 +3,11 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Socket } from 'node:net';
 import type { BridgeServerMessage } from '../../src/shared/preload-api';
+import { decodeDataReadFrame } from '../../src/shared/data-read-frame';
 
 export async function connectBridge(port:number, options:{origin?:string;protocol?:string} = {}) {
   const messages:BridgeServerMessage[]=[];
+  const binaryFrames: number[] = [];
   const events=new EventEmitter();
   let socket:Socket|undefined;
   let buffer=Buffer.alloc(0);
@@ -19,6 +21,12 @@ export async function connectBridge(port:number, options:{origin?:string;protoco
       const opcode=buffer[0]!&15;
       const payload=buffer.subarray(offset,offset+length);buffer=buffer.subarray(offset+length);
       if(opcode===1){const message=JSON.parse(payload.toString()) as BridgeServerMessage;messages.push(message);events.emit('message',message);}
+      if (opcode === 2) {
+        binaryFrames.push(payload.length);
+        const decoded = decodeDataReadFrame(Uint8Array.from(payload).buffer);
+        const message: BridgeServerMessage = { type: 'response', ok: true, ...decoded };
+        messages.push(message); events.emit('message', message);
+      }
     }
   };
   const status=await new Promise<number>((resolve,reject)=>{
@@ -35,7 +43,7 @@ export async function connectBridge(port:number, options:{origin?:string;protoco
     request.end();
   });
   return {
-    status,messages,
+    status,messages,binaryFrames,
     send(value:unknown) {
       const payload=Buffer.from(JSON.stringify(value));
       const mask=crypto.randomBytes(4),header=Buffer.alloc(payload.length<126?2:4);

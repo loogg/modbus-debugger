@@ -4,7 +4,7 @@ export const slave = {
   stringMapping: '{{encoding}} 文本 · {{length}} 字节 · 短文本以零填充',
   masterShort: '主站', slaveShort: '本机从站', listenHost: '本机监听地址',
   listenHint: '127.0.0.1 仅本机；0.0.0.0 接受其他设备连接',
-  setupHint: '添加本机从站并绑定模板后，点击“启动从站”。TCP 接受主站连接，RTU 响应串口请求；支持 FC01/02/03/04/05/06/15/16。',
+  setupHint: '添加本机从站并绑定模板后，点击“启动从站”。TCP 接受主站连接，RTU 响应串口请求，支持 FC01/02/03/04/05/06/15/16/22。',
   running: '从站运行中', listening: '监听中 · {{count}} 个主站', stopped: '已停止', starting: '正在启动',
   start: '启动从站', stop: '停止从站', localSlaves: '本机从站',
   noSlaves: '添加本机从站并绑定模板，模板的数据块将作为可访问的数据区。',

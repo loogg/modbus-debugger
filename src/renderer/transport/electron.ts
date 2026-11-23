@@ -1,6 +1,6 @@
 import type { ModbusApi, AppVersions } from '../../shared/preload-api';
 import type { AppTransport, TransportState } from './types';
-import type { AppDelta, AppSnapshot } from '../../shared/snapshot';
+import type { AppDelta, AppSnapshot, SnapshotOptions } from '../../shared/snapshot';
 import type { Command, CommandResult } from '../../shared/commands';
 
 export class ElectronTransport implements AppTransport {
@@ -8,6 +8,7 @@ export class ElectronTransport implements AppTransport {
   private statusListeners = new Set<(s: TransportState) => void>();
 
   constructor(private readonly api: ModbusApi) {}
+  get windows() { return this.api.windows; }
 
   getStatus(): TransportState {
     return { type: 'electron', status: 'connected' };
@@ -21,8 +22,8 @@ export class ElectronTransport implements AppTransport {
     };
   }
 
-  getSnapshot(): Promise<AppSnapshot> {
-    return this.api.getSnapshot();
+  getSnapshot(options?: SnapshotOptions): Promise<AppSnapshot> {
+    return this.api.getSnapshot(options);
   }
 
   command<T = unknown>(cmd: Command): Promise<CommandResult<T>> {

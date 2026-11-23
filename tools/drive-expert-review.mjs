@@ -145,31 +145,14 @@ async function main() {
   });
   await new Promise((r) => setTimeout(r, 500));
 
-  // --- Step 6: Trend Screen & Live Recording ---
-  console.log('\n=== Step 6: Trend & Live Recording Inspection ===');
+  // --- Step 6: Trend Screen & Sample Buffers ---
+  console.log('\n=== Step 6: Trend & Sample Buffer Inspection ===');
   await page.evaluate(() => {
     const navBtns = Array.from(document.querySelectorAll('nav button'));
     navBtns[2]?.click(); // Trend
   });
   await new Promise((r) => setTimeout(r, 2000));
   await page.screenshot({ path: path.join(outDir, '12_trend_chart_view.png') });
-
-  // Click start recording button in Trend screen
-  console.log('[ExpertReview] Triggering live session recording...');
-  await page.evaluate(() => {
-    const startRecBtn = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.includes('开始记录') || b.innerText.includes('录制'));
-    startRecBtn?.click();
-  });
-  await new Promise((r) => setTimeout(r, 3500)); // record for 3.5 seconds
-  await page.screenshot({ path: path.join(outDir, '13_trend_recording_active.png') });
-
-  // Stop recording
-  console.log('[ExpertReview] Stopping live session recording...');
-  await page.evaluate(() => {
-    const stopRecBtn = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.includes('停止记录') || b.innerText.includes('停止'));
-    stopRecBtn?.click();
-  });
-  await new Promise((r) => setTimeout(r, 1200));
 
   // --- Step 7: History Screen Inspection ---
   console.log('\n=== Step 7: History Sessions Inspection ===');

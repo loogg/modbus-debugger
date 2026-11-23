@@ -1,6 +1,6 @@
 import React from 'react';
 import { useApp, useHistoryDbPath, usePrefs, useSnapshotReady, useWorkspace, useWorkspacePath } from '../store/app';
-import { Button, Checkbox, InfoBand, PageHeader, SectionTitle, Select, StatusDot } from '../components/ui';
+import { Button, InfoBand, PageHeader, SectionTitle, Select, StatusDot } from '../components/ui';
 import { TIMEZONE_OPTIONS, fmtDateTime } from '../time';
 import { useTranslation } from '../i18n';
 
@@ -65,7 +65,7 @@ export function SettingsScreen() {
         <div className="mt-2 text-sm">{t('settings.importCompat')}</div>
       </InfoBand>
 
-      <SectionTitle id="settings-recordingStorage">{t('settings.recording')}</SectionTitle>
+      <SectionTitle id="settings-historyStorage">{t('settings.sampleHistory')}</SectionTitle>
       <InfoBand>
         <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           <div>
@@ -73,12 +73,8 @@ export function SettingsScreen() {
             <div className="text-sm mono break-all">{historyDbPath}</div>
           </div>
           <div>
-            <div className="text-xs text-ink2 mb-1">{t('settings.recordingMode')}</div>
-            <div className="text-sm">{t('settings.recordingModeHint')}</div>
-            <div className="mt-2"><Checkbox checked={prefs.persistRawComm} onCheckedChange={(v) => void (async () => {
-              const result = await command({ type: 'prefs.set', patch: { persistRawComm: v } });
-              if (!result.ok) showError(t('settings.preferenceFailed'), result.error);
-            })()} label={t('settings.persistRaw')} /></div>
+            <div className="text-xs text-ink2 mb-1">{t('settings.sampleData')}</div>
+            <div className="text-sm">{t('settings.sampleDataHint')}</div>
           </div>
           <div>
             <div className="text-xs text-ink2 mb-1">{t('settings.retention')}</div>
@@ -96,8 +92,8 @@ export function SettingsScreen() {
             <div className="mt-1 text-xs text-ink2">{t('settings.rmwDetail')}</div>
           </div>
           <div>
-            <div className="text-sm font-medium">{t('settings.readBack')}</div>
-            <div className="mt-1 text-xs text-ink2">{t('settings.readBackDetail')}</div>
+            <div className="text-sm font-medium">{t('settings.writeAck')}</div>
+            <div className="mt-1 text-xs text-ink2">{t('settings.writeAckDetail')}</div>
           </div>
         </div>
         <div className="mt-3 border-t border-line pt-3 text-xs text-ink2">{t('settings.writeSafetyHint')}</div>

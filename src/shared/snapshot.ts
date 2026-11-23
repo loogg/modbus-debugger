@@ -1,11 +1,13 @@
 import type { UpdateState } from './update';
 import type { Workspace } from '../domain/model';
-import type { ConnectionHealth, ParseEventRecord, Prefs, SessionSummary, TransactionRecord } from './contracts';
+import type { ConnectionHealth, ParseEventRecord, PointWriteReceipt, Prefs, SessionSummary, TransactionRecord } from './contracts';
 import type { ScanOptions } from './scan-options';
+import type { ScriptRunView } from './script-run';
 
 export type BlockStatusView = 'idle' | 'ok' | 'timeout' | 'exception' | 'transport-error' | 'disabled';
 
 export interface BlockViewState {
+  valid?: boolean[];
   registers?: number[];
   bits?: boolean[];
   key: string;
@@ -24,6 +26,7 @@ export interface BlockViewState {
 }
 
 export interface PointViewState {
+  lastWrite?: PointWriteReceipt;
   slaveId?: string;
   pointId: string;
   /** decoded raw rendered for engineering columns / inspector */
@@ -64,24 +67,22 @@ export interface ConnectionStateView {
   clientCount?: number;
 }
 
-export interface RecordingView {
-  sessionId: string;
-  groupId: string;
-  groupName: string;
-  startedUtc: string;
-  signalCount: number;
-  elapsedMs: number;
-  sampleCount: number;
-  eventCount: number;
+export type SlaveCommunicationState = 'pending' | 'connecting' | 'online' | 'offline' | 'disabled';
+
+export interface SlaveStateView {
+  state: SlaveCommunicationState;
+  lastResponseUtc: string | null;
 }
 
 export interface AppSnapshot {
   update?: UpdateState;
+  scriptRun?: ScriptRunView | null;
   revision: number;
   workspace: Workspace;
   workspacePath: string | null;
   dirty: boolean;
   connections: Record<string, ConnectionStateView>;
+  slaveStates?: Record<string, SlaveStateView>;
   blocks: Record<string, BlockViewState>;
   points: Record<string, PointViewState>;
   transactions: TransactionRecord[];
@@ -89,27 +90,33 @@ export interface AppSnapshot {
   /** Bumped by diagnostics.clear so the renderer drops its local ring copies. */
   diagRev: number;
   health: Record<string, ConnectionHealth>;
-  recording: RecordingView | null;
   sessions: SessionSummary[];
   warnings: string[];
   prefs: Prefs;
   historyDbPath: string;
 }
 
+export interface SnapshotOptions { includeDiagnostics?: boolean }
+
 export interface AppDelta {
+  pointWrites?: Record<string, PointWriteReceipt>;
+  scriptRun?: ScriptRunView | null;
+  /** Layout/canvas metadata did not replace or invalidate the runtime bindings. */
+  workspaceMetadataOnly?: boolean;
   update?: UpdateState;
   revision: number;
   workspace?: Workspace;
   workspacePath?: string | null;
   dirty?: boolean;
   connections?: Record<string, ConnectionStateView>;
+  /** Changed devices only. Null removes the previous device state. */
+  slaveStates?: Record<string, SlaveStateView | null>;
   blocks?: Record<string, BlockViewState>;
   points?: Record<string, PointViewState>;
   transactions?: TransactionRecord[];
   parseEvents?: ParseEventRecord[];
   diagRev?: number;
   health?: Record<string, ConnectionHealth>;
-  recording?: RecordingView | null;
   sessions?: SessionSummary[];
   warnings?: string[];
   prefs?: Prefs;

@@ -2,6 +2,7 @@ import { UpdateService, detectPackageKind } from './services/updater';
 import { prepareInstall, confirmUpdatedBoot, readInstallOutcome } from './services/self-update';
 import path from 'node:path';
 import { clampToWorkAreas } from './window-bounds';
+import { installViewWindows } from './view-windows';
 import fs from 'node:fs';
 import { app, BrowserWindow, dialog, Menu, nativeImage, net, protocol, screen, shell } from 'electron';
 import { pathToFileURL } from 'node:url';
@@ -105,10 +106,12 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js'),
     },
   });
 
+  installViewWindows(mainWindow, wsSvc);
   mainWindow.once('ready-to-show', () => {
     if (process.env.MODBUS_HEADLESS !== '1') {
       mainWindow?.show();

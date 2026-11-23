@@ -58,8 +58,8 @@ describe('Renderer Transports', () => {
         const deltas: number[] = [];
         mock.onDelta((delta) => deltas.push(delta.revision));
         const before = await mock.getSnapshot();
-        expect((await mock.command({ type: 'prefs.set', patch: { persistRawComm: true, timezone: 'UTC' } })).ok).toBe(true);
-        expect((await mock.getSnapshot()).prefs).toMatchObject({ persistRawComm: true, timezone: 'UTC' });
+        expect((await mock.command({ type: 'prefs.set', patch: { timezone: 'UTC' } })).ok).toBe(true);
+        expect((await mock.getSnapshot()).prefs).toMatchObject({ timezone: 'UTC' });
         expect((await mock.command({ type: 'diagnostics.clear' })).ok).toBe(true);
         const after = await mock.getSnapshot();
         expect(after.diagRev).toBe(before.diagRev + 1);

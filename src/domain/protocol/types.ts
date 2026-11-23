@@ -7,6 +7,7 @@ export const FC = {
   WriteSingleRegister: 0x06,
   WriteMultipleCoils: 0x0f,
   WriteMultipleRegisters: 0x10,
+  MaskWriteRegister: 0x16,
 } as const;
 
 export type ReadFC = 0x01 | 0x02 | 0x03 | 0x04;
@@ -43,12 +44,14 @@ export type ModbusRequest =
   | { kind: 'writeCoil'; fc: 0x05; address: number; value: boolean }
   | { kind: 'writeCoils'; fc: 0x0f; address: number; values: boolean[] }
   | { kind: 'writeRegister'; fc: 0x06; address: number; value: number }
-  | { kind: 'writeRegisters'; fc: 0x10; address: number; values: number[] };
+  | { kind: 'writeRegisters'; fc: 0x10; address: number; values: number[] }
+  | { kind: 'maskWrite'; fc: 0x16; address: number; andMask: number; orMask: number };
 
 export type ModbusResponse =
   | { kind: 'bits'; fc: ReadFC; bits: boolean[] }
   | { kind: 'registers'; fc: ReadFC; registers: number[] }
   | { kind: 'writeAck'; fc: FunctionCode; address: number; extra: number }
+  | { kind: 'maskWriteAck'; fc: 0x16; address: number; andMask: number; orMask: number }
   | { kind: 'exception'; fc: FunctionCode; code: number };
 
 export function requestFunctionCode(req: ModbusRequest): FunctionCode {
@@ -58,6 +61,7 @@ export function requestFunctionCode(req: ModbusRequest): FunctionCode {
 /** Expected response PDU byte length for a request (used as RTU framing context). */
 export function expectedResponsePduLength(req: ModbusRequest): number {
   switch (req.kind) {
+    case 'maskWrite': return 7;
     case 'read':
       if (req.fc === FC.ReadCoils || req.fc === FC.ReadDiscreteInputs) {
         return 2 + Math.ceil(req.quantity / 8);

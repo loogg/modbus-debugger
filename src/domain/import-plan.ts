@@ -34,7 +34,7 @@ export function buildImportPlan(rows: RegisterImportRow[], strategy: 'auto' | 's
       for (const row of chunk) points.push({
         id: `${prefix}-point-${points.length}`, blockId: id, name: row.name,
         mapping: { rawType: row.rawType, offset: row.address - start, registerCount: row.width, wordOrder: 'ABCD', byteSelector: 'low', bitOffset: 0, bitWidth: row.rawType === 'Bool' ? 1 : 16, stringLength: row.rawType === 'String' ? 8 : 0, stringEncoding: 'ascii' },
-        scale: row.scale, offset: row.offset, unit: row.unit, access: area === 2 || area === 4 ? 'ro' : /w/i.test(row.access) ? 'rw' : 'ro', displayFormat: 'auto', enumMap: {}, highRisk: false, description: '',
+        scale: row.scale, offset: row.offset, unit: row.unit, access: area === 2 || area === 4 ? 'ro' : /^(w|wo|write.?only|只写|写)$/i.test(row.access.trim()) ? 'wo' : /w|读写/i.test(row.access) ? 'rw' : 'ro', displayFormat: 'auto', enumMap: {}, highRisk: false, description: '',
       });
       chunk = [];
     };

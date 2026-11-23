@@ -69,13 +69,13 @@ describe('Modbus Debugger packaged app E2E', () => {
     await figmaShot('04B-realtime-block-focus');
   });
 
-  it('writes 目标转速 and confirms via read-back', async () => {
+  it('writes 目标转速 and displays its normally sampled value', async () => {
     await $('//div[text()="目标转速"]/following-sibling::div[2]').doubleClick();
     await setNative('input.w-24', '1800');
     await browser.keys('Enter');
     await browser.waitUntil(async () => (await bodyText()).includes('1800'), {
       timeout: 20000,
-      timeoutMsg: 'expected confirmed write value 1800 after read-back',
+      timeoutMsg: 'expected confirmed device value 1800 after periodic sampling',
     });
   });
 
@@ -174,9 +174,6 @@ describe('Modbus Debugger packaged app E2E', () => {
   });
   it('all main pages fit four window widths, keeping horizontal scrolling inside tables', async () => {
     await $('//nav//button[contains(.,"趋势")]').click();
-    await $('//button[contains(.,"开始记录")]').click();
-    await browser.pause(900);
-    await $('//button[contains(.,"停止记录")]').click();
     for (const [width, height] of [[1440,960], [1280,960], [1279,960], [1024,680]]) {
       await setViewport(width!, height!);
       for (const label of ['设备','实时','趋势','历史','通信','模板','设置']) {

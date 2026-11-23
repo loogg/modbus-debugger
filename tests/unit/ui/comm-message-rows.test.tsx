@@ -59,8 +59,7 @@ it('renders sent TX and successful RX separately; selecting either opens the sam
       revision: 1,
       workspace: workspaceSchema.parse(JSON.parse(fs.readFileSync('tools/e2e/demo.workspace.json', 'utf8'))),
       workspacePath: null, dirty: false, connections: {}, blocks: {}, points: {},
-      transactions: [success, timeout], parseEvents: [], diagRev: 0, health: {}, recording: null,
-      sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
+      transactions: [success, timeout], parseEvents: [], diagRev: 0, health: {}, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
     },
   });
   const { container } = render(<CommScreen />);

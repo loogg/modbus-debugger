@@ -2,7 +2,7 @@ import { decodeResponsePdu, isExceptionPdu } from './pdu';
 import { checkCrc } from './crc';
 import { splitRtuAdu } from './rtu';
 import { parseMbap } from './tcp';
-import type { FunctionCode, ModbusResponse } from './types';
+import type { FunctionCode, ModbusRequest, ModbusResponse } from './types';
 
 export interface RequestContext {
   transport: 'rtu' | 'tcp';
@@ -12,6 +12,7 @@ export interface RequestContext {
   expectedAduLength: number;
   /** TCP MBAP transaction id of the in-flight request. */
   tid?: number;
+  request?: ModbusRequest;
 }
 
 export type AduVerdict =
@@ -48,6 +49,7 @@ export function validateAdu(adu: Uint8Array, ctx: RequestContext): AduVerdict {
 function pduShapeValid(pdu: Uint8Array): boolean {
   const fc = pdu[0] as number;
   switch (fc) {
+    case 0x16: return pdu.length === 7;
     case 0x01:
     case 0x02:
     case 0x03:
@@ -91,6 +93,15 @@ function classifyPdu(pdu: Uint8Array, ctx: RequestContext, raw: Uint8Array): Adu
   }
   try {
     const response = decodeResponsePdu(pdu, ctx.fc);
+    const request = ctx.request;
+    if (request && request.kind !== 'read' && response.kind !== 'exception') {
+      if (request.kind === 'maskWrite') {
+        if (response.kind !== 'maskWriteAck' || response.address !== request.address || response.andMask !== request.andMask || response.orMask !== request.orMask) return { type: 'unexpected', reason: 'mask write echo mismatch', raw };
+      } else {
+        const extra = request.kind === 'writeCoil' ? request.value ? 0xff00 : 0 : request.kind === 'writeRegister' ? request.value : request.values.length;
+        if (response.kind !== 'writeAck' || response.address !== request.address || response.extra !== extra) return { type: 'unexpected', reason: 'write echo mismatch', raw };
+      }
+    }
     return response.kind === 'exception' ? { type: 'exception', response } : { type: 'ok', response };
   } catch {
     return { type: 'malformed', reason: 'PDU decode failed', raw };

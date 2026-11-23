@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { ConnectionRuntime } from '../../src/main/runtime/connection-runtime';
 import { BlockCache } from '../../src/main/runtime/block-cache';
 import { DiagnosticsStore } from '../../src/main/runtime/diagnostics';
@@ -9,6 +9,23 @@ import type { BlockDef, ConnectionDef, SlaveDef } from '../../src/domain/model';
 const config: ConnectionDef = { id: 'c', name: 'c', transport: 'tcp', tcp: {host:'127.0.0.1',port:5020}, timeoutMs:100, retries:0, reconnect:'manual', interFrameMs:0, rtsControl:'none', logLevel:'info' };
 const block: BlockDef = {id:'b',name:'b',area:3,start:0,length:4,periodMs:60000};
 const slave: SlaveDef = {id:'s',name:'s',connectionId:'c',unitId:1,templateId:'t',enabled:true};
+
+it('dates a judgment from the confirmed point span and resets timestamps on rebinding', () => {
+  vi.useFakeTimers();
+  try {
+    const cache = new BlockCache();
+    cache.ensure(slave, block);
+    vi.setSystemTime(new Date(1000));
+    cache.applyReadResult('s::b', { kind:'registers', fc:3, registers:[1,2,3,4] }, 1);
+    vi.setSystemTime(new Date(2000));
+    cache.applyReadResult('s::b', { kind:'registers', fc:3, registers:[8] }, 1, 2, 1);
+    expect(cache.confirmedAt('s::b', {offset:0,length:2})).toBe(1000);
+    expect(cache.confirmedAt('s::b', {offset:2,length:1})).toBe(2000);
+    expect(cache.confirmedAt('s::b', {offset:1,length:2})).toBeUndefined();
+    cache.ensure(slave, {...block,start:5});
+    expect(cache.confirmedAt('s::b', {offset:0,length:1})).toBeUndefined();
+  } finally { vi.useRealTimers(); }
+});
 const runtimes: ConnectionRuntime[] = [];
 const tid = (request: Uint8Array) => request[0]! * 256 + request[1]!;
 const reply = (request: Uint8Array, values = [1234,0,0,0]) => buildTcpAdu(tid(request),request[6]!,encodeResponsePdu({kind:'registers',fc:request[7] as 3 | 4,registers:values}));
@@ -103,13 +120,13 @@ it('does not send a write after configuration changes during its latest-register
   expect(h.transport.sent.some(request=>request[7]===6)).toBe(false);
 });
 
-it('does not apply an old write read-back to a replacement block',async()=>{
+it('invalidates an old write acknowledgement when its block is replaced',async()=>{
   const h=harness();h.transport.onResponse(request=>[reply(request)]);await h.runtime.start();await waitFor(()=>h.cache.get('s::b')?.status==='ok');
-  h.transport.onResponse(request=>request[7]===6?[buildTcpAdu(tid(request),1,encodeResponsePdu({kind:'writeAck',fc:6,address:0,extra:42}))]:null);
+  h.transport.onResponse(()=>null);
   const pending=h.runtime.writePoint({slave,block,mapping:{...mapping,rawType:'UInt16',bitWidth:16},rawValue:42,pointId:'p',readBackRange:{start:0,length:4}}).catch(error=>String(error));
-  await waitFor(()=>h.transport.sent.length===3);
+  await waitFor(()=>h.transport.sent.length===2);
   h.runtime.configure([{slave,block:{...block,start:100}}]);
-  h.transport.inject(reply(h.transport.sent[2]!,[42,0,0,0]));
-  await pending;
+  h.transport.inject(buildTcpAdu(tid(h.transport.sent[1]!),1,encodeResponsePdu({kind:'writeAck',fc:6,address:0,extra:42})));
+  expect(await pending).toMatch(/配置.*改变|configuration.*changed/i);
   expect(h.cache.get('s::b')).toMatchObject({status:'idle',lastUpdateUtc:null});
 });

@@ -51,7 +51,7 @@ describe('写前读取失败的实际桌面终态与恢复',()=>{
     await apply(50520);await submitOff();
     await browser.waitUntil(async()=>(await snapshot()).points['slave-1::pt-enable']?.boolValue===false,{timeout:15000});
     await browser.waitUntil(async()=>!(await $('.spin').isExisting()));
-    const recovered=await snapshot();expect(recovered.transactions.some(tx=>tx.sourceKind==='readback'&&tx.sourceId==='pt-enable'&&tx.result==='ok')).toBe(true);
+    const recovered=await snapshot();expect(recovered.transactions.some(tx=>tx.sourceKind==='write'&&tx.sourceId==='pt-enable'&&tx.result==='ok')).toBe(true);
     await browser.saveScreenshot(path.join(evidence,`${fault}-recovered.png`));
     // Restore the shared simulator so the next failure case starts at confirmed ON.
     await $('//div[text()="使能"]/following-sibling::div[2]').doubleClick();await $('input.w-24').setValue('ON');await browser.keys('Enter');

@@ -4,11 +4,14 @@ import { DiagnosticsStore, type ResultKind, type SourceKind, type TransactionRec
 import { Transport } from './transport';
 import { encodeRequestPdu, buildRtuAdu, buildTcpAdu, expectedResponseAduLength, RtuStreamingFramer, TcpStreamingFramer, validateAdu, type Framer, type FramerEvent, type Clock, systemClock, type RequestContext, type AduVerdict } from '../../domain/protocol';
 import type { ModbusRequest, ReadFC } from '../../domain/protocol';
+import { ExceptionCode } from '../../domain/protocol/types';
 import type { BlockDef, ConnectionDef, SlaveDef } from '../../domain/model';
+import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_RECONNECT_INTERVAL_MS } from '../../domain/model';
 import { encodeRaw, type PointMapping, type RawMemory } from '../../domain/mapping';
-import type { ScanRow, ScanStateView } from '../../shared/snapshot';
+import type { ScanRow, ScanStateView, SlaveStateView } from '../../shared/snapshot';
 import { scanOptionsSchema, type ScanOverrides } from '../../shared/scan-options';
 import type { RequestOutcome } from '../../shared/contracts';
+import { mappingWidth, partialRegister, planBlockReads, type ReadRange } from '../../domain/point-access';
 
 export type { RequestOutcome } from '../../shared/contracts';
 
@@ -17,11 +20,13 @@ export type ConnectionState = 'offline' | 'connecting' | 'online' | 'error';
 export interface PollTarget {
   slave: SlaveDef;
   block: BlockDef;
+  readRanges?: ReadRange[];
 }
 
 export interface RuntimeHooks {
   onChange(): void;
   onState(state: ConnectionState, detail?: string): void;
+  onSlaveStateChange?(slaveId: string): void;
 }
 
 interface PendingWaiter {
@@ -32,8 +37,36 @@ interface PendingWaiter {
   abort(result: ResultKind, reason: string): void;
 }
 
+interface SlaveCommunication {
+  slave: SlaveDef;
+  readableBlocks: Map<string, number>;
+  failedPolls: Map<string, number>;
+  lastResponseUtc: string | null;
+  offline: boolean;
+}
+
 const PRIORITY = { write: 0, manual: 1, poll: 2 } as const;
-const RETRY_BACKOFF_MS = 50;
+const DEFAULT_RETRY_DELAY_MS = 50;
+const FAILED_POLLS_TO_GO_OFFLINE = 3;
+
+function receivedTargetResponse({ result, exceptionCode }: RequestOutcome): boolean {
+  return result === 'ok' || (result === 'exception' && exceptionCode !== null
+    && exceptionCode !== ExceptionCode.GatewayPathUnavailable && exceptionCode !== ExceptionCode.GatewayTargetFailed);
+}
+
+function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise(resolve => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, Math.ceil(ms));
+    signal.addEventListener('abort', finish, { once: true });
+    if (signal.aborted) finish();
+  });
+}
 
 function hex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('hex');
@@ -47,6 +80,7 @@ function responsePduHex(aduHex: string, transport: 'rtu' | 'tcp'): string {
 export class ConnectionRuntime {
   readonly connectionId: string;
   state: ConnectionState = 'offline';
+  detail: string | null = null;
   private transport: Transport;
   private readonly config: ConnectionDef;
   private framer: Framer;
@@ -56,23 +90,32 @@ export class ConnectionRuntime {
   private hooks: RuntimeHooks;
 
   private targets: PollTarget[] = [];
+  private slaveCommunications = new Map<number, SlaveCommunication>();
   private targetVersions = new Map<string, { owner: object; generation: number }>();
   private due = new Map<string, number>();
+  private pollRetries = new Map<string, { readyAt: number; attempt: number; generation: number }>();
+  private pollOrder = new Map<string, number>();
+  private pollProgress = new Map<string, { index: number; nextDue: number; generation: number; responded: boolean }>();
   private queue: Array<{ priority: number; seq: number; label: string; run: () => Promise<void>; cancel: (error: Error) => void }> = [];
   private queueSeq = 0;
   private busy = false;
   private timer: NodeJS.Timeout | null = null;
+  private pump: NodeJS.Immediate | null = null;
+  private dueTimer: NodeJS.Timeout | null = null;
+  private wakeAt = Infinity;
+  private requestAbort = new AbortController();
   private waiter: PendingWaiter | null = null;
   private tidCounter = 0;
   private scanning = false;
   private scanController: AbortController | null = null;
   private scanState: ScanStateView | null = null;
-  private drainUntil = 0;
-  private recoveryContext: { traceId: string; unitId: number; functionCode: number; sourceKind: SourceKind } | null = null;
-  private reconnectAt = 0;
-  private reconnectDelay = 1000;
+  private timedOutRequest: { traceId: string; unitId: number; functionCode: number; sourceKind: SourceKind } | null = null;
+  private reconnectAt: number | null = null;
   private stopped = false;
-  private lastRequestEnd = 0;
+  private lastRequestEnd = -Infinity;
+  private lastRtuActivity = -Infinity;
+  private readonly rtuCharacterMs: number;
+  private readonly rtuQuietMs: number;
   private expectedLen: number | null = null;
 
   constructor(opts: {
@@ -91,6 +134,10 @@ export class ConnectionRuntime {
     this.clock = opts.clock ?? systemClock;
     this.hooks = opts.hooks;
     const baud = opts.config.rtu?.baudRate ?? 9600;
+    const serial = opts.config.rtu;
+    const bitsPerCharacter = 1 + (serial?.dataBits ?? 8) + (serial?.parity && serial.parity !== 'none' ? 1 : 0) + (serial?.stopBits ?? 1);
+    this.rtuCharacterMs = bitsPerCharacter * 1000 / baud;
+    this.rtuQuietMs = baud > 19200 ? 1.75 : 3.5 * this.rtuCharacterMs;
     this.framer =
       opts.config.transport === 'rtu'
         ? new RtuStreamingFramer({ clock: this.clock, baudRate: baud, expectedAduLength: () => this.expectedLen })
@@ -107,22 +154,72 @@ export class ConnectionRuntime {
     return this.transport.kind;
   }
 
-  configure(targets: PollTarget[]): void {
+  configure(targets: PollTarget[], slaves = targets.map(target => target.slave)): void {
     const previous = new Map(this.targets.map(t => [blockKey(t.slave.id, t.block.id), t]));
     this.targets = targets;
     const versions = new Map<string, { owner: object; generation: number }>();
+    const communications = new Map<number, SlaveCommunication>();
+    const readableBlocks = new Map<number, Map<string, number>>();
+    for (const slave of slaves) {
+      if (!slave.enabled || communications.has(slave.unitId)) continue;
+      const current = this.slaveCommunications.get(slave.unitId);
+      communications.set(slave.unitId, current?.slave.id === slave.id && current.slave.templateId === slave.templateId
+        ? current : { slave, readableBlocks: new Map(), failedPolls: new Map(), lastResponseUtc: null, offline: false });
+      readableBlocks.set(slave.unitId, new Map());
+    }
     const now = this.clock.now();
     for (const t of targets) {
       const key = blockKey(t.slave.id, t.block.id);
       const old = previous.get(key);
       if (!this.due.has(key) || old?.block.periodMs !== t.block.periodMs || old?.slave.enabled !== t.slave.enabled || old?.slave.unitId !== t.slave.unitId || old?.block.start !== t.block.start) this.due.set(key, now + t.block.periodMs);
       const owner = this.targetVersions.get(key)?.owner ?? {};
-      const entry = this.cache.ensure(t.slave, t.block, owner);
+      const entry = this.cache.ensure(t.slave, t.block, owner, t.readRanges ?? planBlockReads(t.block, []));
+      if (entry.readRanges.length) readableBlocks.get(t.slave.unitId)?.set(key, entry.generation);
+      if (!t.slave.enabled || this.pollProgress.get(key)?.generation !== entry.generation) this.pollProgress.delete(key);
       versions.set(key, { owner, generation: entry.generation });
+      const retry = this.pollRetries.get(key);
+      if (retry && (retry.generation !== entry.generation || !t.slave.enabled || old?.block.periodMs !== t.block.periodMs)) this.pollRetries.delete(key);
     }
+    for (const [unitId, communication] of communications) {
+      const blocks = readableBlocks.get(unitId)!;
+      for (const key of communication.failedPolls.keys()) {
+        if (blocks.get(key) !== communication.readableBlocks.get(key)) communication.failedPolls.delete(key);
+      }
+      communication.readableBlocks = blocks;
+    }
+    this.slaveCommunications = communications;
     this.targetVersions = versions;
     const keys = new Set(targets.map((t) => blockKey(t.slave.id, t.block.id)));
     for (const key of [...this.due.keys()]) if (!keys.has(key)) this.due.delete(key);
+    for (const key of this.pollRetries.keys()) if (!keys.has(key)) this.pollRetries.delete(key);
+    for (const key of this.pollOrder.keys()) if (!keys.has(key)) this.pollOrder.delete(key);
+    for (const key of this.pollProgress.keys()) if (!keys.has(key)) this.pollProgress.delete(key);
+    this.requestTick();
+  }
+
+  slaveState(slave: SlaveDef): SlaveStateView {
+    const communication = this.slaveCommunications.get(slave.unitId);
+    const lastResponseUtc = communication?.lastResponseUtc ?? null;
+    if (!slave.enabled) return { state: 'disabled', lastResponseUtc: null };
+    if (this.state !== 'online' || this.stopped) {
+      return { state: this.state === 'connecting' && !this.stopped ? 'connecting' : 'offline', lastResponseUtc };
+    }
+    return { state: communication?.offline ? 'offline' : lastResponseUtc ? 'online' : 'pending', lastResponseUtc };
+  }
+
+  private recordFailedPoll(unitId: number, key: string): void {
+    const communication = this.slaveCommunications.get(unitId);
+    if (!communication?.readableBlocks.has(key) || communication.offline) return;
+    const count = communication.failedPolls.get(key) ?? 0;
+    communication.failedPolls.set(key, Math.min(count + 1, FAILED_POLLS_TO_GO_OFFLINE));
+    // Every readable block must exhaust its polls. A faster block cannot mask
+    // replies arriving on a slower block on the same device.
+    if (communication.failedPolls.size === communication.readableBlocks.size
+      && [...communication.failedPolls.values()].every(failures => failures >= FAILED_POLLS_TO_GO_OFFLINE)) {
+      communication.offline = true;
+      this.hooks.onSlaveStateChange?.(communication.slave.id);
+      this.hooks.onChange();
+    }
   }
 
   private targetIsCurrent(key: string, generation: number | undefined): boolean {
@@ -140,7 +237,7 @@ export class ConnectionRuntime {
     this.stopped = false;
     // idempotent: a second start() must not stack a second scheduler interval
     if (!this.timer) this.timer = setInterval(() => this.tick(), 5);
-    this.reconnectAt = 0;
+    this.reconnectAt = null;
     if (this.state === 'connecting' || this.state === 'online') return;
     await this.connect();
   }
@@ -148,9 +245,16 @@ export class ConnectionRuntime {
   async stop(): Promise<void> {
     this.stopScan();
     this.stopped = true;
+    this.reconnectAt = null;
+    this.requestAbort.abort();
     this.failWaiter('transport', 'connection stopped');
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.pump) clearImmediate(this.pump);
+    this.pump = null;
+    this.clearWake();
+    this.pollRetries.clear();
+    this.pollProgress.clear();
     for (const item of this.queue.splice(0)) item.cancel(new Error('Connection stopped before the queued request was sent'));
     await this.transport.close().catch(() => undefined);
     this.setState('offline');
@@ -159,37 +263,56 @@ export class ConnectionRuntime {
   private setState(state: ConnectionState, detail?: string): void {
     if (this.state === state) return;
     this.state = state;
+    this.detail = detail ?? null;
     this.hooks.onState(state, detail);
+    for (const communication of this.slaveCommunications.values()) this.hooks.onSlaveStateChange?.(communication.slave.id);
     this.hooks.onChange();
   }
 
   private async connect(): Promise<void> {
     if (this.stopped) return;
+    for (const communication of this.slaveCommunications.values()) {
+      communication.lastResponseUtc = null;
+      communication.failedPolls.clear();
+      communication.offline = false;
+    }
     this.setState('connecting');
+    this.requestAbort = new AbortController();
+    this.framer.reset();
+    this.timedOutRequest = null;
+    this.lastRtuActivity = -Infinity;
+    this.lastRequestEnd = -Infinity;
+    this.pollRetries.clear();
+    this.pollProgress.clear();
     try {
-      await this.transport.connect();
+      await this.transport.close();
+      if (this.stopped) return;
+      await this.transport.connect(this.config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
       if (this.stopped) {
         await this.transport.close().catch(() => undefined);
         return;
       }
-      this.reconnectDelay = 1000;
       this.setState('online');
       const now = this.clock.now();
       for (const t of this.targets) this.due.set(blockKey(t.slave.id, t.block.id), now);
+      this.requestTick();
     } catch (err) {
+      if (this.stopped) return;
       this.setState('error', String(err));
       this.scheduleReconnect();
     }
   }
 
   private scheduleReconnect(): void {
-    if (this.stopped || this.config.reconnect === 'manual') return;
-    this.reconnectAt = this.clock.now() + this.reconnectDelay;
-    this.reconnectDelay = Math.min(10000, this.reconnectDelay * 2);
+    if (this.stopped || this.config.reconnect === 'manual' || this.reconnectAt !== null) return;
+    this.reconnectAt = this.clock.now() + (this.config.reconnectIntervalMs ?? DEFAULT_RECONNECT_INTERVAL_MS);
   }
 
   private handleTransportFailure(err: Error): void {
     if (this.stopped) return;
+    this.requestAbort.abort();
+    this.pollRetries.clear();
+    this.pollProgress.clear();
     for (const item of this.queue.splice(0)) item.cancel(err);
     this.stopScan();
     this.failWaiter('transport', err.message);
@@ -200,6 +323,7 @@ export class ConnectionRuntime {
   /* ------------------------- receive path ------------------------- */
 
   private onData(chunk: Uint8Array): void {
+    if (this.transport.kind === 'rtu' && chunk.length > 0) this.lastRtuActivity = Math.max(this.lastRtuActivity, this.clock.now());
     const events = this.framer.push(chunk);
     this.handleFramerEvents(events);
   }
@@ -208,7 +332,7 @@ export class ConnectionRuntime {
     for (const ev of events) {
       if (ev.type === 'parse-error') {
         const waiter = this.waiter;
-        const recovery = this.recoveryContext;
+        const expired = this.timedOutRequest;
         this.diagnostics.recordParseEvent({
           connectionId: this.connectionId,
           kind: ev.kind,
@@ -216,10 +340,10 @@ export class ConnectionRuntime {
           rawHex: hex(ev.raw),
           discarded: ev.discarded,
           recoveredCount: ev.recovered.length,
-          traceId: waiter?.traceId ?? recovery?.traceId ?? null,
-          unitId: waiter?.ctx.unitId ?? recovery?.unitId ?? null,
-          functionCode: waiter?.ctx.fc ?? recovery?.functionCode ?? null,
-          sourceKind: waiter?.sourceKind ?? recovery?.sourceKind ?? null,
+          traceId: waiter?.traceId ?? expired?.traceId ?? null,
+          unitId: waiter?.ctx.unitId ?? expired?.unitId ?? null,
+          functionCode: waiter?.ctx.fc ?? expired?.functionCode ?? null,
+          sourceKind: waiter?.sourceKind ?? expired?.sourceKind ?? null,
           utc: new Date().toISOString(),
           mono: this.clock.now(),
         });
@@ -233,27 +357,6 @@ export class ConnectionRuntime {
 
   private deliverAdu(adu: Uint8Array): void {
     const waiter = this.waiter;
-    if (this.clock.now() < this.drainUntil) {
-      // No RTU request may start in this bounded quiet window. A late complete
-      // frame is recorded with the timed-out request context and never matched.
-      const recovery = this.recoveryContext;
-      this.diagnostics.recordParseEvent({
-        connectionId: this.connectionId,
-        kind: 'unexpected',
-        reason: 'late frame discarded during bounded drain / quiet recovery',
-        rawHex: hex(adu),
-        discarded: adu.length,
-        recoveredCount: 0,
-        traceId: recovery?.traceId ?? null,
-        unitId: recovery?.unitId ?? null,
-        functionCode: recovery?.functionCode ?? null,
-        sourceKind: recovery?.sourceKind ?? null,
-        utc: new Date().toISOString(),
-        mono: this.clock.now(),
-      });
-      this.hooks.onChange();
-      return;
-    }
     if (!waiter) {
       // No in-flight request: late/unsolicited frame. Record for diagnosis only.
       this.diagnostics.recordParseEvent({
@@ -263,10 +366,10 @@ export class ConnectionRuntime {
         rawHex: hex(adu),
         discarded: adu.length,
         recoveredCount: 0,
-        traceId: null,
-        unitId: null,
-        functionCode: null,
-        sourceKind: null,
+        traceId: this.timedOutRequest?.traceId ?? null,
+        unitId: this.timedOutRequest?.unitId ?? null,
+        functionCode: this.timedOutRequest?.functionCode ?? null,
+        sourceKind: this.timedOutRequest?.sourceKind ?? null,
         utc: new Date().toISOString(),
         mono: this.clock.now(),
       });
@@ -339,15 +442,25 @@ export class ConnectionRuntime {
   private async attemptRequest(
     unitId: number,
     req: ModbusRequest,
-    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; guard?: () => void },
+    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; signal: AbortSignal; guard?: () => void; pollCycleStart?: boolean },
   ): Promise<RequestOutcome> {
-    // Every path (including retry and write/read-back groups) must observe RTU recovery.
-    while (this.clock.now() < this.drainUntil) await new Promise(resolve => setTimeout(resolve, 2));
-    if (this.drainUntil) { this.drainUntil = 0; this.recoveryContext = null; this.framer.reset(); }
-    const gap = this.config.interFrameMs - (this.clock.now() - this.lastRequestEnd);
-    if (gap > 0) await new Promise(resolve => setTimeout(resolve, gap));
-    if (this.stopped) throw new Error('Connection stopped before the request was sent');
+    // Recheck after sleeping because unsolicited serial bytes move the quiet boundary.
+    for (;;) {
+      if (opts.signal.aborted || this.stopped || this.state !== 'online') throw new Error('Connection stopped before the request was sent');
+      const readyAt = Math.max(
+        this.lastRequestEnd + this.config.interFrameMs,
+        this.transport.kind === 'rtu' ? this.lastRtuActivity + this.rtuQuietMs : -Infinity,
+      );
+      const gap = readyAt - this.clock.now();
+      if (gap <= 0) break;
+      await waitForDelay(gap, opts.signal);
+    }
+    // Discard incomplete bytes received between transactions before arming a new waiter.
+    if (this.transport.kind === 'rtu') this.framer.reset();
+    this.timedOutRequest = null;
     opts.guard?.();
+    const communication = this.slaveCommunications.get(unitId);
+    const session = this.requestAbort.signal;
     const startedMono = this.clock.now();
     const startedUtc = new Date().toISOString();
     const traceId = this.diagnostics.nextTraceId();
@@ -360,9 +473,10 @@ export class ConnectionRuntime {
       fc: req.fc,
       expectedAduLength: expectedResponseAduLength(req, this.transport.kind),
       tid: tid ?? undefined,
+      request: req,
     };
     // The connection's configured timeout governs every request path (poll, temporary read,
-    // RMW, write, read-back). Only the unit scanner passes an explicit shorter probe timeout.
+    // RMW and write). Only the unit scanner passes an explicit shorter probe timeout.
     const timeoutMs = opts.timeoutMs ?? this.config.timeoutMs;
 
     const outcome = await new Promise<RequestOutcome>((resolve) => {
@@ -379,10 +493,9 @@ export class ConnectionRuntime {
           this.expectedLen = null;
         }
         if (this.transport.kind === 'rtu') {
-          // Bounded drain / quiet recovery before the next request may use the line.
+          // The response timeout ends this transaction. Clear its partial bytes immediately.
           this.framer.reset();
-          this.drainUntil = this.clock.now() + 20;
-          this.recoveryContext = { traceId, unitId, functionCode: req.fc, sourceKind: opts.sourceKind };
+          this.timedOutRequest = { traceId, unitId, functionCode: req.fc, sourceKind: opts.sourceKind };
         }
         finish({
           result: 'timeout',
@@ -433,6 +546,7 @@ export class ConnectionRuntime {
       };
 
       this.logTrace('tx ' + hex(adu));
+      if (this.transport.kind === 'rtu') this.lastRtuActivity = startedMono + adu.length * this.rtuCharacterMs;
       this.transport.write(adu).catch((err: Error) => {
         if (this.waiter?.traceId === traceId) {
           this.waiter = null;
@@ -451,6 +565,14 @@ export class ConnectionRuntime {
       });
     });
 
+    if (communication && receivedTargetResponse(outcome) && !session.aborted
+      && communication === this.slaveCommunications.get(unitId)) {
+      const becameOnline = communication.offline || communication.lastResponseUtc === null;
+      communication.lastResponseUtc = new Date().toISOString();
+      communication.failedPolls.clear();
+      communication.offline = false;
+      if (becameOnline) this.hooks.onSlaveStateChange?.(communication.slave.id);
+    }
     const rec: TransactionRecord = {
       traceId,
       connectionId: this.connectionId,
@@ -458,6 +580,7 @@ export class ConnectionRuntime {
       functionCode: req.fc,
       sourceKind: opts.sourceKind,
       sourceId: opts.sourceId,
+      ...(opts.pollCycleStart !== undefined ? { pollCycleStart: opts.pollCycleStart } : {}),
       startUtc: startedUtc,
       startMono: startedMono,
       durationMs: outcome.durationMs,
@@ -478,7 +601,7 @@ export class ConnectionRuntime {
 
   /**
    * Retry policy:
-   * - reads (poll / temporary / scanner / read-back / RMW read): retry on timeout / transport,
+   * - reads (poll / temporary / scanner / RMW read): retry on timeout / transport,
    *   up to config.retries extra attempts with a small backoff. Exception responses are NEVER
    *   retried (the device explicitly refused).
    * - writes: NEVER retried automatically. A transport error from write() may occur
@@ -487,125 +610,211 @@ export class ConnectionRuntime {
   async executeRequest(
     unitId: number,
     req: ModbusRequest,
-    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; retries?: number; signal?: AbortSignal; guard?: () => void },
+    opts: { sourceKind: SourceKind; sourceId: string | null; timeoutMs?: number; retries?: number; signal?: AbortSignal; guard?: () => void; pollCycleStart?: boolean },
   ): Promise<RequestOutcome> {
     const isRead = req.kind === 'read';
+    const signal = opts.signal ? AbortSignal.any([this.requestAbort.signal, opts.signal]) : this.requestAbort.signal;
     const maxAttempts = isRead ? 1 + Math.max(0, opts.retries ?? this.config.retries ?? 0) : 1;
     let last: RequestOutcome | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      last = await this.attemptRequest(unitId, req, opts);
+      last = await this.attemptRequest(unitId, req, { ...opts, signal, pollCycleStart: opts.pollCycleStart === undefined ? undefined : opts.pollCycleStart && attempt === 0 });
       const retryable = isRead && (last.result === 'timeout' || last.result === 'transport');
       this.logTrace(`attempt ${attempt + 1}/${maxAttempts} ${summarizeRequest(req)} -> ${last.result}`);
-      if (!retryable || attempt === maxAttempts - 1 || opts.signal?.aborted || this.stopped) break;
+      if (!retryable || attempt === maxAttempts - 1 || signal.aborted || this.stopped) break;
       this.logTrace(`retrying ${summarizeRequest(req)} after ${last.result}`);
-      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS));
-      if (opts.signal?.aborted || this.stopped) break;
+      await waitForDelay(this.config.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS, signal);
+      if (signal.aborted || this.stopped) break;
     }
     return last as RequestOutcome;
   }
   /* ------------------------- scheduler ------------------------- */
 
+  private clearWake(): void {
+    if (this.dueTimer) clearTimeout(this.dueTimer);
+    this.dueTimer = null;
+    this.wakeAt = Infinity;
+  }
+
+  private requestTick(): void {
+    if (this.stopped || !this.timer || this.pump) return;
+    this.clearWake();
+    // Yield to I/O even when a transport completes synchronously and periodMs is zero.
+    this.pump = setImmediate(() => {
+      this.pump = null;
+      this.tick();
+    });
+  }
+
+  private wakeForPoll(at: number): void {
+    if (!Number.isFinite(at) || this.wakeAt <= at) return;
+    this.clearWake();
+    this.wakeAt = at;
+    this.dueTimer = setTimeout(() => {
+      this.dueTimer = null;
+      this.wakeAt = Infinity;
+      this.tick();
+    }, Math.max(1, Math.ceil(at - this.clock.now())));
+  }
+
   private tick(): void {
     const now = this.clock.now();
     if (this.state === 'error' || this.state === 'offline') {
-      if (this.reconnectAt && now >= this.reconnectAt) {
-        this.reconnectAt = 0;
+      if (this.reconnectAt !== null && now >= this.reconnectAt) {
+        this.reconnectAt = null;
         void this.connect();
       }
     }
     if (this.state !== 'online') return;
     const events = this.framer.tick(now);
     if (events.length) this.handleFramerEvents(events);
-    if (this.transport.kind === 'rtu' && this.drainUntil && now >= this.drainUntil) {
-      this.drainUntil = 0;
-      this.recoveryContext = null;
-      // Drop anything the drain window absorbed so it can never reach a later request.
-      this.framer.reset();
-    }
     if (this.busy || this.waiter) return;
     const item = this.takeNext(now);
     if (!item) return;
+    this.clearWake();
     this.busy = true;
     item
       .run()
       .catch(() => undefined)
       .finally(() => {
         this.busy = false;
+        this.requestTick();
       });
   }
 
   private takeNext(now: number) {
-    if (this.scanning || now < this.drainUntil) return null;
+    if (this.scanning) return null;
     this.queue.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
     const manual = this.queue.shift();
     if (manual) return manual;
     let best: PollTarget | null = null;
     let bestDue = Infinity;
+    let bestOrder = Infinity;
+    let nextDue = Infinity;
     for (const t of this.targets) {
-      if (!t.slave.enabled) continue;
+      if (!t.slave.enabled || !this.cache.get(blockKey(t.slave.id, t.block.id))?.readRanges.length) continue;
       const key = blockKey(t.slave.id, t.block.id);
-      const due = this.due.get(key) ?? now;
-      if (due <= now && due < bestDue) {
+      const due = this.pollRetries.get(key)?.readyAt ?? this.due.get(key) ?? now;
+      nextDue = Math.min(nextDue, due);
+      const order = this.pollOrder.get(key) ?? 0;
+      if (due <= now && (due < bestDue || (due === bestDue && order < bestOrder))) {
         best = t;
         bestDue = due;
+        bestOrder = order;
       }
     }
-    if (!best) return null;
+    if (!best) {
+      this.wakeForPoll(nextDue);
+      return null;
+    }
     const target = best;
     const key = blockKey(target.slave.id, target.block.id);
     const generation = this.targetVersions.get(key)?.generation;
-    this.due.set(key, now + target.block.periodMs);
+    const retry = this.pollRetries.get(key);
+    if (!this.pollProgress.has(key)) this.pollProgress.set(key, { index: 0, nextDue: now + target.block.periodMs, generation: generation!, responded: false });
+    this.pollOrder.set(key, ++this.queueSeq);
     return {
       priority: PRIORITY.poll,
       seq: this.queueSeq++,
       label: `poll ${target.block.name}`,
       run: async () => {
-        await this.pollBlock(target, generation);
+        await this.pollBlock(target, generation, retry?.attempt ?? 0);
       },
     };
   }
 
-  private async pollBlock(target: PollTarget, generation: number | undefined): Promise<void> {
+  private async pollBlock(target: PollTarget, generation: number | undefined, scheduledAttempt?: number): Promise<void> {
     const { slave, block } = target;
+    const session = this.requestAbort.signal;
     const key = blockKey(slave.id, block.id);
     this.requireCurrentTarget(key, generation);
-    const req: ModbusRequest = {
-      kind: 'read',
-      fc: block.area as ReadFC,
-      address: block.start,
-      quantity: block.length,
-    };
-    const outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'poll', sourceId: block.id, guard:()=>this.requireCurrentTarget(key,generation) });
-    // A legitimate response still belongs to the old binding after a configuration edit.
-    if (!this.targetIsCurrent(key, generation)) return;
-    if (outcome.result === 'ok' && outcome.response) {
-      this.cache.applyReadResult(key, outcome.response, outcome.durationMs);
-    } else if (outcome.result === 'exception') {
-      this.cache.markError(key, 'exception', outcome.exceptionCode);
-    } else if (outcome.result === 'timeout') {
-      this.cache.markError(key, 'timeout');
-    } else {
-      this.cache.markError(key, 'transport-error');
+    const ranges = this.cache.get(key)?.readRanges ?? [];
+    if (scheduledAttempt === undefined) {
+      const communication = this.slaveCommunications.get(slave.unitId);
+      let responded = false;
+      for (const range of ranges) {
+        const outcome = await this.pollRange(target, generation, range);
+        responded = receivedTargetResponse(outcome) || responded;
+      }
+      if (!responded && !session.aborted && this.targetIsCurrent(key, generation)
+        && communication === this.slaveCommunications.get(slave.unitId)) this.recordFailedPoll(slave.unitId, key);
+      return;
     }
-    this.hooks.onChange();
+    const progress = this.pollProgress.get(key);
+    const range = progress && ranges[progress.index];
+    if (!progress || !range) return;
+    const outcome = await this.pollRange(target, generation, range, scheduledAttempt);
+    if (session.aborted || this.pollProgress.get(key) !== progress || !this.targetIsCurrent(key, generation)) return;
+    progress.responded ||= receivedTargetResponse(outcome);
+    this.pollRetries.delete(key);
+    if ((outcome.result === 'timeout' || outcome.result === 'transport') && scheduledAttempt < this.config.retries && this.state === 'online') {
+      this.pollRetries.set(key, { readyAt: this.clock.now() + (this.config.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS), attempt: scheduledAttempt + 1, generation: generation! });
+      return;
+    }
+    progress.index++;
+    if (progress.index < ranges.length) this.due.set(key, this.clock.now());
+    else {
+      this.pollProgress.delete(key);
+      this.due.set(key, progress.nextDue);
+      if (!progress.responded) this.recordFailedPoll(slave.unitId, key);
+    }
   }
 
-  enqueue(priority: number, label: string, run: () => Promise<void>): Promise<void> {
+  private async pollRange(target: PollTarget, generation: number | undefined, range: ReadRange, scheduledAttempt?: number): Promise<RequestOutcome> {
+    const { slave, block } = target;
+    const session = this.requestAbort.signal;
+    const key = blockKey(slave.id, block.id);
+    this.requireCurrentTarget(key, generation);
+    const outcome = await this.executeRequest(slave.unitId, { kind: 'read', fc: block.area as ReadFC, address: block.start + range.offset, quantity: range.length }, {
+      sourceKind: 'poll', sourceId: block.id, guard: () => this.requireCurrentTarget(key, generation),
+      pollCycleStart: range === this.cache.get(key)?.readRanges[0] && (scheduledAttempt ?? 0) === 0,
+      retries: scheduledAttempt === undefined ? undefined : 0,
+    });
+    // A legitimate response still belongs to the old binding after a configuration edit.
+    if (session !== this.requestAbort.signal || !this.targetIsCurrent(key, generation)) return outcome;
+    if (outcome.result === 'ok' && outcome.response) {
+      this.cache.applyReadResult(key, outcome.response, outcome.durationMs, range.offset, range.length);
+    } else if (outcome.result === 'exception') {
+      this.cache.markError(key, 'exception', outcome.exceptionCode, range);
+    } else if (outcome.result === 'timeout') {
+      this.cache.markError(key, 'timeout', null, range);
+    } else {
+      this.cache.markError(key, 'transport-error', null, range);
+    }
+    this.hooks.onChange();
+    return outcome;
+  }
+
+  enqueue(priority: number, label: string, run: () => Promise<void>, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.queue.push({
+      const abort = () => {
+        const index = this.queue.indexOf(task);
+        if (index < 0) return;
+        this.queue.splice(index, 1);
+        task.cancel(signal?.reason ?? new Error('请求已停止'));
+      };
+      const task = {
         priority,
         seq: this.queueSeq++,
         label,
-        cancel: reject,
+        cancel: (error: Error) => {
+          signal?.removeEventListener('abort', abort);
+          reject(error);
+        },
         run: async () => {
+          signal?.removeEventListener('abort', abort);
           try {
+            signal?.throwIfAborted();
             await run();
             resolve();
           } catch (err) {
             reject(err as Error);
           }
         },
-      });
+      };
+      if (signal?.aborted) { reject(signal.reason); return; }
+      signal?.addEventListener('abort', abort, { once: true });
+      this.queue.push(task);
+      this.requestTick();
     });
   }
 
@@ -644,36 +853,33 @@ export class ConnectionRuntime {
     });
   }
 
-  /** Atomic write sequence: [optional RMW read] -> write -> read back. */
+  /** Atomic write sequence: [optional fresh RMW read] -> write response. */
   async writePoint(opts: {
     slave: SlaveDef;
     block: BlockDef;
     mapping: PointMapping;
     rawValue: number | boolean | string;
+    access?: 'rw' | 'wo';
+    guard?: () => void;
+    signal?: AbortSignal;
     pointId: string;
-    readBackRange: { start: number; length: number };
+    readBackRange?: { start: number; length: number };
   }): Promise<{ result: ResultKind; exceptionCode: number | null; readBack: RequestOutcome | null; writeSent: boolean }> {
     const key = blockKey(opts.slave.id, opts.block.id);
     const generation = this.targetVersions.get(key)?.generation;
-    const guard = () => this.requireCurrentTarget(key, generation);
+    const guard = () => { this.requireCurrentTarget(key, generation); opts.guard?.(); };
+    const beforeSend = () => { opts.signal?.throwIfAborted(); guard(); };
     let writeSent = false;
     const box: { outcome: RequestOutcome | null; readBack: RequestOutcome | null } = { outcome: null, readBack: null };
     await this.enqueue(PRIORITY.write, `write ${opts.pointId}`, async () => {
       const { slave, block, mapping } = opts;
-      this.requireCurrentTarget(key, generation);
-      const needsRmw = block.area === 3 && mapping.rawType !== 'Float32' && mapping.rawType !== 'Float64' && mapping.registerCount === 1 && (mapping.rawType === 'Bool' || mapping.rawType === 'BitField' || mapping.rawType === 'Int8' || mapping.rawType === 'UInt8');
+      beforeSend();
+      const partial = block.area === 3 && partialRegister(mapping);
+      const needsRmw = partial && opts.access !== 'wo';
       let baseMemory: RawMemory | null = null;
       if (needsRmw) {
         // Read latest register; never RMW from stale cache.
-        const read = await this.executeRequest(slave.unitId, { kind: 'read', fc: 0x03, address: block.start + mapping.offset, quantity: 1 }, { sourceKind: 'rmw-read', sourceId: opts.pointId, guard });
-        if (read.result === 'ok' && read.response && read.response.kind === 'registers') {
-          baseMemory = placeAt(read.response.registers, mapping.offset, mapping.registerCount);
-        } else {
-          box.outcome = read;
-          return;
-        }
-      } else if (block.area === 3 && mapping.registerCount > 1) {
-        const read = await this.executeRequest(slave.unitId, { kind: 'read', fc: 0x03, address: block.start + mapping.offset, quantity: mapping.registerCount }, { sourceKind: 'rmw-read', sourceId: opts.pointId, guard });
+        const read = await this.executeRequest(slave.unitId, { kind: 'read', fc: 0x03, address: block.start + mapping.offset, quantity: 1 }, { sourceKind: 'rmw-read', sourceId: opts.pointId, guard: beforeSend, signal: opts.signal });
         if (read.result === 'ok' && read.response && read.response.kind === 'registers') {
           baseMemory = placeAt(read.response.registers, mapping.offset, mapping.registerCount);
         } else {
@@ -682,44 +888,32 @@ export class ConnectionRuntime {
         }
       }
 
-      this.requireCurrentTarget(key, generation);
+      beforeSend();
+      const width = mappingWidth(block.area, mapping);
+      const scratch: RawMemory = { kind: 'registers', registers: new Uint16Array(mapping.offset + width) };
       let req: ModbusRequest;
       if (block.area === 1) {
         req = { kind: 'writeCoil', fc: 0x05, address: block.start + mapping.offset, value: opts.rawValue === true };
-      } else if (mapping.registerCount === 1 && (mapping.rawType === 'Bool' || mapping.rawType === 'BitField' || mapping.rawType === 'Int8' || mapping.rawType === 'UInt8' || mapping.rawType === 'Int16' || mapping.rawType === 'UInt16')) {
-        const base = baseMemory ?? this.cache.get(key)?.memory ?? { kind: 'registers', registers: new Uint16Array(1) };
+      } else if (partial && opts.access === 'wo') {
+        const mask = mapping.rawType === 'Bool' ? 1 << mapping.bitOffset : mapping.rawType === 'BitField' ? ((1 << mapping.bitWidth) - 1) << mapping.bitOffset : mapping.byteSelector === 'high' ? 0xff00 : 0xff;
+        const encoded = encodeRaw(scratch, mapping, opts.rawValue);
+        req = { kind: 'maskWrite', fc: 0x16, address: block.start + mapping.offset, andMask: ~mask & 0xffff, orMask: encoded.kind === 'registers' ? encoded.registers[mapping.offset]! & mask : 0 };
+      } else if (width === 1) {
+        const base = baseMemory ?? scratch;
         const merged = encodeRaw(base, mapping, opts.rawValue);
         const reg = merged.kind === 'registers' ? (merged.registers[mapping.offset] as number) : 0;
         req = { kind: 'writeRegister', fc: 0x06, address: block.start + mapping.offset, value: reg };
       } else {
-        const base = baseMemory ?? this.cache.get(key)?.memory ?? { kind: 'registers', registers: new Uint16Array(mapping.registerCount) };
+        const base = baseMemory ?? scratch;
         const merged = encodeRaw(base, mapping, opts.rawValue);
-        const regs = merged.kind === 'registers' ? Array.from(merged.registers.slice(mapping.offset, mapping.offset + mapping.registerCount)) : [];
+        const regs = merged.kind === 'registers' ? Array.from(merged.registers.slice(mapping.offset, mapping.offset + width)) : [];
         req = { kind: 'writeRegisters', fc: 0x10, address: block.start + mapping.offset, values: regs };
       }
 
       writeSent = true;
-      box.outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'write', sourceId: opts.pointId, guard });
-      // Any failed write may still have reached the device. Only an explicit
-      // exception proves refusal; otherwise read back without resending it.
-      if (box.outcome.result === 'exception') return;
-      this.requireCurrentTarget(key, generation);
-
-      // Read back: confirms the device value and refreshes every shared point.
-      const rb = await this.executeRequest(
-        slave.unitId,
-        block.area === 1 || block.area === 2
-          ? { kind: 'read', fc: block.area as ReadFC, address: opts.readBackRange.start, quantity: opts.readBackRange.length }
-          : { kind: 'read', fc: 0x03, address: opts.readBackRange.start, quantity: opts.readBackRange.length },
-        { sourceKind: 'readback', sourceId: opts.pointId, guard },
-      );
-      box.readBack = rb;
-      this.requireCurrentTarget(key, generation);
-      if (rb.result === 'ok' && rb.response) {
-        this.cache.applyReadResult(key, rb.response, rb.durationMs);
-        this.hooks.onChange();
-      }
-    });
+      box.outcome = await this.executeRequest(slave.unitId, req, { sourceKind: 'write', sourceId: opts.pointId, guard: beforeSend, signal: opts.signal });
+      guard();
+    }, opts.signal);
     return { result: box.outcome?.result ?? 'transport', exceptionCode: box.outcome?.exceptionCode ?? null, readBack: box.readBack, writeSent };
   }
 
@@ -756,29 +950,31 @@ export class ConnectionRuntime {
     };
     update('running', null);
     try {
-      // Block new scheduler work, but let the current poll or atomic write/read-back group finish.
-      while (active() && (this.busy || this.waiter || this.clock.now() < this.drainUntil)) {
+      // Block new scheduler work, but let the current poll or atomic RMW/write group finish.
+      while (active() && (this.busy || this.waiter)) {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
       if (!active()) return found;
       this.busy = true;
       ownsSlot = true;
       for (let unit = range.from; unit <= range.to; unit++) {
-        while (active() && this.clock.now() < this.drainUntil) await new Promise((resolve) => setTimeout(resolve, 5));
         if (!active()) break;
         update('running', unit);
         const outcome = await this.executeRequest(unit, { kind: 'read', fc: options.fc, address: options.start, quantity: 1 }, { sourceKind: 'scanner', sourceId: null, timeoutMs: options.timeoutMs, retries: options.retries, signal: controller.signal });
         checked++;
-        if (outcome.result === 'ok' || outcome.result === 'exception') {
+        if (receivedTargetResponse(outcome)) {
           found.push({ unitId: unit, responseMs: outcome.durationMs, exceptionCode: outcome.exceptionCode });
         }
         update(controller.signal.aborted ? 'stopping' : 'running', unit);
       }
+    } catch (error) {
+      if (active()) throw error;
     } finally {
       if (ownsSlot) this.busy = false;
       this.scanning = false;
       this.scanController = null;
       update(active() && checked === range.to - range.from + 1 ? 'completed' : 'stopped', null);
+      this.requestTick();
     }
     return found;
   }
@@ -805,5 +1001,7 @@ export function summarizeRequest(req: ModbusRequest): string {
       return `地址 ${req.address} ← ${req.value}`;
     case 'writeRegisters':
       return `地址 ${req.address} ← ${req.values.length} regs`;
+    case 'maskWrite':
+      return `地址 ${req.address} · AND ${req.andMask.toString(16)} · OR ${req.orMask.toString(16)}`;
   }
 }

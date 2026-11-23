@@ -1,6 +1,6 @@
 import { TemplateTree } from './components/template-tree';
 import { AboutScreen } from './screens/about';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Desktop20Regular,
   Pulse20Regular,
@@ -14,18 +14,18 @@ import {
   ChevronDown20Regular,
   ChevronRight20Regular,
   Search20Regular,
+  Code20Regular,
 } from '@fluentui/react-icons';
 import {
   useApp,
   useConnectionState,
   useConnectionStates,
-  useRecording,
   useSessions,
   useSnapshotReady,
   useWorkspace,
   type ModuleId,
 } from './store/app';
-import { Button, StatusDot, TextInput, Toasts, Checkbox, slaveStatus } from './components/ui';
+import { Button, SlaveStatusDot, StatusDot, TextInput, Toasts, Checkbox } from './components/ui';
 import { DevicesScreen } from './screens/devices';
 import { RealtimeScreen } from './screens/realtime';
 import { TrendScreen } from './screens/trend';
@@ -37,8 +37,13 @@ import { Overlays } from './screens/overlays';
 import { RuntimeWarnings } from './components/runtime-warnings';
 import { useTranslation } from './i18n';
 import { dayKey, fmtTime, todayKey } from './time';
+import { Workbench, type NavigationProps } from './workbench/workbench';
+import { useViewDocument, useViewWindow, usePortalRoot } from './workbench/view-context';
+import { useViewStore } from './store/app';
+import { CanvasScreen } from './screens/canvas';
 
-type RailLabelKey = `shell.rail.${'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates'}`;
+const ScriptsScreen = lazy(() => import('./screens/scripts').then(module => ({ default: module.ScriptsScreen })));
+type RailLabelKey = `shell.rail.${'devices' | 'realtime' | 'trend' | 'history' | 'comm' | 'templates' | 'scripts'}`;
 
 const MODULES: Array<{ id: ModuleId; labelKey: RailLabelKey; icon: React.ReactNode }> = [
   { id: 'devices', labelKey: 'shell.rail.devices', icon: <Desktop20Regular /> },
@@ -47,20 +52,13 @@ const MODULES: Array<{ id: ModuleId; labelKey: RailLabelKey; icon: React.ReactNo
   { id: 'history', labelKey: 'shell.rail.history', icon: <History20Regular /> },
   { id: 'comm', labelKey: 'shell.rail.comm', icon: <ArrowSync20Regular /> },
   { id: 'templates', labelKey: 'shell.rail.templates', icon: <Document20Regular /> },
+  { id: 'scripts', labelKey: 'shell.rail.scripts', icon: <Code20Regular /> },
 ];
 
 function TopBar() {
   const { t } = useTranslation();
   const workspaceName = useApp((s) => s.snapshot?.workspace.name ?? null);
   const online = useApp((s) => (s.snapshot ? Object.values(s.snapshot.connections).filter((c) => c.state === 'online').length : 0));
-  const rec = useApp((s) => s.snapshot?.recording ?? null);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  const elapsed = rec ? Math.max(0, Math.floor((now - new Date(rec.startedUtc).getTime()) / 1000)) : 0;
-  const p = (n: number) => String(n).padStart(2, '0');
   return (
     <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-line bg-surface px-[18px]">
       <div className="flex items-baseline gap-4 min-w-0">
@@ -71,27 +69,23 @@ function TopBar() {
       </div>
       <div className="flex items-center gap-6">
         {online > 0 ? <StatusDot tone="ok" label={t('shell.topbar.connectionsOnline', { count: online })} /> : <span className="text-xs text-ink2">{t('shell.topbar.noConnection')}</span>}
-        {rec ? (
-          <StatusDot tone="ok" label={t('shell.topbar.recording', { signals: rec.signalCount, elapsed: `${p(Math.floor(elapsed / 3600))}:${p(Math.floor(elapsed / 60) % 60)}:${p(elapsed % 60)}` })} />
-        ) : (
-          <span className="text-xs text-ink2">{t('shell.topbar.notRecording')}</span>
-        )}
       </div>
     </header>
   );
 }
 
-function AppRail() {
+function AppRail(props: NavigationProps) {
   const { t } = useTranslation();
-  const module = useApp((s) => s.module);
-  const setModule = useApp((s) => s.setModule);
+  const module = props.module;
+  const setModule = props.onActivate;
   return (
-    <nav className="flex w-[72px] shrink-0 flex-col items-center bg-app pt-4 pb-4 gap-1">
+    <nav className="flex w-[72px] shrink-0 flex-col overflow-y-auto items-center bg-app pt-4 pb-4 gap-1">
       {MODULES.map((m) => (
         <button
           key={m.id}
-          onClick={() => setModule(m.id)}
-          className={`focus-ring flex h-[68px] w-[52px] cursor-pointer flex-col items-center justify-center gap-1 rounded-ctl text-[11px] ${
+          title="Ctrl+单击打开新标签页"
+          onClick={(e) => e.ctrlKey ? props.onNew(m.id) : setModule(m.id)}
+          className={`focus-ring flex h-[60px] w-[52px] cursor-pointer flex-col items-center justify-center gap-1 rounded-ctl text-[11px] ${
             module === m.id ? 'bg-accentsoft text-accent' : 'text-ink2 hover:bg-surface2'
           }`}
         >
@@ -99,17 +93,18 @@ function AppRail() {
           {t(m.labelKey)}
         </button>
       ))}
+      <button onClick={e => e.ctrlKey ? props.onNew('canvas') : setModule('canvas')} className={`focus-ring flex h-[60px] w-[52px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-ctl text-[11px] ${module === 'canvas' ? 'bg-accentsoft text-accent' : 'text-ink2 hover:bg-surface2'}`}><Desktop20Regular />组态画布</button>
       <div className="flex-1" />
       <button
         onClick={() => setModule('settings')}
-        className={`focus-ring flex h-[68px] w-[52px] cursor-pointer flex-col items-center justify-center gap-1 rounded-ctl text-[11px] ${
+        className={`focus-ring flex h-[60px] w-[52px] cursor-pointer flex-col items-center justify-center gap-1 rounded-ctl text-[11px] ${
           module === 'settings' ? 'bg-accentsoft text-accent' : 'text-ink2 hover:bg-surface2'
         }`}
       >
         <Settings20Regular />
         {t('shell.rail.settings')}
       </button>
-      <button onClick={() => setModule('about')} className={`focus-ring flex h-[68px] w-[52px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-ctl text-[11px] ${module === 'about' ? 'bg-accentsoft text-accent' : 'text-ink2 hover:bg-surface2'}`}>
+      <button onClick={() => setModule('about')} className={`focus-ring flex h-[60px] w-[52px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-ctl text-[11px] ${module === 'about' ? 'bg-accentsoft text-accent' : 'text-ink2 hover:bg-surface2'}`}>
         <Info20Regular />{t('shell.rail.about')}
       </button>
     </nav>
@@ -154,7 +149,6 @@ function SlaveCard(props: { slaveId: string; showBlocks: boolean; selectedSlave?
   const workspace = useWorkspace();
   const slave = workspace?.slaves.find((s) => s.id === props.slaveId);
   const template = workspace?.templates.find((t) => t.id === slave?.templateId);
-  const connState = useConnectionState(slave?.connectionId);
   const [open, setOpen] = useState(true);
   if (!slave) return null;
   return (
@@ -164,7 +158,7 @@ function SlaveCard(props: { slaveId: string; showBlocks: boolean; selectedSlave?
           {open ? <ChevronDown20Regular className="shrink-0" /> : <ChevronRight20Regular className="shrink-0" />}
           <span className="truncate">{slave.name}</span>
         </span>
-        <StatusDot {...slaveStatus(slave.enabled, connState)} />
+        <SlaveStatusDot slave={slave} />
       </button>
       <div className="ml-5 mt-0.5 text-xs text-ink2">{t('shell.slave.meta', { unitId: slave.unitId, name: template?.name ?? t('shell.slave.unboundTemplate') })}</div>
       {open && props.showBlocks && template ? (
@@ -273,7 +267,6 @@ function RealtimeSidebar() {
 function TrendSidebar() {
   const { t } = useTranslation();
   const workspace = useWorkspace();
-  const recording = useRecording();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
   const openOverlay = useApp((s) => s.openOverlay);
@@ -293,8 +286,7 @@ function TrendSidebar() {
             className={`focus-ring cursor-pointer rounded-ctl px-3 py-2.5 text-left ${selection.groupId === g.id ? 'bg-accentsoft' : 'bg-surface hover:bg-surface2'}`}
           >
             <div className="text-sm font-medium">{g.name}</div>
-            <div className="text-xs text-ink2 mt-0.5">{t('shell.trend.signalCount', { count: g.signals.length })}{recording?.groupId === g.id ? t('shell.trend.suffixRecording') : recording ? t('shell.trend.suffixUnselected') : ''}</div>
-            {recording?.groupId === g.id ? <StatusDot tone="ok" label={t('shell.trend.current')} className="mt-1" /> : null}
+            <div className="text-xs text-ink2 mt-0.5">{t('shell.trend.signalCount', { count: g.signals.length })}</div>
           </button>
         ))}
       </div>
@@ -379,7 +371,7 @@ export function HistorySidebar() {
                 <div className="text-sm font-medium">{s.groupName}</div>
                 <div className="text-xs text-ink2 mt-0.5 mono">{fmtTime(s.startUtc)} – {s.endUtc ? fmtTime(s.endUtc) : '…'}</div>
                 <div className="text-xs text-ink2 mt-0.5">{t('shell.sidebar.sessionStats', { signals: s.signalCount, samples: s.sampleCount.toLocaleString() })}</div>
-                <StatusDot tone={s.status === 'recording' ? 'ok' : 'ok'} label={s.status === 'recording' ? t('shell.history.recording') : t('shell.history.completed')} className="mt-1" />
+                <StatusDot tone={s.status === 'recording' ? 'warn' : 'ok'} label={s.status === 'recording' ? t('shell.history.incomplete') : t('shell.history.completed')} className="mt-1" />
               </button>
             ))}
           </div>
@@ -398,6 +390,7 @@ export function HistorySidebar() {
 }
 
 function CommSidebar() {
+  const viewStore = useViewStore();
   const { t } = useTranslation();
   const workspace = useWorkspace();
   const connStates = useConnectionStates();
@@ -405,8 +398,8 @@ function CommSidebar() {
   const selection = useApp((s) => s.selection);
   const slaveFilter = useApp(s => s.commSlaveFilter);
   const resultFilter = useApp(s => s.commResultFilter);
-  const setSlaveFilter = (filter: Record<string, boolean>) => useApp.setState({ commSlaveFilter: filter });
-  const setResultFilter = (filter: typeof resultFilter) => useApp.setState({ commResultFilter: filter });
+  const setSlaveFilter = (filter: Record<string, boolean>) => viewStore.setState({ commSlaveFilter: filter });
+  const setResultFilter = (filter: typeof resultFilter) => viewStore.setState({ commResultFilter: filter });
   return (
     <SidebarShell title={t('shell.sidebar.title.comm')}>
       <div className="mb-2 text-xs text-ink2">{t('shell.comm.view')}</div>
@@ -446,6 +439,7 @@ function CommSidebar() {
 }
 
 export function TemplatesSidebar() {
+  const viewStore = useViewStore();
   const { t } = useTranslation();
   const workspace = useWorkspace();
   const select = useApp((s) => s.select);
@@ -468,8 +462,8 @@ export function TemplatesSidebar() {
         <Add20Regular /> {t('shell.templates.newTemplate')}
       </Button>
       <TemplateTree templates={workspace?.templates ?? []} templateId={selection.templateId ?? workspace?.templates[0]?.id ?? null} blockId={selection.templateEditing ? selection.editBlockId : null}
-        onTemplate={id=>{useApp.getState().closeOverlay();select({templateId:id,templateEditing:false,editBlockId:null});}}
-        onBlock={(templateId,blockId)=>{useApp.getState().closeOverlay();select({templateId,templateEditing:true,editBlockId:blockId});}}/>
+        onTemplate={id=>{viewStore.getState().closeOverlay();select({templateId:id,templateEditing:false,editBlockId:null});}}
+        onBlock={(templateId,blockId)=>{viewStore.getState().closeOverlay();select({templateId,templateEditing:true,editBlockId:blockId});}}/>
       <div className="mt-5 mb-2 text-xs text-ink2">{t('shell.templates.operations')}</div>
       <div className="flex flex-col gap-1.5 text-xs text-accent">
         <button className="focus-ring cursor-pointer text-left hover:underline" onClick={() => openOverlay({ kind: 'screen', id: 'import-registers', templateId: selection.templateId ?? workspace?.templates[0]?.id ?? '' })}>{t('shell.templates.importRegisters')}</button>
@@ -507,12 +501,14 @@ const SETTINGS_SECTIONS = [
   { id: 'workspace', key: 'shell.settings.section.workspace' },
   { id: 'display', key: 'shell.settings.section.display' },
   { id: 'importCompat', key: 'shell.settings.section.importCompat' },
-  { id: 'recordingStorage', key: 'shell.settings.section.recordingStorage' },
+  { id: 'historyStorage', key: 'shell.settings.section.historyStorage' },
   { id: 'writeSafety', key: 'shell.settings.section.writeSafety' },
   { id: 'log', key: 'shell.settings.section.log' },
 ] as const;
 
 function SettingsSidebar() {
+  const viewDocument = useViewDocument();
+  const portalRoot = usePortalRoot();
   const { t } = useTranslation();
   const select = useApp((s) => s.select);
   const selection = useApp((s) => s.selection);
@@ -523,7 +519,7 @@ function SettingsSidebar() {
     <SidebarShell title={t('shell.sidebar.title.settings')}>
       <div className="flex flex-col gap-1">
         {SETTINGS_SECTIONS.map((it) => (
-          <button key={it.id} className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${active === it.id ? 'bg-accentsoft text-accent font-medium' : 'hover:bg-surface2'}`} onClick={() => { setActive(it.id); document.getElementById(`settings-${it.id}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }); }}>
+          <button key={it.id} className={`focus-ring cursor-pointer rounded-ctl px-3 py-2 text-left text-sm ${active === it.id ? 'bg-accentsoft text-accent font-medium' : 'hover:bg-surface2'}`} onClick={() => { setActive(it.id); (portalRoot ?? viewDocument).querySelector(`[id="settings-${it.id}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }); }}>
             {t(it.key)}
           </button>
         ))}
@@ -533,6 +529,8 @@ function SettingsSidebar() {
 }
 
 function Sidebar() {
+  const viewWindow = useViewWindow();
+  const sidebarRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
   const module = useApp((s) => s.module);
   const width = useApp((s) => s.sidebarWidth);
@@ -541,23 +539,23 @@ function Sidebar() {
   useEffect(() => {
     const move = (e: MouseEvent) => {
       if (!dragging.current) return;
-      setWidth(e.clientX - 72);
+      setWidth(e.clientX - (sidebarRef.current?.getBoundingClientRect().left ?? 0));
     };
     const up = () => {
       dragging.current = false;
     };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
+    viewWindow.addEventListener('mousemove', move);
+    viewWindow.addEventListener('mouseup', up);
     return () => {
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', up);
+      viewWindow.removeEventListener('mousemove', move);
+      viewWindow.removeEventListener('mouseup', up);
     };
-  }, [setWidth]);
-  if (module === 'about') return null;
+  }, [setWidth, viewWindow]);
+  if (module === 'about' || module === 'canvas' || module === 'scripts') return null;
   const body =
     module === 'devices' ? <DevicesSidebar /> : module === 'realtime' ? <RealtimeSidebar /> : module === 'trend' ? <TrendSidebar /> : module === 'history' ? <HistorySidebar /> : module === 'comm' ? <CommSidebar /> : module === 'templates' ? <TemplatesSidebar /> : <SettingsSidebar />;
   return (
-    <div className="relative shrink-0" style={{ width }}>
+    <div ref={sidebarRef} className="relative shrink-0 overflow-y-auto" style={{ width }}>
       {body}
       <div
         className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize hover:bg-accent/30"
@@ -573,6 +571,8 @@ function Sidebar() {
 
 function Main() {
   const module = useApp((s) => s.module);
+  if (module === 'canvas') return <CanvasScreen />;
+  if (module === 'scripts') return <Suspense fallback={<div className="p-6 text-sm text-ink2">正在加载积木编辑器…</div>}><ScriptsScreen /></Suspense>;
   return (
     <main className="min-w-0 flex-1 overflow-y-auto bg-app">
       <div className="px-7 py-6 min-w-0">
@@ -592,16 +592,9 @@ export function App() {
   const command = useApp(s => s.command);
   useEffect(() => { if (ready && bootPending) void command({type:'update.confirmBoot'}); }, [ready,bootPending,command]);
   if (!ready) return <div className="flex h-full items-center justify-center text-ink2">{t('shell.loading')}</div>;
-  return (
-    <div className="flex h-full flex-col">
-      <TopBar />
-      <div className="flex min-h-0 flex-1">
-        <AppRail />
-        <Sidebar />
-        <Main />
-      </div>
-      <Overlays />
-      <Toasts />
-    </div>
-  );
+  return <><Workbench navigation={AppRail} header={TopBar} page={ViewBody} /><Overlays /><Toasts /></>;
+}
+
+function ViewBody() {
+  return <><div className="flex min-h-0 flex-1"><Sidebar /><Main /></div><Overlays /><Toasts /></>;
 }

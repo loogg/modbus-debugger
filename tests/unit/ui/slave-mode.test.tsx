@@ -18,7 +18,7 @@ beforeEach(() => {
     snapshot: { revision: 1, workspace: slaveWorkspace(), workspacePath: null, dirty: false,
       connections: { server: { state: 'offline', detail: null, lastResponseUtc: null, clientCount: 0 } },
       blocks: { 's1::b3': { key: 's1::b3', slaveId: 's1', blockId: 'b3', blockName: '区 3', area: 3, start: 0, length: 16, periodMs: 20, status: 'ok', exceptionCode: null, lastUpdateUtc: '2026-10-21T00:00:00Z', lastDurationMs: 0, revision: 1, registers: Array(16).fill(0) as number[] } },
-      points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, recording: null, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '' },
+      points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '' },
     command: async <T,>(command: Command): Promise<CommandResult<T>> => { calls.push(command); return { ok: true, value: (command.type === 'serial.list' ? [] : null) as T }; },
   });
 });

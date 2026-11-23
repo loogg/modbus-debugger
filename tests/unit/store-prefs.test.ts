@@ -41,7 +41,6 @@ function snapshot(revision: number): AppSnapshot {
     parseEvents: [],
     diagRev: 0,
     health: {},
-    recording: null,
     sessions: [],
     warnings: [],
     prefs: { ...DEFAULT_PREFS },
@@ -111,9 +110,9 @@ describe('store applyDelta display prefs', () => {
     expect(getDisplayTimeZone()).toBeUndefined();
   });
 
-  it.each(['timeout', 'transport', 'unexpected'] as const)('ends pending write as unknown when read-back returns %s', (result) => {
+  it.each(['timeout', 'transport', 'unexpected'] as const)('retains legacy read-back delta handling for %s', (result) => {
     useApp.getState().applyDelta({ revision: 2, transactions: [tx(1, { sourceKind: 'write', sourceId: 'p1', result: 'ok' })] });
-    expect(useApp.getState().writeStates.p1?.phase).toBe('writing');
+    expect(useApp.getState().writeStates.p1?.phase).toBe('confirmed');
     useApp.getState().applyDelta({ revision: 3, transactions: [tx(2, { sourceKind: 'readback', sourceId: 'p1', result })] });
     expect(useApp.getState().writeStates.p1?.phase).toBe('unknown');
   });

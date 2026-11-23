@@ -15,7 +15,7 @@ it('shows the complete String memory beyond four registers without inventing a n
     overlay: { kind: 'drawer', id: 'inspector', pointId: 'UTF8-holding' },
     snapshot: { revision: 1, workspace: loopbackWorkspace({ tcpPort: 15030, transports: ['tcp'] }), workspacePath: null, dirty: false,
       connections: {}, blocks: { key: { key: 'tcp-master-1::holding', slaveId: 'tcp-master-1', blockId: 'holding', blockName: 'holding', area: 3, start: 100, length: 125, periodMs: 800, status: 'ok', exceptionCode: null, lastUpdateUtc: '2026-10-21T00:00:00Z', lastDurationMs: 1, revision: 1, registers } },
-      points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, recording: null, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '' },
+      points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '' },
   });
   render(<Overlays />);
   expect(screen.getByText('0x494A')).toBeInTheDocument();

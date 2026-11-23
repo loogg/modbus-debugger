@@ -19,8 +19,7 @@ beforeEach(() => {
       timeoutMs: 500, retries: 1, reconnect: 'manual', interFrameMs: 0, rtsControl: 'none', logLevel: 'info',
     }] },
     workspacePath: null, dirty: false, connections: { c1: { state: 'online', detail: null, lastResponseUtc: null } },
-    blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, recording: null,
-    sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
+    blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
   };
   useApp.setState({ snapshot, overlay: null, module: 'devices' });
 });

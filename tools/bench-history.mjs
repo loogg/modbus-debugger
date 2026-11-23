@@ -1,14 +1,15 @@
 /**
- * Reproducible sql.js HistoryStore capacity probe.
+ * Legacy SQLite history read-capacity probe with generated fixtures.
  *
  * Run: node --expose-gc node_modules/vite-node/vite-node.mjs tools/bench-history.mjs
- * Optional: --rows=100000,500000,1000000 --batch=1000
+ * Optional: --rows=100000,500000,1000000
  * Each run writes only to a new directory under out/test-temp/.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
+import { writeLegacyHistoryFixture } from './legacy-history-fixture.ts';
 import { HistoryStore } from '../src/main/services/history.ts';
 import { WorkspaceService } from '../src/main/services/workspace.ts';
 import { RuntimeManager } from '../src/main/runtime/manager.ts';
@@ -18,11 +19,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scratchRoot = path.join(root, 'out', 'test-temp');
 const option = (name, fallback) => process.argv.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1) ?? fallback;
 const checkpoints = option('--rows', '100000,500000,1000000').split(',').map(Number);
-const batchSize = Number(option('--batch', '1000'));
 if (!checkpoints.length || checkpoints.some((n, i) => !Number.isSafeInteger(n) || n <= 0 || (i > 0 && n <= checkpoints[i - 1]))) {
   throw new Error('--rows must be an increasing comma-separated list of positive integers');
 }
-if (!Number.isSafeInteger(batchSize) || batchSize <= 0) throw new Error('--batch must be a positive integer');
 fs.mkdirSync(scratchRoot, { recursive: true });
 const runDir = fs.mkdtempSync(path.join(scratchRoot, 'history-capacity-'));
 const dbPath = path.join(runDir, 'history.db');
@@ -44,49 +43,28 @@ const result = {
   platform: `${process.platform}/${process.arch}`,
   timestampUtc: new Date().toISOString(),
   runDir,
-  batchSize,
   checkpoints: [],
 };
 let store;
 try {
-  const openedAt = performance.now();
-  store = await HistoryStore.open(dbPath);
-  result.openEmptyMs = elapsed(openedAt);
-  store.createSession('session-1', 'group-1', 'Capacity probe', schema);
-  let inserted = 0;
+  const inserted = checkpoints.at(-1);
   for (const target of checkpoints) {
-    const insertStartedAt = performance.now();
-    while (inserted < target) {
-      const count = Math.min(batchSize, target - inserted);
-      const rows = Array.from({ length: count }, (_, index) => ({
-        signalId: 'signal-1',
-        tMs: (inserted + index) * 1000,
-        value: 20 + ((inserted + index) % 1000) / 10,
-      }));
-      store.insertSamples('session-1', rows);
-      inserted += count;
+    const fixtureStartedAt = performance.now();
+    function* samples() {
+      for (let i = 0; i < target; i++) yield { signalId: 'signal-1', tMs: i * 1000, value: 20 + (i % 1000) / 10 };
     }
-    const insertMs = elapsed(insertStartedAt);
+    await writeLegacyHistoryFixture(dbPath, [{ id: 'session-1', groupId: 'group-1', groupName: 'Capacity probe', schema,
+      startUtc: '2026-11-01T00:00:00.000Z', endUtc: new Date(Date.UTC(2026, 10, 1) + target * 1000).toISOString(), samples: samples() }]);
     global.gc?.();
-    const beforeFlush = memory();
-    const flushedAt = performance.now();
-    store.flush();
-    const flushMs = elapsed(flushedAt);
-    const afterFlush = memory();
-    const sizeBytes = fs.statSync(dbPath).size;
-    const entry = { rows: inserted, insertMs, flushMs, sizeBytes, beforeFlush, afterFlush };
+    const entry = { rows: target, fixturePreparationMs: elapsed(fixtureStartedAt), sizeBytes: fs.statSync(dbPath).size, memory: memory() };
     result.checkpoints.push(entry);
     process.stdout.write(`${JSON.stringify(entry)}\n`);
   }
-  store.endSession('session-1');
-  const closeStartedAt = performance.now();
-  store.close();
-  store = undefined;
-  result.closeMs = elapsed(closeStartedAt);
   global.gc?.();
   const beforeReopen = memory();
   const reopenedAt = performance.now();
   const reopened = await HistoryStore.open(dbPath);
+  store = reopened;
   result.reopenMs = elapsed(reopenedAt);
   result.reopenMemory = { before: beforeReopen, after: memory() };
   result.persistedSampleCount = reopened.getSession('session-1')?.sampleCount;

@@ -15,7 +15,7 @@ it('defaults to the first slave only without a selection and preserves an explic
     snapshot: {
       revision: 1, workspace: templateWorkspace(), workspacePath: null, dirty: false,
       connections: {}, blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0,
-      health: {}, recording: null, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
+      health: {}, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
     },
   });
   render(<DevicesScreen />);

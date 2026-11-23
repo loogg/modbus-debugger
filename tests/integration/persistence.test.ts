@@ -5,6 +5,7 @@ import { createScratch } from '../../tools/test-paths.mjs';
 import path from 'node:path';
 import { WorkspaceService } from '../../src/main/services/workspace';
 import { HistoryStore, type TransactionMetadataRow } from '../../src/main/services/history';
+import { writeLegacyHistoryFixture } from '../../tools/legacy-history-fixture';
 import { emptyWorkspace } from '../../src/domain/model';
 import { templateWorkspace } from '../support/template-workspace';
 
@@ -18,12 +19,14 @@ describe('Workspace persistence', () => {
     const file = path.join(dir, 'precision.workspace.json');
     const workspace = templateWorkspace();
     workspace.templates[0]!.points[0]!.decimalPlaces = 2;
+    workspace.templates[0]!.points[0]!.access = 'wo';
     const writer = new WorkspaceService(dir);
     writer.adopt(workspace, file);
     expect(writer.saveTo().ok).toBe(true);
     const reader = new WorkspaceService(dir);
     expect(reader.loadFrom(file).ok).toBe(true);
     expect(reader.current.templates[0]?.points[0]?.decimalPlaces).toBe(2);
+    expect(reader.current.templates[0]?.points[0]?.access).toBe('wo');
   });
 
   it('saves atomically and reloads', () => {
@@ -86,21 +89,21 @@ describe('Workspace persistence', () => {
 });
 
 describe('History store', () => {
-  it('commits metadata with optional frames once per trace without retroactive Raw capture', async () => {
-    const db = await HistoryStore.open(path.join(tmpDir(), 'history.db'));
-    db.createSession('meta', 'g', 'g', []);
+  it('reads legacy transaction metadata alongside optional raw frames', async () => {
+    const dbPath = path.join(tmpDir(), 'history.db');
     const row: TransactionMetadataRow = {
       traceId: 't1', connectionId: 'c1', slaveId: 's1', unitId: 1,
       sourceKind: 'temporary-read', sourceId: null, functionCode: 3, result: 'ok',
       tMs: 5, startUtc: '2026-09-25T00:00:00.000Z', durationMs: 0,
       exceptionCode: null, mbapTransactionId: 12, summary: 'FC03 read',
     };
-    const frames = { requestAduHex: '0103', responseAduHex: '010302', requestPduHex: '03', responsePduHex: '0302' };
+    await writeLegacyHistoryFixture(dbPath, [{ id: 'meta', groupId: 'g', groupName: 'g', schema: [],
+      transactions: [row, { ...row, traceId: 't2', tMs: 6 }], rawComm: [
+        { tMs: 5, traceId: 't1', direction: 'tx', hex: '0103', pduHex: '03' },
+        { tMs: 5, traceId: 't1', direction: 'rx', hex: '010302', pduHex: '0302' },
+      ] }]);
+    const db = await HistoryStore.open(dbPath);
     try {
-      db.insertTransaction('meta', row, frames);
-      db.insertTransaction('meta', row, frames);
-      db.insertTransaction('meta', { ...row, traceId: 't2', tMs: 6 }, null);
-      db.insertTransaction('meta', { ...row, traceId: 't2', tMs: 6 }, frames);
       expect(db.readTransactionMetadata('meta').map(tx => tx.traceId)).toEqual(['t1', 't2']);
       expect(db.readRawComm('meta').map(frame => [frame.traceId, frame.direction, frame.pduHex])).toEqual([
         ['t1', 'tx', '03'], ['t1', 'rx', '0302'],
@@ -108,13 +111,12 @@ describe('History store', () => {
     } finally { db.close(); }
   });
 
-  it('keeps Tx before Rx when both raw frames share a millisecond, including after reopen', async () => {
+  it('keeps Tx before Rx when both legacy raw frames share a millisecond, including after reopen', async () => {
     const dbPath = path.join(tmpDir(), 'history.db');
+    await writeLegacyHistoryFixture(dbPath, [{ id: 'raw-order', groupId: 'g', groupName: 'raw', schema: [], rawComm: [
+      { tMs: 0, direction: 'tx', hex: '0103' }, { tMs: 0, direction: 'rx', hex: '010302' }, { tMs: 1, direction: 'tx', hex: '0104' },
+    ] }]);
     const db = await HistoryStore.open(dbPath);
-    db.createSession('raw-order', 'g', 'raw', []);
-    db.insertRawComm('raw-order', 0, 'tx', '0103');
-    db.insertRawComm('raw-order', 0, 'rx', '010302');
-    db.insertRawComm('raw-order', 1, 'tx', '0104');
     db.close();
     const reopened = await HistoryStore.open(dbPath);
     try {
@@ -135,7 +137,6 @@ describe('History store', () => {
     legacy.run("INSERT INTO raw_comm VALUES ('old-session', 7, 'tx', '0103')");
     fs.writeFileSync(dbPath, Buffer.from(legacy.export()));
     legacy.close();
-
     const store = await HistoryStore.open(dbPath);
     try {
       expect(store.readRawComm('old-session')).toEqual([{ tMs: 7, direction: 'tx', hex: '0103', pduHex: null, traceId: null }]);
@@ -156,57 +157,62 @@ describe('History store', () => {
     } finally { db.close(); }
   });
 
-  it('records sessions with schema snapshot, samples and events', async () => {
-    const dir = tmpDir();
-    const db = await HistoryStore.open(path.join(dir, 'history.db'));
-    db.createSession('s1', 'g1', 'group', [
-      { signalId: 'sig1', pointId: 'p1', pointName: 'speed', connectionName: 'c', slaveName: 's', blockName: 'b', rawType: 'Int16', unit: 'rpm', scale: 1, offset: 0, enumMap: {}, recordMode: 'samples' },
+  it('reads persisted session schemas, full precision samples and events', async () => {
+    const dbPath = path.join(tmpDir(), 'history.db');
+    await writeLegacyHistoryFixture(dbPath, [{ id: 's1', groupId: 'g1', groupName: 'group', schema: [
+      { signalId: 'sig1', pointId: 'p1', pointName: 'speed', connectionName: 'c', slaveName: 's', blockName: 'b', rawType: 'Float64', unit: 'rpm', scale: 1, offset: 0, decimalPlaces: 2, enumMap: {}, recordMode: 'samples' },
       { signalId: 'sig2', pointId: 'p2', pointName: 'mode', connectionName: 'c', slaveName: 's', blockName: 'b', rawType: 'BitField', unit: '', scale: 1, offset: 0, enumMap: { '0': 'pos' }, recordMode: 'events' },
-    ]);
-    db.insertSamples('s1', [{ signalId: 'sig1', tMs: 0, value: 1 }, { signalId: 'sig1', tMs: 100, value: 2 }]);
-    db.insertEvents('s1', [{ signalId: 'sig2', tMs: 50, kind: 'enum', value: 'pos' }]);
-    db.endSession('s1');
-    const detail = db.getSession('s1');
-    expect(detail?.schema.length).toBe(2);
-    expect(detail?.status).toBe('completed');
-    expect(db.readSamples('s1').length).toBe(2);
-    expect(db.readEvents('s1')[0]?.value).toBe('pos');
-    db.close();
+    ], samples: [{ signalId: 'sig1', tMs: 0, value: 1.234567890123 }, { signalId: 'sig1', tMs: 100, value: 2.345678901234 }],
+    events: [{ signalId: 'sig2', tMs: 50, kind: 'enum', value: 'pos' }] }]);
+    const db = await HistoryStore.open(dbPath);
+    try {
+      expect(db.listSessions()[0]).toMatchObject({ status: 'completed', sampleCount: 2, eventCount: 1 });
+      expect(db.getSession('s1')?.schema[0]).toMatchObject({ pointName: 'speed', decimalPlaces: 2 });
+      expect(db.readSamples('s1').map(row => row.value)).toEqual([1.234567890123, 2.345678901234]);
+      expect(db.readEvents('s1')[0]?.value).toBe('pos');
+    } finally { db.close(); }
   });
 
-  it('schema snapshot survives later template changes', async () => {
+  it('preserves old session definitions when the current workspace changes', async () => {
     const dir = tmpDir();
+    const workspace = new WorkspaceService(dir);
+    const fixture = templateWorkspace();
     const dbPath = path.join(dir, 'history.db');
+    await writeLegacyHistoryFixture(dbPath, [{ id: 's2', groupId: 'g', groupName: 'g', schema: [
+      { signalId: 'a', pointId: 'p', pointName: 'old-name', connectionName: '', slaveName: '', blockName: '', rawType: 'UInt16', unit: '', scale: 1, offset: 0, enumMap: {}, recordMode: 'samples' },
+    ] }]);
+    workspace.set(fixture);
+    fixture.templates[0]!.points[0]!.name = 'new-name';
+    workspace.set(fixture);
     const db = await HistoryStore.open(dbPath);
-    db.createSession('s2', 'g', 'g', [{ signalId: 'a', pointId: 'p', pointName: 'old-name', connectionName: '', slaveName: '', blockName: '', rawType: 'UInt16', unit: '', scale: 1, offset: 0, enumMap: {}, recordMode: 'samples' }]);
-    db.close();
-    const db2 = await HistoryStore.open(dbPath);
-    expect(db2.getSession('s2')?.schema[0]?.pointName).toBe('old-name');
-    db2.close();
+    try { expect(db.getSession('s2')?.schema[0]?.pointName).toBe('old-name'); }
+    finally { db.close(); }
   });
 
   it('reads persisted samples in timestamp order and filters by signal', async () => {
-    const dir = tmpDir();
-    const dbPath = path.join(dir, 'history.db');
+    const dbPath = path.join(tmpDir(), 'history.db');
+    await writeLegacyHistoryFixture(dbPath, [{ id: 's3', groupId: 'g', groupName: 'g', schema: [], samples: [
+      { signalId: 'a', tMs: 300, value: 3 }, { signalId: 'b', tMs: 200, value: 2 }, { signalId: 'a', tMs: 100, value: 1 },
+    ] }]);
     const db = await HistoryStore.open(dbPath);
-    db.createSession('s3', 'g', 'g', []);
-    db.insertSamples('s3', [
-      { signalId: 'a', tMs: 30, value: 3 },
-      { signalId: 'b', tMs: 10, value: 1 },
-      { signalId: 'a', tMs: 20, value: 2 },
-    ]);
-    db.close();
+    try {
+      expect(db.readSamples('s3').map(row => row.tMs)).toEqual([100, 200, 300]);
+      expect(db.readSamples('s3', 'a').map(row => row.value)).toEqual([1, 3]);
+    } finally { db.close(); }
+  });
 
+  it('adds notes atomically to unfinished legacy sessions and preserves them after reopening', async () => {
+    const dbPath = path.join(tmpDir(), 'history.db');
+    await writeLegacyHistoryFixture(dbPath, [{ id: 'unfinished', groupId: 'g', groupName: 'old', status: 'recording', schema: [] }]);
+    const db = await HistoryStore.open(dbPath);
+    db.addNote('unfinished', 42, 'quoted "note", line');
+    expect(() => db.addNote('missing', 42, 'invalid')).toThrow('session not found');
+    expect(db.readEvents('missing')).toEqual([]);
+    db.close();
     const reopened = await HistoryStore.open(dbPath);
-    expect(reopened.readSamples('s3')).toEqual([
-      { signalId: 'b', tMs: 10, value: 1 },
-      { signalId: 'a', tMs: 20, value: 2 },
-      { signalId: 'a', tMs: 30, value: 3 },
-    ]);
-    expect(reopened.readSamples('s3', 'a')).toEqual([
-      { signalId: 'a', tMs: 20, value: 2 },
-      { signalId: 'a', tMs: 30, value: 3 },
-    ]);
-    reopened.close();
+    try {
+      expect(reopened.getSession('unfinished')).toMatchObject({ status: 'recording', eventCount: 1 });
+      expect(reopened.readEvents('unfinished')[0]).toMatchObject({ tMs: 42, kind: 'marker', value: 'quoted "note", line' });
+    } finally { reopened.close(); }
   });
 });

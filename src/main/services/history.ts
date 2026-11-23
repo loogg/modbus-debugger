@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import initSqlJs, { type Database } from 'sql.js';
-import type { ResultKind, SessionSummary, SourceKind, TransactionRecord } from '../../shared/contracts';
+import type { ResultKind, SessionSummary, SourceKind } from '../../shared/contracts';
 
 export type { SessionSummary } from '../../shared/contracts';
 
@@ -64,8 +64,6 @@ export interface RawCommRow {
   pduHex: string | null;
   traceId: string | null;
 }
-
-type RawFrames = Pick<TransactionRecord, 'requestAduHex' | 'responseAduHex' | 'requestPduHex' | 'responsePduHex'>;
 
 const TEN_GB = 10 * 1024 * 1024 * 1024;
 
@@ -205,64 +203,12 @@ export class HistoryStore {
 
   /* ---------------- sessions ---------------- */
 
-  createSession(id: string, groupId: string, groupName: string, schema: SessionSignalSchema[]): void {
-    this.db.run('INSERT INTO sessions (id, group_id, group_name, start_utc, status, schema_json) VALUES (?, ?, ?, ?, ?, ?)', [
-      id,
-      groupId,
-      groupName,
-      new Date().toISOString(),
-      'recording',
-      JSON.stringify(schema),
-    ]);
-    this.scheduleFlush();
-  }
-
-  endSession(id: string): void {
-    this.db.run("UPDATE sessions SET status='completed', end_utc=? WHERE id=?", [new Date().toISOString(), id]);
-    this.scheduleFlush();
-  }
-
-  insertSamples(sessionId: string, rows: SampleRow[]): void {
-    if (!rows.length) return;
-    this.db.run('BEGIN');
-    for (const r of rows) this.db.run('INSERT INTO samples (session_id, signal_id, t_ms, value) VALUES (?, ?, ?, ?)', [sessionId, r.signalId, r.tMs, r.value]);
-    this.db.run('UPDATE sessions SET sample_count = sample_count + ? WHERE id = ?', [rows.length, sessionId]);
-    this.db.run('COMMIT');
-    this.scheduleFlush();
-  }
-
-  insertEvents(sessionId: string, rows: EventRow[]): void {
-    if (!rows.length) return;
-    this.db.run('BEGIN');
-    for (const r of rows) this.db.run('INSERT INTO events (session_id, signal_id, t_ms, kind, value) VALUES (?, ?, ?, ?, ?)', [sessionId, r.signalId, r.tMs, r.kind, r.value]);
-    this.db.run('UPDATE sessions SET event_count = event_count + ? WHERE id = ?', [rows.length, sessionId]);
-    this.db.run('COMMIT');
-    this.scheduleFlush();
-  }
-
-  insertRawComm(sessionId: string, tMs: number, direction: string, hex: string, pduHex: string | null = null, traceId: string | null = null): void {
-    this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex, pdu_hex, trace_id) VALUES (?, ?, ?, ?, ?, ?)', [sessionId, tMs, direction, hex, pduHex, traceId]);
-    this.scheduleFlush();
-  }
-
-  /** Metadata and optional Raw frames commit together, so a retry cannot duplicate a frame. */
-  insertTransaction(sessionId: string, row: TransactionMetadataRow, raw: RawFrames | null): void {
+  addNote(sessionId: string, tMs: number, text: string): void {
     this.db.run('BEGIN');
     try {
-      this.db.run(`INSERT OR IGNORE INTO transaction_meta
-        (session_id, trace_id, connection_id, slave_id, unit_id, source_kind, source_id, function_code, result,
-         t_ms, start_utc, duration_ms, exception_code, mbap_transaction_id, summary)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-        sessionId, row.traceId, row.connectionId, row.slaveId, row.unitId, row.sourceKind, row.sourceId,
-        row.functionCode, row.result, row.tMs, row.startUtc, row.durationMs, row.exceptionCode,
-        row.mbapTransactionId, row.summary,
-      ]);
-      if (this.db.getRowsModified() > 0 && raw) {
-        if (raw.requestAduHex) this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex, pdu_hex, trace_id) VALUES (?, ?, ?, ?, ?, ?)',
-          [sessionId, row.tMs, row.sourceKind === 'slave' ? 'rx' : 'tx', raw.requestAduHex, raw.requestPduHex ?? null, row.traceId]);
-        if (raw.responseAduHex) this.db.run('INSERT INTO raw_comm (session_id, t_ms, direction, hex, pdu_hex, trace_id) VALUES (?, ?, ?, ?, ?, ?)',
-          [sessionId, row.tMs + Math.max(0, Math.round(row.durationMs ?? 0)), row.sourceKind === 'slave' ? 'tx' : 'rx', raw.responseAduHex, raw.responsePduHex ?? null, row.traceId]);
-      }
+      this.db.run("INSERT INTO events (session_id, signal_id, t_ms, kind, value) VALUES (?, '', ?, 'marker', ?)", [sessionId, tMs, text]);
+      this.db.run('UPDATE sessions SET event_count = event_count + 1 WHERE id = ?', [sessionId]);
+      if (this.db.getRowsModified() !== 1) throw new Error('session not found');
       this.db.run('COMMIT');
     } catch (error) {
       this.db.run('ROLLBACK');

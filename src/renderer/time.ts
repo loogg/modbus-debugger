@@ -91,10 +91,14 @@ export function fmtTime(iso: string | null | undefined): string {
 }
 
 /** 'HH:mm:ss.mmm' in the display timezone (message tables). */
+export function createTimeMsFormatter(): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: displayTimeZone, hourCycle: 'h23',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+}
+
 export function fmtTimeMs(iso: string | null | undefined): string {
   if (!iso) return '—';
-  const p = parts(new Date(iso));
-  return `${p.h}:${p.mi}:${p.s}.${p.ms}`;
+  return createTimeMsFormatter().format(new Date(iso));
 }
 
 /** 'HH:mm:ss' for epoch-ms values (chart axes). */
@@ -107,6 +111,11 @@ export function fmtEpoch(ms: number): string {
 export function fmtEpochDateTime(ms: number): string {
   const p = parts(new Date(ms));
   return `${p.y}-${p.mo}-${p.d} ${p.h}:${p.mi}:${p.s}`;
+}
+
+export function fmtEpochDateTimeMs(ms: number): string {
+  const p = parts(new Date(ms));
+  return `${p.y}-${p.mo}-${p.d} ${p.h}:${p.mi}:${p.s}.${p.ms}`;
 }
 
 /** 'YYYY-MM-DD' in the display timezone; used for 今天/昨天 grouping. */

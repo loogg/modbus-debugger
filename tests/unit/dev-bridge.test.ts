@@ -10,6 +10,8 @@ import { connectBridge } from '../support/bridge-client';
 import path from 'node:path';
 import fs from 'node:fs';
 import packageJson from '../../package.json';
+import { templateWorkspace } from '../support/template-workspace';
+import type { ColumnDataReadResult } from '../../src/shared/point-data';
 
 describe('authenticated development Bridge',()=>{
   let root:string,workspace:WorkspaceService,manager:RuntimeManager,updater:UpdateService,backend:AppBackendService,server:DevBridgeServer,port:number;
@@ -38,6 +40,22 @@ describe('authenticated development Bridge',()=>{
     client.send({type:'command',id:'export',command:{type:'workspace.exportFile',path:output}});
     expect(await client.waitFor(message=>message.type==='response'&&message.id==='export')).toMatchObject({ok:true});
     expect(JSON.parse(fs.readFileSync(output,'utf8')).templates[0].name).toBe('Authenticated');
+  });
+  it('saves and runs a script over the authenticated Bridge and constrains its export path', async () => {
+    manager.start();
+    const client = await connect();
+    const request = async (id: string, command: unknown) => {
+      client.send({ type: 'command', id, command });
+      return client.waitFor(message => message.type === 'response' && message.id === id);
+    };
+    const script = { id: 'bridge-script', name: 'Bridge 脚本', graph: { blocks: { languageVersion: 0, blocks: [
+      { id: 'start', type: 'mb_start', next: { block: { id: 'delay', type: 'mb_delay', fields: { MS: 1 } } } },
+    ] } } };
+    expect(await request('script-save', { type: 'script.save', script, expectedRevision: null })).toMatchObject({ ok: true });
+    expect(await request('script-start', { type: 'script.start', scriptId: script.id, revision: 0 })).toMatchObject({ ok: true });
+    expect(await client.waitFor(message => message.type === 'delta' && message.delta.scriptRun?.state === 'passed')).toMatchObject({ delta: { scriptRun: { completed: 1 } } });
+    expect(await request('script-export', { type: 'script.exportFile', scriptId: script.id, path: path.join(root, 'flow.json') })).toMatchObject({ ok: true });
+    expect(await request('script-outside', { type: 'script.exportFile', scriptId: script.id, path: path.join(path.dirname(root), 'outside-flow.json') })).toMatchObject({ ok: false });
   });
   it.each([undefined,'https://untrusted.audit.invalid','http://localhost:51730','http://localhost:5173.evil.invalid'])('rejects Origin %s even with a valid session',async origin=>{
     const client=await connect({origin,protocol:server.sessionProtocol});expect(client.status).toBe(403);expect(client.messages).toEqual([]);expect(server.clientCount).toBe(0);
@@ -77,5 +95,20 @@ describe('authenticated development Bridge',()=>{
   it('rejects unknown message types after authentication',async()=>{
     const client=await connect();client.send({type:'eval_shell',id:'unknown'});
     expect(await client.waitFor(message=>message.type==='response'&&message.id==='unknown')).toMatchObject({ok:false,error:expect.stringContaining('disallowed')});
+  });
+  it('returns correlated binary columns over the real authenticated socket', async () => {
+    workspace.adopt(templateWorkspace(), null);
+    manager.start();
+    for (let index = 0; index < 2000; index++) manager.cache.applyReadResult('s1::b2', { kind: 'registers', fc: 3, registers: [index, 0, 0, 0] }, 1);
+    const client = await connect();
+    client.send({ type: 'command', id: 'columns', command: { type: 'data.read', format: 'columns-v1', points: [{ slaveId: 's1', pointId: 'Keep' }], series: [{ slaveId: 's1', pointId: 'Keep', limit: 2000 }] } });
+    const message = await client.waitFor(message => message.type === 'response' && message.id === 'columns');
+    if (message.type !== 'response' || !message.ok) throw new Error('Missing binary response');
+    const response = message.value as ColumnDataReadResult;
+    expect(response.series['s1::Keep']!.columns.values).toEqual(new Float64Array(Array.from({ length: 2000 }, (_, index) => index)));
+    expect(response.points['s1::Keep']!.engNumber).toBe(1999);
+    expect(client.binaryFrames).toHaveLength(1);
+    expect(client.binaryFrames[0]).toBeLessThan(51000);
+    expect(response.sampleBytes).toBe(48000);
   });
 });

@@ -1,10 +1,12 @@
-import type { AppDelta, AppSnapshot } from './snapshot';
+import type { AppDelta, AppSnapshot, SnapshotOptions } from './snapshot';
 import type { Command, CommandResult } from './commands';
+import type { WindowHostApi } from './workbench';
 
 export type AppVersions = { electron: string; node: string; app: string };
 
 export interface ModbusApi {
-  getSnapshot(): Promise<AppSnapshot>;
+  windows?: WindowHostApi;
+  getSnapshot(options?: SnapshotOptions): Promise<AppSnapshot>;
   command<T = unknown>(cmd: Command): Promise<CommandResult<T>>;
   onDelta(cb: (delta: AppDelta) => void): () => void;
   versions(): Promise<AppVersions>;
@@ -21,7 +23,7 @@ export const IPC_CHANNELS = {
 
 /** Whitelisted WebSocket Bridge client -> server messages */
 export type BridgeClientMessage =
-  | { type: 'snapshot'; id: string }
+  | { type: 'snapshot'; id: string; options?: SnapshotOptions }
   | { type: 'versions'; id: string }
   | { type: 'command'; id: string; command: unknown };
 

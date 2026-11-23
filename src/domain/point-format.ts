@@ -7,7 +7,7 @@ export function resolveDecimalPlaces(value: number | undefined): number {
     : DEFAULT_DECIMAL_PLACES;
 }
 
-/** Display only: preserve the original numeric value for cache, recording and export. */
+/** Display only: preserve the original numeric value for cache, history and export. */
 export function formatEngineeringNumber(value: number, decimalPlaces?: number): string {
   if (!Number.isFinite(value)) return '非有限数值';
   const fixed = value.toFixed(resolveDecimalPlaces(decimalPlaces));

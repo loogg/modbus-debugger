@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp, useBlocks, usePoints, useWorkspace } from '../store/app';
 import { Button, Checkbox, Dialog, Drawer, Field, InfoBand, Select, TextInput } from '../components/ui';
+import { PollPeriodSelect } from '../components/poll-period-select';
 import { AREAS } from '../../domain/address';
 import { findBlockOverlaps } from '../../domain/overlap';
 import { registersForType, type RawType } from '../../domain/mapping';
@@ -14,6 +15,9 @@ import { decodeRaw, type RawMemory } from '../../domain/mapping';
 import { uid } from '../uid';
 import { AddConnectionDialog } from '../features/devices/connection-dialog';
 import { AddSlaveDialog } from '../features/devices/slave-dialog';
+import { BufferExportDialog, BufferSettingsDialog } from '../features/buffers/buffer-ui';
+import { bufferCapacity, bufferReferences } from '../../domain/point-buffers';
+import { MAX_BUFFER_CAPACITY, type DataPointRef } from '../../shared/point-data';
 
 export function Overlays() {
   const overlay = useApp((s) => s.overlay);
@@ -24,7 +28,9 @@ export function Overlays() {
       if (overlay.id === 'add-slave') return <AddSlaveDialog connectionId={overlay.connectionId} slaveId={overlay.slaveId} unitId={overlay.unitId} />;
       if (overlay.id === 'edit-block') return <EditBlockDialog templateId={overlay.templateId} blockId={overlay.blockId} />;
       if (overlay.id === 'new-trend-group') return <NewTrendGroupDialog />;
-      if (overlay.id === 'add-signal') return <AddSignalDialog groupId={overlay.groupId} />;
+      if (overlay.id === 'add-signal') return <AddSignalDialog groupId={overlay.groupId} initialPoints={overlay.initialPoints} />;
+      if (overlay.id === 'point-buffer') return <BufferSettingsDialog pointRef={overlay.pointRef} />;
+      if (overlay.id === 'buffer-export') return <BufferExportDialog points={overlay.points} name={overlay.name} />;
       if (overlay.id === 'save-as-block') return <SaveAsBlockDialog {...overlay} />;
       if (overlay.id === 'confirm') return <ConfirmDialog title={overlay.title} message={overlay.message} confirmLabel={overlay.confirmLabel} danger={overlay.danger} onConfirm={overlay.onConfirm} />;
       return null;
@@ -44,7 +50,7 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
   const close = useApp((s) => s.closeOverlay);
   const select = useApp(s=>s.select);
   const template = workspace?.templates.find((t) => t.id === props.templateId);
-  const existing = template?.blocks.find((b) => b.id === props.blockId);
+  const [existing] = useState(() => template?.blocks.find((b) => b.id === props.blockId));
   const [name, setName] = useState(existing?.name ?? t('overlays.defaultBlockName'));
   const [area, setArea] = useState(String(existing?.area ?? 3));
   const [start, setStart] = useState(String(existing?.start ?? 0));
@@ -57,7 +63,7 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
   const bad = overlaps.length > 0;
   const save = async () => {
     const id=existing?.id ?? uid('blk');
-    if (!(await command({ type: 'template.upsertBlock', templateId: template.id, block: { ...candidate, id } })).ok) return;
+    if (!(await command({ type: 'template.upsertBlock', templateId: template.id, block: { ...candidate, id }, expected: existing ?? null })).ok) return;
     select({templateId:template.id,templateEditing:true,editBlockId:id});
     close();
   };
@@ -72,7 +78,7 @@ function EditBlockDialog(props: { templateId: string; blockId?: string }) {
       <div className="mt-4 grid grid-cols-3 gap-4">
         <Field label={t('overlays.startAddr')}><TextInput type="number" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
         <Field label={t('overlays.length')}><TextInput type="number" value={length} onChange={(e) => setLength(e.target.value)} /></Field>
-        <Field label={t('overlays.defaultPeriod')}><Select value={period} onChange={setPeriod} options={[...new Set([50, 100, 200, 500, 1000, Number(period)])].sort((a, b) => a - b).map((p) => ({ value: String(p), label: `${p} ms` }))} /></Field>
+        <Field label={t('overlays.defaultPeriod')}><PollPeriodSelect value={period} onChange={setPeriod} /></Field>
       </div>
       <div className="mt-4">
         <div className="text-xs text-ink2 mb-1.5">{t('overlays.computedRange')}</div>
@@ -100,13 +106,13 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
   const toast = useApp((s) => s.toast);
   const template = workspace?.templates.find((t) => t.id === props.templateId);
   const block = template?.blocks.find((b) => b.id === props.blockId);
-  const existing = template?.points.find((p) => p.id === props.pointId);
+  const [existing] = useState(() => template?.points.find((p) => p.id === props.pointId));
   const [name, setName] = useState(existing?.name ?? t('overlays.defaultPointName'));
   const [rawType, setRawType] = useState<RawType>(existing?.mapping.rawType ?? 'UInt16');
   const [offset, setOffset] = useState(String(existing?.mapping.offset ?? 0));
   const [bitOffset, setBitOffset] = useState(String(existing?.mapping.bitOffset ?? 0));
   const [bitWidth, setBitWidth] = useState(String(existing?.mapping.bitWidth ?? 3));
-  const [access, setAccess] = useState<'ro' | 'rw'>(existing?.access ?? 'rw');
+  const [access, setAccess] = useState<PointDef['access']>(existing?.access ?? 'rw');
   const [unit, setUnit] = useState(existing?.unit ?? '');
   const [format, setFormat] = useState(existing?.displayFormat ?? 'auto');
   const [decimalPlaces, setDecimalPlaces] = useState(String(existing?.decimalPlaces ?? DEFAULT_DECIMAL_PLACES));
@@ -158,7 +164,7 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
       highRisk,
       description: existing?.description ?? '',
     };
-    if (!(await command({ type: 'template.upsertPoint', templateId: template.id, point })).ok) return;
+    if (!(await command({ type: 'template.upsertPoint', templateId: template.id, point, expected: existing ?? null })).ok) return;
     close();
   };
 
@@ -214,9 +220,10 @@ function EditPointDrawer(props: { templateId: string; blockId: string; pointId?:
       <div className="mt-4 grid grid-cols-3 gap-4">
         <Field label={t('overlays.bitOffset')}><TextInput type="number" value={bitOffset} onChange={(e) => setBitOffset(e.target.value)} disabled={rawType !== 'BitField' && rawType !== 'Bool'} /></Field>
         <Field label={t('overlays.bitWidth')}><TextInput type="number" value={bitWidth} onChange={(e) => setBitWidth(e.target.value)} disabled={rawType !== 'BitField'} /></Field>
-        <Field label={t('overlays.access')}><Select value={access} onChange={(v) => setAccess(v as 'ro' | 'rw')} options={[{ value: 'ro', label: t('overlays.accessRo') }, { value: 'rw', label: t('overlays.accessRw') }]} disabled={block.area === 2 || block.area === 4} /></Field>
+        <Field label={t('overlays.access')}><Select value={access} onChange={(v) => setAccess(v as PointDef['access'])} options={[{ value: 'ro', label: t('overlays.accessRo') }, { value: 'rw', label: t('overlays.accessRw') }, { value: 'wo', label: t('overlays.accessWo') }]} disabled={block.area === 2 || block.area === 4} /></Field>
       </div>
       <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.displayAndConvert')}</div>
+      {access === 'wo' && block.area === 3 && (['Bool', 'Int8', 'UInt8'].includes(rawType) || rawType === 'BitField' && (Number(bitWidth) !== 16 || Number(bitOffset) !== 0)) && <InfoBand>只写位/字节使用 FC22（0x16）掩码写，需设备支持。完整字命令可选 UInt16。</InfoBand>}
       <div className="grid grid-cols-2 gap-4">
         <Field label={t('overlays.format')}><Select value={format} onChange={(v) => setFormat(v as typeof format)} options={[{ value: 'auto', label: t('overlays.formatDec') }, { value: 'hex', label: t('overlays.formatHex') }, { value: 'binary', label: t('overlays.formatBin') }]} /></Field>
         <Field label={t('overlays.decimalPlaces')}><Select value={decimalPlaces} onChange={setDecimalPlaces} disabled={!showScale || format !== 'auto'} options={Array.from({ length: MAX_DECIMAL_PLACES + 1 }, (_, value) => ({ value: String(value), label: String(value) }))} /></Field>
@@ -266,6 +273,7 @@ function InspectorDrawer(props: { pointId: string }) {
   const blockStates = useBlocks();
   const points = usePoints();
   const close = useApp((s) => s.closeOverlay);
+  const open = useApp(state => state.openOverlay);
   const select = useApp((s) => s.select);
   const setModule = useApp((s) => s.setModule);
   const point = workspace?.templates.flatMap((t) => t.points).find((p) => p.id === props.pointId);
@@ -274,13 +282,15 @@ function InspectorDrawer(props: { pointId: string }) {
   const entry = block ? Object.values(blockStates).find((b) => b.blockId === block.id && (!selectedSlave || b.slaveId === selectedSlave)) : undefined;
   const view = points[pointKey(entry?.slaveId, props.pointId)];
   if (!workspace || !point || !block || !entry) return <Drawer title={t('overlays.inspectorTitle')} width={500} onClose={close}><InfoBand>{t('overlays.inspectorEmpty')}</InfoBand></Drawer>;
-  const raw: RawMemory | null = entry.registers ? { kind: 'registers', registers: new Uint16Array(entry.registers) } : entry.bits ? { kind: 'bits', bits: entry.bits } : null;
-  const rawValues = entry.registers ?? entry.bits?.map(value => value ? 1 : 0) ?? [];
+  const available = point.access !== 'wo' && (!entry.valid || entry.valid.slice(point.mapping.offset, point.mapping.offset + point.mapping.registerCount).every(Boolean));
+  const raw: RawMemory | null = !available ? null : entry.registers ? { kind: 'registers', registers: new Uint16Array(entry.registers) } : entry.bits ? { kind: 'bits', bits: entry.bits } : null;
+  const rawValues = available ? entry.registers ?? entry.bits?.map(value => value ? 1 : 0) ?? [] : [];
   const regs = rawValues.slice(point.mapping.offset, point.mapping.offset + point.mapping.registerCount);
   const bytes = regs.flatMap((value) => [(value >> 8) & 0xff, value & 0xff]).map((value) => value.toString(16).toUpperCase().padStart(2, '0')).join(' ');
   return (
     <Drawer title={t('overlays.inspectorTitle')} subtitle={t('overlays.inspectorSubtitle', { point: point.name, type: point.mapping.rawType, offset: String(point.mapping.offset) })} width={500} onClose={close}
       footer={<Button onClick={() => { close(); select({ commView: 'messages' }); setModule('comm'); }}>{t('overlays.viewRecentComm')}</Button>}>
+      {bufferReferences(workspace).has(pointKey(entry.slaveId, props.pointId)) && <Button className="mb-4" onClick={() => open({ kind: 'dialog', id: 'point-buffer', pointRef: { slaveId: entry.slaveId, pointId: props.pointId } })}>采样缓冲 · {bufferCapacity(workspace, { slaveId: entry.slaveId, pointId: props.pointId })} 点</Button>}
       <InfoBand tone="blue" className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-xs text-ink2 mb-1">{t('overlays.engValue')}</div>
@@ -304,7 +314,7 @@ function InspectorDrawer(props: { pointId: string }) {
       <div className="rounded-card border border-line bg-surface px-4">
         {(['Float32 · ABCD', 'Float32 · BADC', 'Float32 · CDAB', 'Float32 · DCBA', 'UInt32 · ABCD'] as const).map((label, i) => {
           let decoded = '—';
-          if (raw?.kind === 'registers' && raw.registers.length >= point.mapping.offset + 2) {
+          if (raw?.kind === 'registers' && raw.registers.length >= point.mapping.offset + 2 && (!entry.valid || entry.valid.slice(point.mapping.offset, point.mapping.offset + 2).every(Boolean))) {
             try { decoded = String(decodeRaw(raw, { ...point.mapping, rawType: i === 4 ? 'UInt32' : 'Float32', registerCount: 2, wordOrder: label.split(' · ')[1] as 'ABCD' | 'BADC' | 'CDAB' | 'DCBA' })); } catch { /* insufficient memory: show unavailable */ }
           }
           return (
@@ -335,27 +345,34 @@ function pointOwner(ws: import('../../domain/model').Workspace, instanceId: stri
   return null;
 }
 
-function AddSignalDialog(props: { groupId: string }) {
+function AddSignalDialog(props: { groupId: string; initialPoints?: DataPointRef[] }) {
   const { t } = useTranslation();
   const workspace = useWorkspace();
   const command = useApp((s) => s.command);
   const close = useApp((s) => s.closeOverlay);
-  const [picked, setPicked] = useState<Record<string, boolean>>({});
+  const [picked, setPicked] = useState<Record<string, boolean>>(() => Object.fromEntries((props.initialPoints ?? []).map(ref => [pointKey(ref.slaveId, ref.pointId), true])));
+  const [capacities, setCapacities] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
   const group = workspace?.trendGroups.find((g) => g.id === props.groupId);
   const inGroup = new Set(group?.signals.map((s) => pointKey(s.pointRef.slaveId, s.pointRef.pointId)) ?? []);
   const pickedIds = Object.keys(picked).filter((k) => picked[k]);
   if (!workspace || !group) return null;
+  const buffered = bufferReferences(workspace);
+  const pendingBuffers = pickedIds.map(key => {
+    const owner = pointOwner(workspace, key);
+    return owner ? { slaveId: owner.slaveId, pointId: owner.pointId, capacity: Number(buffered.has(key) ? bufferCapacity(workspace, owner) : capacities[key] ?? bufferCapacity(workspace, owner)) } : null;
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const validCapacities = pendingBuffers.every(item => Number.isInteger(item.capacity) && item.capacity >= 10 && item.capacity <= MAX_BUFFER_CAPACITY);
   const add = async () => {
     const signals = pickedIds.map((pointId) => {
       const owner = pointOwner(workspace, pointId);
       return { id: uid('sig'), pointRef: { connectionId: owner?.connectionId ?? '', slaveId: owner?.slaveId ?? '', pointId: owner?.pointId ?? '' }, visible: true };
     });
-    if (!(await command({ type: 'trend.addSignals', groupId: group.id, signals })).ok) return;
+    if (!(await command({ type: 'trend.addSignals', groupId: group.id, signals, buffers: pendingBuffers.filter(ref => !buffered.has(pointKey(ref.slaveId, ref.pointId))) })).ok) return;
     close();
   };
   return (
-    <Dialog title={t('overlays.addSignalTitle')} subtitle={t('overlays.addSignalSubtitle', { group: group.name })} width={820} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={!pickedIds.length} onClick={() => void add()}>{t('overlays.addSignal')}</Button></>}>
+    <Dialog title={t('overlays.addSignalTitle')} subtitle={t('overlays.addSignalSubtitle', { group: group.name })} width={820} onClose={close} footer={<><Button onClick={close}>{t('overlays.cancel')}</Button><Button variant="primary" disabled={!pickedIds.length || !validCapacities} onClick={() => void add()}>{t('overlays.addSignal')}</Button></>}>
       <TextInput placeholder={t('overlays.searchPoints')} value={search} onChange={(e) => setSearch(e.target.value)} />
       <div className="mt-4 grid grid-cols-3 gap-5">
         <div className="col-span-2 rounded-card border border-line bg-surface p-4 max-h-[420px] overflow-y-auto">
@@ -371,10 +388,9 @@ function AddSignalDialog(props: { groupId: string }) {
                     {template?.blocks.map((b) => (
                       <div key={b.id} className="ml-4 mb-1">
                         <div className="text-xs text-accent mb-1">▼ {b.name}</div>
-                        {template.points.filter((p) => p.blockId === b.id && (!search || p.name.includes(search))).map((p) => (
+                        {template.points.filter((p) => p.blockId === b.id && p.access !== 'wo' && (!search || p.name.includes(search))).map((p) => (
                           <div key={p.id} className="ml-4 flex items-center gap-2 py-0.5">
-                            <Checkbox checked={!!picked[pointKey(s.id, p.id)]} disabled={inGroup.has(pointKey(s.id, p.id))} onCheckedChange={(v) => setPicked({ ...picked, [pointKey(s.id, p.id)]: v })} />
-                            <span className="text-sm">{p.name}</span>
+                            <Checkbox label={p.name} checked={!!picked[pointKey(s.id, p.id)]} disabled={inGroup.has(pointKey(s.id, p.id))} onCheckedChange={(v) => setPicked({ ...picked, [pointKey(s.id, p.id)]: v })} />
                             {inGroup.has(pointKey(s.id, p.id)) ? <span className="text-xs text-ink2">{t('overlays.inGroup')}</span> : null}
                           </div>
                         ))}
@@ -389,7 +405,14 @@ function AddSignalDialog(props: { groupId: string }) {
         <div className="rounded-card bg-surface2 p-4">
           <div className="text-xs text-ink2">{t('overlays.newThisTime')}</div>
           <div className="text-2xl font-bold mt-1">{t('overlays.signalCount', { n: String(pickedIds.length) })}</div>
-          <div className="text-xs text-ink2 mt-1">{t('overlays.selectionHint')}</div>
+          {!pickedIds.length && <div className="text-xs text-ink2 mt-1">{t('overlays.selectionHint')}</div>}
+          <div className="mt-4 space-y-3">{pickedIds.map(key => {
+            const owner = pointOwner(workspace, key);
+            if (!owner) return null;
+            const shared = buffered.has(key);
+            const point = workspace.templates.flatMap(template => template.points).find(item => item.id === owner.pointId);
+            return <label key={key} className="block text-xs text-ink2">{point?.name ?? key} · {shared ? '沿用共享容量' : '缓存容量（点）'}<TextInput aria-label={`${owner.slaveId} ${owner.pointId} 缓冲容量`} type="number" min={10} max={MAX_BUFFER_CAPACITY} disabled={shared} value={shared ? bufferCapacity(workspace, owner) : capacities[key] ?? bufferCapacity(workspace, owner)} onChange={event => setCapacities(current => ({ ...current, [key]: event.target.value }))} /></label>;
+          })}</div>
           <div className="mt-5 text-xs text-ink2 mb-1.5">{t('overlays.afterAdd')}</div>
           <ul className="text-xs text-ink2 list-disc pl-4 space-y-1">
             <li>{t('overlays.afterAdd1')}</li>
@@ -472,7 +495,7 @@ function SaveAsBlockDialog(props: { connectionId: string; unitId: number; area: 
         </Field>
         <div className="mt-4 grid grid-cols-2 gap-4">
           <Field label={t('overlays.blockName')}><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
-          <Field label={t('overlays.pollPeriod')}><Select value={period} onChange={setPeriod} options={['100', '200', '500', '1000'].map((p) => ({ value: p, label: `${p} ms` }))} /></Field>
+          <Field label={t('overlays.pollPeriod')}><PollPeriodSelect value={period} onChange={setPeriod} /></Field>
         </div>
         <div className="mt-4 grid grid-cols-3 gap-4">
           <Field label={t('overlays.area')}><TextInput readOnly value={AREAS[props.area]} /></Field>

@@ -29,8 +29,7 @@ it('copies request and response Raw ADU bytes exactly, without display spacing',
       revision: 1,
       workspace: workspaceSchema.parse(JSON.parse(fs.readFileSync('tools/e2e/demo.workspace.json', 'utf8'))),
       workspacePath: null, dirty: false, connections: {}, blocks: {}, points: {},
-      transactions: [transaction], parseEvents: [], diagRev: 0, health: {}, recording: null,
-      sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
+      transactions: [transaction], parseEvents: [], diagRev: 0, health: {}, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
     },
   });
   render(<CommScreen />);

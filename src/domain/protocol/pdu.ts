@@ -21,6 +21,13 @@ function put16(out: Uint8Array, off: number, v: number): void {
 
 export function encodeRequestPdu(req: ModbusRequest): Uint8Array {
   switch (req.kind) {
+    case 'maskWrite': {
+      for (const value of [req.address, req.andMask, req.orMask]) if (!Number.isInteger(value) || value < 0 || value > 65535) throw new ProtocolError('mask write field out of range', 'value');
+      const out = new Uint8Array(7);
+      out[0] = FC.MaskWriteRegister;
+      put16(out, 1, req.address); put16(out, 3, req.andMask); put16(out, 5, req.orMask);
+      return out;
+    }
     case 'read': {
       if (req.address < 0 || req.address > 0xffff) throw new ProtocolError('address out of range', 'address');
       const isBits = req.fc === FC.ReadCoils || req.fc === FC.ReadDiscreteInputs;
@@ -93,6 +100,9 @@ export function decodeResponsePdu(pdu: Uint8Array, reqFc: FunctionCode): ModbusR
     throw new ProtocolError(`function code mismatch: got 0x${fc.toString(16)} expected 0x${reqFc.toString(16)}`, 'unexpected', pdu);
   }
   switch (fc) {
+    case FC.MaskWriteRegister:
+      if (pdu.length !== 7) throw new ProtocolError('invalid mask write echo', 'malformed', pdu);
+      return { kind: 'maskWriteAck', fc, address: u16(pdu, 1), andMask: u16(pdu, 3), orMask: u16(pdu, 5) };
     case FC.ReadCoils:
     case FC.ReadDiscreteInputs: {
       if (pdu.length < 2) throw new ProtocolError('truncated read response', 'malformed', pdu);
@@ -129,6 +139,12 @@ export function decodeResponsePdu(pdu: Uint8Array, reqFc: FunctionCode): ModbusR
 /** Encode a response PDU (used by the in-repo fake transport and by tests of the decoder). */
 export function encodeResponsePdu(res: ModbusResponse): Uint8Array {
   switch (res.kind) {
+    case 'maskWriteAck': {
+      const out = new Uint8Array(7);
+      out[0] = res.fc;
+      put16(out, 1, res.address); put16(out, 3, res.andMask); put16(out, 5, res.orMask);
+      return out;
+    }
     case 'exception': {
       const out = new Uint8Array(2);
       out[0] = (res.fc | 0x80) & 0xff;

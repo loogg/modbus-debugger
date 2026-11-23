@@ -5,7 +5,7 @@ import type { RuntimeManager } from '../runtime/manager';
 import { parseImportSource } from './importer';
 import type { Command, CommandResult } from '../../shared/commands';
 import { commandSchema } from '../../shared/commands';
-import type { AppDelta, AppSnapshot } from '../../shared/snapshot';
+import type { AppDelta, AppSnapshot, SnapshotOptions } from '../../shared/snapshot';
 import type { AppVersions } from '../../shared/preload-api';
 import packageJson from '../../../package.json';
 
@@ -41,8 +41,8 @@ export class AppBackendService {
     };
   }
 
-  getSnapshot(): AppSnapshot {
-    return this.manager.buildSnapshot();
+  getSnapshot(options?: SnapshotOptions): AppSnapshot {
+    return this.manager.buildSnapshot(options);
   }
 
   getVersions(): AppVersions {

@@ -6,7 +6,8 @@ import { ConnectionRuntime } from '../../src/main/runtime/connection-runtime';
 import { TcpTransport, SerialTransport } from '../../src/main/runtime/transport';
 import { BlockCache } from '../../src/main/runtime/block-cache';
 import { DiagnosticsStore } from '../../src/main/runtime/diagnostics';
-import type { ConnectionDef } from '../../src/domain/model';
+import { pointSchema, type BlockDef, type ConnectionDef, type SlaveDef } from '../../src/domain/model';
+import { planBlockReads } from '../../src/domain/point-access';
 import type { ModbusRequest } from '../../src/domain/protocol';
 import { decodeRaw } from '../../src/domain/mapping';
 
@@ -48,6 +49,29 @@ async function harness(transport: 'tcp' | 'rtu', extra: string[] = [], dynamic =
 
 for (const transport of ['tcp', 'rtu'] as const) {
   describe.skipIf(transport === 'rtu' && (!masterPort || !slavePort))(`${transport.toUpperCase()} independent slave, real wire transport`, () => {
+    it('isolates device state on the wire and excludes gateway responses from scanning', async () => {
+      const h = await harness(transport, ['--fault', 'exception', '--fault-unit', '3', '--fault-fc', '3', '--exception-code', '11']);
+      try {
+        const slave = (unitId: number): SlaveDef => ({ id: `device-${unitId}`, unitId, connectionId: 'wire', name: 'Device', templateId: 't', enabled: true });
+        const normal = slave(1);
+        const silent = slave(2);
+        const gateway = slave(3);
+        const block: BlockDef = { id: 'poll', name: 'Poll', area: 3, start: 0, length: 1, periodMs: 60 };
+        const invalidAddress = { ...block, id: 'invalid', start: 1000 };
+        h.runtime.configure([
+          { slave: normal, block }, { slave: normal, block: invalidAddress }, { slave: silent, block }, { slave: gateway, block },
+        ]);
+        await expect.poll(() => h.runtime.slaveState(silent).state, { timeout: 4000 }).toBe('offline');
+        await expect.poll(() => h.runtime.slaveState(gateway).state, { timeout: 4000 }).toBe('offline');
+        expect(h.runtime.state).toBe('online');
+        expect(h.runtime.slaveState(normal)).toMatchObject({ state: 'online', lastResponseUtc: expect.any(String) });
+        expect(h.runtime.slaveState(gateway).lastResponseUtc).toBeNull();
+        expect(h.cache.get('device-1::invalid')).toMatchObject({ status: 'exception', exceptionCode: 2 });
+        const scan = await h.runtime.scanUnits({ from: 1, to: 3 }, { start: 1000, timeoutMs: 150, retries: 0 });
+        expect(scan.map(row => [row.unitId, row.exceptionCode])).toEqual([[1, 2]]);
+        expect(h.diagnostics.recentTransactions(30).some(tx => tx.unitId === 3 && tx.exceptionCode === 11)).toBe(true);
+      } finally { await h.close(); }
+    });
     if (transport === 'tcp') it('targets a one-register RMW pre-read without breaking larger periodic reads',async()=>{
       const h=await harness('tcp',['--fault','exception','--fault-fc','3','--fault-quantity','1']);
       try {
@@ -56,7 +80,7 @@ for (const transport of ['tcp', 'rtu'] as const) {
         expect((await h.request({kind:'read',fc:3,address:0,quantity:2})).result).toBe('ok');
       } finally {await h.close();}
     });
-    it('supports all eight project function codes, maximum quantities, unit isolation and missing/invalid addresses', async () => {
+    it('supports the project function codes including FC22, maximum quantities and unit isolation', async () => {
       const h = await harness(transport);
       try {
         expect(h.runtime.state).toBe('online');
@@ -78,6 +102,10 @@ for (const transport of ['tcp', 'rtu'] as const) {
         expect((await h.request({ kind: 'writeRegisters', fc: 16, address: 0, values: registers })).result).toBe('ok');
         read = await h.request({ kind: 'read', fc: 3, address: 0, quantity: 123 });
         expect(read.response?.kind === 'registers' && read.response.registers).toEqual(registers);
+        expect((await h.request({ kind: 'writeRegister', fc: 6, address: 4, value: 0x0011 })).result).toBe('ok');
+        expect((await h.request({ kind: 'maskWrite', fc: 22, address: 4, andMask: 0xff8f, orMask: 0x0030 })).result).toBe('ok');
+        read = await h.request({ kind: 'read', fc: 3, address: 4, quantity: 1 });
+        expect(read.response?.kind === 'registers' && read.response.registers).toEqual([0x0031]);
         read = await h.request({ kind: 'read', fc: 3, address: 6, quantity: 1 }, 3);
         expect(read.response?.kind === 'registers' && read.response.registers).toEqual([1500]);
         expect((await h.request({ kind: 'read', fc: 3, address: 128, quantity: 1 })).exceptionCode).toBe(2);
@@ -86,6 +114,32 @@ for (const transport of ['tcp', 'rtu'] as const) {
         const temporary = await h.runtime.temporaryRead(1, 4, 0, 4);
         expect(temporary.response?.kind === 'registers' && temporary.response.registers).toHaveLength(4);
         expect(h.diagnostics.recentTransactions(20).some(tx => tx.sourceKind === 'temporary-read')).toBe(true);
+      } finally { await h.close(); }
+    }, 30000);
+
+    it('polls around physical write-only registers and accepts their full and masked write responses', async () => {
+      const h = await harness(transport, ['--write-only-register', '3:2']);
+      try {
+        const block = { id: 'mixed', name: 'Mixed', area: 3 as const, start: 0, length: 12, periodMs: 60000 };
+        const slave = { id: 'unit-1', connectionId: 'wire', unitId: 1, name: 'Unit 1', templateId: 'template', enabled: true };
+        const mapping = { wordOrder: 'ABCD', byteSelector: 'low', bitOffset: 0, bitWidth: 1, stringLength: 0, stringEncoding: 'ascii', registerCount: 1 };
+        const points = [
+          pointSchema.parse({ id: 'speed', name: 'Speed', blockId: block.id, access: 'rw', mapping: { ...mapping, rawType: 'UInt16', offset: 6 } }),
+          pointSchema.parse({ id: 'command', name: 'Command', blockId: block.id, access: 'wo', mapping: { ...mapping, rawType: 'UInt16', offset: 3 } }),
+          pointSchema.parse({ id: 'flag', name: 'Flag', blockId: block.id, access: 'wo', mapping: { ...mapping, rawType: 'Bool', offset: 4, bitOffset: 3 } }),
+        ];
+        h.runtime.configure([{ slave, block, readRanges: planBlockReads(block, points) }]);
+        await h.runtime.refresh(slave.id, block.id);
+        const entry = h.cache.get('unit-1::mixed')!;
+        expect(entry.status).toBe('ok');
+        expect(entry.valid.slice(3, 5)).toEqual([false, false]);
+        expect(entry.memory.kind === 'registers' && entry.memory.registers[6]).toBe(1500);
+        for (const point of points.slice(1)) {
+          expect(await h.runtime.writePoint({ slave, block, mapping: point.mapping, pointId: point.id, access: 'wo', rawValue: point.id === 'flag' ? true : 7 })).toMatchObject({ result: 'ok', readBack: null });
+        }
+        expect(h.diagnostics.recentTransactions(30).filter(transaction => transaction.sourceId === 'command' || transaction.sourceId === 'flag').map(transaction => transaction.sourceKind)).toEqual(['write', 'write']);
+        expect(await h.request({ kind: 'read', fc: 3, address: 3, quantity: 2 })).toMatchObject({ result: 'exception', exceptionCode: 2 });
+        expect(entry.valid.slice(3, 5)).toEqual([false, false]);
       } finally { await h.close(); }
     }, 30000);
 
@@ -124,7 +178,7 @@ for (const transport of ['tcp', 'rtu'] as const) {
       } finally { await h.close(); }
     });
 
-    it('reads seeded Enum and String values, then performs latest-register RMW and String write/read-back', async () => {
+    it('reads seeded Enum and String values, then performs RMW and a separate manual refresh', async () => {
       const h = await harness(transport);
       try {
         const block = { id: 'holding', name: 'Holding', area: 3 as const, start: 0, length: 12, periodMs: 1000 };
@@ -146,17 +200,19 @@ for (const transport of ['tcp', 'rtu'] as const) {
 
         const enumWrite = await h.runtime.writePoint({ slave, block, mapping: enumMapping, rawValue: 3, pointId: 'mode', readBackRange: { start: 0, length: 12 } });
         expect(enumWrite.result).toBe('ok');
-        expect(enumWrite.readBack?.result).toBe('ok');
+        expect(enumWrite.readBack).toBeNull();
+        await h.runtime.refresh(slave.id, block.id);
         const afterEnum = h.cache.get('unit-1::holding')?.memory;
         expect(afterEnum?.kind === 'registers' && afterEnum.registers[4]).toBe(0x0031); // enable bit 0 preserved.
         expect(afterEnum && decodeRaw(afterEnum, enumMapping)).toBe(3);
-        expect(h.diagnostics.recentTransactions(20).filter(tx => tx.sourceId === 'mode').map(tx => tx.sourceKind)).toEqual(['rmw-read', 'write', 'readback']);
+        expect(h.diagnostics.recentTransactions(20).filter(tx => tx.sourceId === 'mode').map(tx => tx.sourceKind)).toEqual(['rmw-read', 'write']);
 
         const stringWrite = await h.runtime.writePoint({ slave, block, mapping: stringMapping, rawValue: 'V3.1.0', pointId: 'firmware', readBackRange: { start: 0, length: 12 } });
         expect(stringWrite.result).toBe('ok');
+        await h.runtime.refresh(slave.id, block.id);
         const afterString = h.cache.get('unit-1::holding')?.memory;
         expect(afterString && decodeRaw(afterString, stringMapping)).toBe('V3.1.0');
-        expect(h.diagnostics.recentTransactions(20).filter(tx => tx.sourceId === 'firmware').map(tx => tx.sourceKind)).toEqual(['rmw-read', 'write', 'readback']);
+        expect(h.diagnostics.recentTransactions(20).filter(tx => tx.sourceId === 'firmware').map(tx => tx.sourceKind)).toEqual(['write']);
       } finally { await h.close(); }
     }, 30000);
 

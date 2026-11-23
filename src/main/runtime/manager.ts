@@ -4,18 +4,31 @@ import { templateSchema, workspaceSchema } from '../../domain/model';
 import { copyTemplate } from '../../domain/template-copy';
 import { removeTemplateBlock, removeTemplatePoint } from '../../domain/template-edit';
 import { mutateWorkspace } from '../../domain/workspace-mutations';
+import { applyCanvasChanges } from '../../domain/canvas';
+import { validateCanvasBindings } from '../../domain/canvas-binding';
 import { BlockCache, blockKey } from './block-cache';
-import { ConnectionRuntime, type ConnectionState } from './connection-runtime';
+import { SampleBuffers } from './sample-buffers';
+import { bufferCapacity, validateBufferBudget, withBufferConfigs } from '../../domain/point-buffers';
+import { MAX_READ_SAMPLES, MAX_READ_SAMPLE_BYTES, type ColumnDataReadResult, type DataReadResult } from '../../shared/point-data';
+import { sampleColumnBytes } from '../../shared/sample-columns';
+import { canReadPoint, canWritePoint, mappingWidth, planBlockReads } from '../../domain/point-access';
+import type { MasterScript, ScriptPointRef } from '../../domain/master-script';
+import { preparePointWrite } from '../../domain/point-write-value';
+import { MasterScriptRunner, StepFailure, type ScriptPointBinding } from './master-script-runner';
+import { RuntimeNotifications } from './runtime-notifications';
+import { scriptIsActive, type ScriptRunView } from '../../shared/script-run';
+import type { PointWriteReceipt } from '../../shared/contracts';
+import { ConnectionRuntime } from './connection-runtime';
 import { SlaveRuntime } from './slave-runtime';
 import { DiagnosticsStore, type ConnectionHealth } from './diagnostics';
 import { SerialTransport, TcpTransport, type Transport } from './transport';
-import { HistoryStore, type EventRow, type SampleRow, type SessionDetail, type SessionSignalSchema, type SessionSummary, type TransactionMetadataRow } from '../services/history';
-import { WorkspaceService } from '../services/workspace';
-import type { AppDelta, AppSnapshot, BlockViewState, ConnectionStateView, PointViewState, RecordingView } from '../../shared/snapshot';
+import { HistoryStore, type SessionDetail, type SessionSummary } from '../services/history';
+import { exportTextToFile, WorkspaceService } from '../services/workspace';
+import type { AppDelta, AppSnapshot, BlockViewState, ConnectionStateView, PointViewState, SlaveStateView } from '../../shared/snapshot';
 import type { Command, CommandResult } from '../../shared/commands';
 import type { BlockDef, ConnectionDef, DeviceTemplate, PointDef, SlaveDef } from '../../domain/model';
-import { decodeRaw, stringWriteError, type DecodedRaw } from '../../domain/mapping';
-import { engineeringToRaw, toEngineering } from '../../domain/scale';
+import { decodeRaw, type DecodedRaw } from '../../domain/mapping';
+import { toEngineering } from '../../domain/scale';
 import { formatEngineeringNumber } from '../../domain/point-format';
 import { systemClock, type Clock } from '../../domain/protocol';
 import { pointKey } from '../../shared/point-key';
@@ -40,6 +53,10 @@ export function defaultTransportFactory(config: ConnectionDef): Transport {
 export class RuntimeManager {
   readonly cache = new BlockCache();
   readonly diagnostics = new DiagnosticsStore();
+  readonly sampleBuffers: SampleBuffers;
+  private readonly notifications = new RuntimeNotifications();
+  private readonly scripts: MasterScriptRunner;
+  private sentScriptRun: ScriptRunView | null = null;
   private runtimes = new Map<string, ConnectionRuntime | SlaveRuntime>();
   private shutdownByConnection = new Map<string, Promise<void>>();
   private stopping = false;
@@ -50,27 +67,22 @@ export class RuntimeManager {
   setUpdateState(state: UpdateState): void { this.updateState = state; this.updateRevision++; }
 
   private revision = 0;
-  private sentTxTotal = 0;
-  private sentEventTotal = 0;
   private diagRev = 0;
   private sentDiagRev = 0;
   private sentCacheRev = new Map<string, number>();
   private sentWorkspaceRev = -1;
   private workspaceRev = 0;
+  private workspaceMetadataOnly = false;
   private connStateRev = 0;
   private connConfigHash = new Map<string, string>();
   /** Connections the user explicitly disconnected; survives runtime re-creation. */
   private userOffline = new Set<string>();
   private lastConnStates = new Map<string, ConnectionStateView>();
+  private lastSlaveStates = new Map<string, SlaveStateView>();
   private pointIndexCache: { rev: number; map: Map<string, PointRef> } | null = null;
   private timer: NodeJS.Timeout | null = null;
   private transportFactory: TransportFactory;
 
-  // recording
-  private recording: { sessionId: string; groupId: string; groupName: string; startedMono: number; startedUtc: string; schema: SessionSignalSchema[]; last: Map<string, DecodedRaw>; sampleCount: number; eventCount: number } | null = null;
-  private pendingSamples: SampleRow[] = [];
-  private pendingEvents: EventRow[] = [];
-  private recordedTxCursor = 0;
   private sessionsRev = 0;
   private warnings: string[] = [];
 
@@ -81,6 +93,21 @@ export class RuntimeManager {
   ) {
     this.clock = opts.clock ?? systemClock;
     this.transportFactory = opts.transportFactory ?? defaultTransportFactory;
+    this.sampleBuffers = new SampleBuffers(this.cache, this.clock);
+    this.scripts = new MasterScriptRunner({
+      point: (ref, access) => this.scriptPoint(ref, access),
+      slave: id => this.scriptSlave(id),
+      write: async (ref, fields, signal) => {
+        signal.throwIfAborted();
+        const result = await this.writePoint({ type: 'point.write', ...ref, ...fields }, signal);
+        if (!result.ok) throw new StepFailure(result.error, ['not-sent']);
+        return result.value;
+      },
+    }, this.notifications);
+    this.cache.onConfirmed = (entry, range) => {
+      this.sampleBuffers.confirmed(entry, this.workspaceService.current, range);
+      this.notifications.publish({ kind: 'sample', blockKey: entry.key, range });
+    };
   }
 
   setHistory(store: HistoryStore): void {
@@ -102,11 +129,12 @@ export class RuntimeManager {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.scripts.stop();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    if (this.recording) this.stopRecording();
     for (const rt of this.runtimes.values()) await rt.stop();
     await Promise.all(this.shutdownByConnection.values());
+    await this.scripts.settle();
     this.history.close();
     this.runtimes.clear();
     this.workspaceService.flushAutosave();
@@ -115,11 +143,22 @@ export class RuntimeManager {
   onDelta: ((delta: AppDelta) => void) | null = null;
 
   workspaceChanged(): void {
+    this.scripts.stop();
+    this.workspaceMetadataOnly = false;
     this.workspaceRev++;
     this.sentCacheRev.clear();
     this.rebuildRuntimes();
     this.workspaceService.scheduleAutosave();
     // Publish authoritative edits before the command resolves, so immediate follow-up actions use the new workspace.
+    this.revision++;
+    const delta = this.collectDelta();
+    if (delta) this.onDelta?.(delta);
+  }
+
+  private publishWorkspaceMetadata(): void {
+    this.sampleBuffers.reconcile(this.workspaceService.current);
+    this.workspaceMetadataOnly = this.sentWorkspaceRev >= 0;
+    this.workspaceRev++;
     this.revision++;
     const delta = this.collectDelta();
     if (delta) this.onDelta?.(delta);
@@ -139,6 +178,17 @@ export class RuntimeManager {
 
   private rebuildRuntimes(): void {
     const ws = this.workspaceService.current;
+    const bindings = this.pointIndex();
+    for (const [key, ref] of bindings) {
+      const identity = this.writeIdentity(ref);
+      if (this.writeBindings.get(key)?.identity !== identity) this.writeBindings.set(key, { identity, epoch: ++this.writeBindingSequence });
+    }
+    for (const key of this.writeBindings.keys()) if (!bindings.has(key)) this.writeBindings.delete(key);
+    this.sampleBuffers.reconcile(ws);
+    for (const [key, record] of this.writeReceipts) {
+      const current = this.pointIndex().get(key);
+      if (!current || record.identity !== this.writeIdentity(current)) this.writeReceipts.delete(key);
+    }
     const wanted = new Set(ws.connections.map((c) => c.id));
     for (const [id, rt] of [...this.runtimes.entries()]) {
       if (!wanted.has(id)) {
@@ -157,12 +207,9 @@ export class RuntimeManager {
       if (!rt) {
         this.connConfigHash.set(conn.id, configHash);
         const hooks = {
-          onChange: () => { this.connStateRev++; this.persistTransactions(); },
-          onState: (state: ConnectionState, detail?: string) => {
-            this.connStateRev++;
-            if (state === 'online') this.recordConnectionEvent(`${conn.name} ${conn.role === 'slave' ? '从站已启动' : '已连接'}`);
-            if (state === 'error') this.recordConnectionEvent(`${conn.name} 连接异常：${detail ?? ''}`);
-          },
+          onChange: () => { this.connStateRev++; },
+          onState: () => { this.connStateRev++; },
+          onSlaveStateChange: (slaveId: string) => this.notifications.publish({ kind: 'slaveState', slaveId }),
         };
         rt = conn.role === 'slave' ? new SlaveRuntime({ config: conn, cache: this.cache, diagnostics: this.diagnostics, clock: this.clock, hooks,
           serial: conn.transport === 'rtu' ? this.transportFactory(conn) : undefined,
@@ -187,17 +234,18 @@ export class RuntimeManager {
           else startIfCurrent();
         }
       }
-      const targets = ws.slaves
-        .filter((s) => s.connectionId === conn.id)
-        .flatMap((slave) => {
-          const template = ws.templates.find((t) => t.id === slave.templateId);
-          if (!template) return [];
-          return template.blocks.map((block) => ({ slave, block }));
-        });
-      rt.configure(targets);
+      const slaves = ws.slaves.filter(s => s.connectionId === conn.id);
+      const targets = slaves.flatMap((slave) => {
+        const template = ws.templates.find((t) => t.id === slave.templateId);
+        if (!template) return [];
+        return template.blocks.map((block) => ({ slave, block, readRanges: planBlockReads(block, template.points) }));
+      });
+      if (rt instanceof ConnectionRuntime) rt.configure(targets, slaves);
+      else rt.configure(targets);
     }
     const validKeys = new Set(ws.slaves.flatMap(slave => (ws.templates.find(t => t.id === slave.templateId)?.blocks ?? []).map(block => blockKey(slave.id, block.id))));
     for (const entry of this.cache.all()) if (!validKeys.has(entry.key)) this.cache.remove(entry.slaveId, entry.block.id);
+    this.sampleBuffers.reconcile(ws);
   }
 
   runtimeFor(connectionId: string): ConnectionRuntime | undefined {
@@ -248,7 +296,9 @@ export class RuntimeManager {
   private pointView(ref: PointRef): PointViewState {
     const key = blockKey(ref.slave.id, ref.block.id);
     const entry = this.cache.get(key);
+    const lastWrite = this.receiptFor(ref);
     const base: PointViewState = {
+      ...(lastWrite ? { lastWrite } : {}),
       pointId: ref.point.id,
       slaveId: ref.slave.id,
       rawText: '—',
@@ -261,7 +311,7 @@ export class RuntimeManager {
       enumLabel: null,
       hasValue: false,
     };
-    if (!entry || !entry.lastUpdateUtc || entry.status === 'idle' || entry.status === 'disabled') return base;
+    if (!canReadPoint(ref.point) || !entry || !entry.lastUpdateUtc || entry.status === 'idle' || entry.status === 'disabled' || !this.cache.mappingValid(entry, ref.point.mapping)) return base;
     let raw: DecodedRaw | null = null;
     try {
       raw = decodeRaw(entry.memory, ref.point.mapping);
@@ -308,14 +358,15 @@ export class RuntimeManager {
     return view;
   }
 
-  private blockView(key: string): BlockViewState | null {
+  private blockView(key: string, includeMemory = true): BlockViewState | null {
     const entry = this.cache.get(key);
     if (!entry) return null;
     return {
       key,
+      ...(includeMemory ? { valid: [...entry.valid] } : {}),
       slaveId: entry.slaveId,
-      registers: entry.lastUpdateUtc && entry.memory.kind === 'registers' ? Array.from(entry.memory.registers) : undefined,
-      bits: entry.lastUpdateUtc && entry.memory.kind === 'bits' ? [...entry.memory.bits] : undefined,
+      registers: includeMemory && entry.lastUpdateUtc && entry.memory.kind === 'registers' ? Array.from(entry.memory.registers) : undefined,
+      bits: includeMemory && entry.lastUpdateUtc && entry.memory.kind === 'bits' ? [...entry.memory.bits] : undefined,
       blockId: entry.block.id,
       blockName: entry.block.name,
       area: entry.block.area,
@@ -337,7 +388,7 @@ export class RuntimeManager {
       const rt = this.runtimes.get(conn.id);
       out[conn.id] = {
         state: rt?.state ?? 'offline',
-        detail: rt instanceof SlaveRuntime ? rt.detail : rt?.state === 'error' ? '连接异常' : null,
+        detail: rt?.detail ?? null,
         lastResponseUtc: this.diagnostics.lastOkUtcFor(conn.id),
         scan: rt instanceof ConnectionRuntime ? rt.scan : null,
         clientCount: rt instanceof SlaveRuntime ? rt.clientCount : undefined,
@@ -346,11 +397,26 @@ export class RuntimeManager {
     return out;
   }
 
+  private slaveViews(): Map<string, SlaveStateView> {
+    const states = new Map<string, SlaveStateView>();
+    for (const slave of this.workspaceService.current.slaves) {
+      const runtime = this.runtimes.get(slave.connectionId);
+      if (runtime instanceof ConnectionRuntime) {
+        states.set(slave.id, runtime.slaveState(slave));
+      } else {
+        const listener = runtime?.state;
+        const state = !slave.enabled ? 'disabled' : listener === 'online' || listener === 'connecting' ? listener : 'offline';
+        states.set(slave.id, { state, lastResponseUtc: null });
+      }
+    }
+    return states;
+  }
+
   /* ---------------- snapshot / delta ---------------- */
 
   private snapshotPrimed = false;
 
-  buildSnapshot(): AppSnapshot {
+  buildSnapshot(options?: { includeDiagnostics?: boolean }): AppSnapshot {
     const ws = this.workspaceService.current;
     const index = this.pointIndex();
     const points: Record<string, PointViewState> = {};
@@ -362,27 +428,25 @@ export class RuntimeManager {
     }
     const health: Record<string, ConnectionHealth> = {};
     for (const conn of ws.connections) health[conn.id] = this.healthFor(conn.id);
-    // The snapshot already carries the tail of both rings, so align the delta cursors:
-    // the next tick must only stream records the renderer does not have yet.
+    // Match block revisions to the initial snapshot. Diagnostic readers own their cursors.
     if (!this.snapshotPrimed) {
-      this.sentTxTotal = this.diagnostics.transactionTotal;
-      this.sentEventTotal = this.diagnostics.parseEventTotal;
       for (const entry of this.cache.all()) this.sentCacheRev.set(entry.key, entry.revision);
     }
     const snapshot: AppSnapshot = {
       revision: this.revision,
       update: this.updateState,
+      scriptRun: this.scripts.snapshot,
       workspace: ws,
       workspacePath: this.workspaceService.currentPath,
       dirty: this.workspaceService.isDirty(),
       connections: this.connectionViews(),
+      slaveStates: Object.fromEntries(this.slaveViews()),
       blocks,
       points,
-      transactions: this.diagnostics.recentTransactions(500),
-      parseEvents: this.diagnostics.recentParseEvents(200),
+      transactions: options?.includeDiagnostics === false ? [] : this.diagnostics.recentTransactions(500),
+      parseEvents: options?.includeDiagnostics === false ? [] : this.diagnostics.recentParseEvents(200),
       diagRev: this.diagRev,
       health,
-      recording: this.recordingView(),
       sessions: this.history.listSessions(),
       warnings: this.warnings,
       prefs: this.workspaceService.getPrefs(),
@@ -413,6 +477,7 @@ export class RuntimeManager {
       busLoadPercent: health.busLoadPercent,
       p95Ms: health.p95Ms,
       requestRatePerSec: health.requestRatePerSec,
+      throughputBytesPerSec: health.throughputBytesPerSec,
     });
     return health;
   }
@@ -425,27 +490,12 @@ export class RuntimeManager {
       if (!template) continue;
       for (const b of template.blocks) blocks.push({ slaveId: slave.id, unitId: slave.unitId, blockId: b.id, blockName: b.name, configuredPeriodMs: b.periodMs });
     }
-    return this.diagnostics.health(connectionId, this.clock.now(), blocks);
-  }
-
-  private recordingView(): RecordingView | null {
-    if (!this.recording) return null;
-    return {
-      sessionId: this.recording.sessionId,
-      groupId: this.recording.groupId,
-      groupName: this.recording.groupName,
-      startedUtc: this.recording.startedUtc,
-      signalCount: this.recording.schema.length,
-      elapsedMs: this.clock.now() - this.recording.startedMono,
-      sampleCount: this.recording.sampleCount,
-      eventCount: this.recording.eventCount,
-    };
+    return this.diagnostics.health(connectionId, this.clock.now(), blocks, 60, ws.connections.find(connection => connection.id === connectionId));
   }
 
   private tick(): void {
-    this.sampleRecording();
-    this.persistTransactions();
-    this.flushRecordingBuffers();
+    this.diagnostics.pruneHealth(this.clock.now());
+    this.sampleBuffers.expire(this.workspaceService.current);
     this.checkWarnings();
     const delta = this.collectDelta();
     if (delta && this.onDelta) this.onDelta(delta);
@@ -457,9 +507,17 @@ export class RuntimeManager {
     if (this.updateRevision !== this.sentUpdateRevision) {
       delta.update = this.updateState; this.sentUpdateRevision = this.updateRevision; changed = true;
     }
+    const scriptRun = this.scripts.snapshot;
+    if (scriptRun !== this.sentScriptRun) {
+      delta.scriptRun = scriptRun;
+      this.sentScriptRun = scriptRun;
+      changed = true;
+    }
     const ws = this.workspaceService.current;
     if (this.workspaceRev !== this.sentWorkspaceRev) {
       delta.workspace = ws;
+      if (this.workspaceMetadataOnly) delta.workspaceMetadataOnly = true;
+      this.workspaceMetadataOnly = false;
       delta.workspacePath = this.workspaceService.currentPath;
       this.sentWorkspaceRev = this.workspaceRev;
       changed = true;
@@ -474,46 +532,35 @@ export class RuntimeManager {
       this.lastConnStates = new Map(Object.entries(connViews));
       changed = true;
     }
+    const slaveViews = this.slaveViews();
+    const slaveChanges = new Map<string, SlaveStateView | null>();
+    for (const [id, view] of slaveViews) {
+      const before = this.lastSlaveStates.get(id);
+      if (before?.state !== view.state || before.lastResponseUtc !== view.lastResponseUtc) slaveChanges.set(id, view);
+    }
+    for (const id of this.lastSlaveStates.keys()) {
+      if (!slaveViews.has(id)) slaveChanges.set(id, null);
+    }
+    if (slaveChanges.size) {
+      delta.slaveStates = Object.fromEntries(slaveChanges);
+      this.lastSlaveStates = slaveViews;
+      changed = true;
+    }
     const blocks: Record<string, BlockViewState> = {};
-    const points: Record<string, PointViewState> = {};
-    const index = this.pointIndex();
-    const touchedSlaves = new Set<string>();
     for (const entry of this.cache.all()) {
       if ((this.sentCacheRev.get(entry.key) ?? -1) !== entry.revision) {
-        const v = this.blockView(entry.key);
+        const v = this.blockView(entry.key, false);
         if (v) blocks[entry.key] = v;
         this.sentCacheRev.set(entry.key, entry.revision);
-        touchedSlaves.add(entry.slaveId);
         changed = true;
-      }
-    }
-    if (touchedSlaves.size) {
-      for (const [pointId, ref] of index.entries()) {
-        if (touchedSlaves.has(ref.slave.id)) points[pointId] = this.pointView(ref);
       }
     }
     if (Object.keys(blocks).length) delta.blocks = blocks;
-    if (Object.keys(points).length) delta.points = points;
 
-    // Absolute cursors: the ring buffer trims at 5000 entries, so comparing lengths
-    // would silently stop streaming once the ring is full.
-    const txTotal = this.diagnostics.transactionTotal;
-    if (txTotal !== this.sentTxTotal) {
-      const txs = this.diagnostics.transactionsSince(this.sentTxTotal);
-      this.sentTxTotal = txTotal;
-      if (txs.length) {
-        delta.transactions = txs;
-        changed = true;
-      }
-    }
-    const evTotal = this.diagnostics.parseEventTotal;
-    if (evTotal !== this.sentEventTotal) {
-      const evs = this.diagnostics.parseEventsSince(this.sentEventTotal);
-      this.sentEventTotal = evTotal;
-      if (evs.length) {
-        delta.parseEvents = evs;
-        changed = true;
-      }
+    if (this.pendingWrites.size) {
+      delta.pointWrites = Object.fromEntries([...this.pendingWrites].filter(([key]) => this.writeReceipts.has(key)));
+      this.pendingWrites.clear();
+      changed = true;
     }
     if (this.healthDirty) {
       const health: Record<string, ConnectionHealth> = {};
@@ -544,11 +591,6 @@ export class RuntimeManager {
     if (this.diagRev !== this.sentDiagRev) {
       delta.diagRev = this.diagRev;
       this.sentDiagRev = this.diagRev;
-      changed = true;
-    }
-    if (this.recordingViewChanged) {
-      delta.recording = this.recordingView();
-      this.recordingViewChanged = false;
       changed = true;
     }
     if (this.sessionsRev !== this.sentSessionsRev) {
@@ -585,7 +627,6 @@ export class RuntimeManager {
   private healthDirty = true;
   private healthCache = new Map<string, { at: number; health: ConnectionHealth }>();
   private lastWarnCheck = 0;
-  private recordingViewChanged = false;
   private sentSessionsRev = -1;
   private sentPrefsRev = -1;
   private sentDirty: boolean | null = null;
@@ -611,149 +652,152 @@ export class RuntimeManager {
     }
   }
 
-  /* ---------------- recording ---------------- */
-
-  startRecording(groupId: string): CommandResult<RecordingView> {
-    if (this.recording) return { ok: false, error: '已有记录会话正在进行' };
-    const ws = this.workspaceService.current;
-    const group = ws.trendGroups.find((g) => g.id === groupId);
-    if (!group) return { ok: false, error: '趋势组不存在' };
-    const index = this.pointIndex();
-    const schema: SessionSignalSchema[] = group.signals.map((sig) => {
-      const ref = index.get(pointKey(sig.pointRef.slaveId, sig.pointRef.pointId));
-      const numeric = ref ? !['Bool', 'String'].includes(ref.point.mapping.rawType) && Object.keys(ref.point.enumMap).length === 0 : true;
-      return {
-        signalId: sig.id,
-        pointId: sig.pointRef.pointId,
-        slaveId: sig.pointRef.slaveId,
-        pointName: ref?.point.name ?? sig.pointRef.pointId,
-        connectionName: ref?.connection.name ?? '',
-        slaveName: ref?.slave.name ?? '',
-        blockName: ref?.block.name ?? '',
-        rawType: ref?.point.mapping.rawType ?? 'UInt16',
-        unit: ref?.point.unit ?? '',
-        scale: ref?.point.scale ?? 1,
-        offset: ref?.point.offset ?? 0,
-        decimalPlaces: ref?.point.decimalPlaces,
-        enumMap: ref?.point.enumMap ?? {},
-        recordMode: numeric ? 'samples' : 'events',
-      };
-    });
-    const sessionId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    this.history.createSession(sessionId, group.id, group.name, schema);
-    this.recording = {
-      sessionId,
-      groupId: group.id,
-      groupName: group.name,
-      startedMono: this.clock.now(),
-      startedUtc: new Date().toISOString(),
-      schema,
-      last: new Map(),
-      sampleCount: 0,
-      eventCount: 0,
-    };
-    this.recordedTxCursor = this.diagnostics.transactionTotal;
-    this.recordingViewChanged = true;
-    this.sessionsRev++;
-    return { ok: true, value: this.recordingView() as RecordingView };
-  }
-
-  stopRecording(): CommandResult<null> {
-    if (!this.recording) return { ok: false, error: '没有正在进行的记录会话' };
-    this.persistTransactions();
-    this.flushRecordingBuffers();
-    this.history.endSession(this.recording.sessionId);
-    this.recording = null;
-    this.recordingViewChanged = true;
-    this.sessionsRev++;
-    return { ok: true, value: null };
-  }
-
-  private sampleRecording(): void {
-    const rec = this.recording;
-    if (!rec) return;
-    const index = this.pointIndex();
-    const tMs = Math.round(this.clock.now() - rec.startedMono);
-    for (const sig of rec.schema) {
-      const ref = index.get(pointKey(sig.slaveId, sig.pointId));
-      if (!ref) continue;
-      const view = this.pointView(ref);
-      if (!view.hasValue) continue;
-      if (sig.recordMode === 'samples') {
-        const value = view.engNumber;
-        if (value === null) continue;
-        this.pendingSamples.push({ signalId: sig.signalId, tMs, value });
-        rec.sampleCount++;
-      } else {
-        const current: DecodedRaw = view.boolValue !== null ? view.boolValue : view.stringValue !== null ? view.stringValue : view.enumLabel ?? String(view.rawNumber);
-        const prev = rec.last.get(sig.signalId);
-        if (prev === undefined) {
-          rec.last.set(sig.signalId, current);
-          this.pendingEvents.push({ signalId: sig.signalId, tMs, kind: sig.rawType === 'Bool' ? 'bool' : sig.rawType === 'String' ? 'string' : 'enum', value: String(current) });
-          rec.eventCount++;
-        } else if (prev !== current) {
-          rec.last.set(sig.signalId, current);
-          this.pendingEvents.push({ signalId: sig.signalId, tMs, kind: sig.rawType === 'Bool' ? 'bool' : sig.rawType === 'String' ? 'string' : 'enum', value: String(current) });
-          rec.eventCount++;
-        }
-      }
-    }
-    this.recordingViewChanged = true;
-  }
-
-  private flushRecordingBuffers(): void {
-    if (!this.recording) return;
-    if (this.pendingSamples.length) {
-      this.history.insertSamples(this.recording.sessionId, this.pendingSamples);
-      this.pendingSamples = [];
-    }
-    if (this.pendingEvents.length) {
-      this.history.insertEvents(this.recording.sessionId, this.pendingEvents);
-      this.pendingEvents = [];
-    }
-  }
-
-  private persistTransactions(): void {
-    const rec = this.recording;
-    const total = this.diagnostics.transactionTotal;
-    if (!rec) { this.recordedTxCursor = total; return; }
-    const transactions = this.diagnostics.transactionsSince(this.recordedTxCursor);
-    const first = total - transactions.length;
-    if (first > this.recordedTxCursor) throw new Error('记录会话事务积压超过诊断环容量');
-    const rawEnabled = this.workspaceService.getPrefs().persistRawComm;
-    const slaves = this.workspaceService.current.slaves;
-    for (const [index, tx] of transactions.entries()) {
-      const tMs = Math.max(0, Math.round(tx.startMono - rec.startedMono));
-      const row: TransactionMetadataRow = {
-        traceId: tx.traceId, connectionId: tx.connectionId,
-        slaveId: slaves.find(slave => slave.connectionId === tx.connectionId && slave.unitId === tx.unitId)?.id ?? null,
-        unitId: tx.unitId, sourceKind: tx.sourceKind, sourceId: tx.sourceId,
-        functionCode: tx.functionCode, result: tx.result, tMs, startUtc: tx.startUtc,
-        durationMs: tx.durationMs, exceptionCode: tx.exceptionCode,
-        mbapTransactionId: tx.mbapTransactionId, summary: tx.summary,
-      };
-      this.history.insertTransaction(rec.sessionId, row, rawEnabled ? tx : null);
-      this.recordedTxCursor = first + index + 1;
-    }
-  }
-
-  recordWriteEvent(text: string): void {
-    if (!this.recording) return;
-    this.pendingEvents.push({ signalId: '__session', tMs: Math.round(this.clock.now() - this.recording.startedMono), kind: 'write', value: text });
-    this.recording.eventCount++;
-  }
-
-  private recordConnectionEvent(text: string): void {
-    if (!this.recording) return;
-    this.pendingEvents.push({ signalId: '__session', tMs: Math.round(this.clock.now() - this.recording.startedMono), kind: 'connection', value: text });
-    this.recording.eventCount++;
-  }
-
   /* ---------------- commands ---------------- */
 
   async handleCommand(cmd: Command): Promise<CommandResult> {
     const wsSvc = this.workspaceService;
     switch (cmd.type) {
+      case 'data.demand':
+        this.sampleBuffers.setDemand(cmd.clientId, cmd.points, wsSvc.current);
+        return { ok: true, value: null };
+      case 'data.read': {
+        const queryIds = cmd.series.flatMap(query => query.queryId ? [query.queryId] : []);
+        if (new Set(queryIds).size !== queryIds.length) return { ok: false, error: '曲线查询 ID 重复' };
+        const result: DataReadResult = { checkedAtMs: Date.now(), points: {}, blocks: {}, series: {}, buffers: {} };
+        const index = this.pointIndex();
+        for (const requested of cmd.points) {
+          const key = pointKey(requested.slaveId, requested.pointId);
+          const ref = index.get(key);
+          if (!ref) continue;
+          result.points[key] = this.pointView(ref);
+          const block = this.blockView(blockKey(ref.slave.id, ref.block.id), false);
+          if (block && !result.blocks[block.key]) result.blocks[block.key] = block;
+        }
+        for (const requested of cmd.blocks) {
+          const block = this.blockView(blockKey(requested.slaveId, requested.blockId));
+          if (block) result.blocks[block.key] = block;
+        }
+        const share = Math.max(1, Math.floor(MAX_READ_SAMPLES / Math.max(1, cmd.series.length)));
+        if (cmd.format === 'columns-v1') {
+          const columns: ColumnDataReadResult = { ...result, format: 'columns-v1', series: {}, buffers: {}, sampleBytes: 0 };
+          for (const ref of cmd.buffers) columns.buffers[pointKey(ref.slaveId, ref.pointId)] = this.sampleBuffers.infoColumns(ref);
+          const requests = [...new Map(cmd.series.map(request => [request.queryId ?? pointKey(request.slaveId, request.pointId), request])).entries()];
+          const budget = cmd.sampleBytes ?? MAX_READ_SAMPLE_BYTES;
+          let remainingSamples = MAX_READ_SAMPLES;
+          for (let index = 0; index < requests.length; index++) {
+            const [key, request] = requests[index]!;
+            const remaining = requests.length - index;
+            const page = this.sampleBuffers.readColumns(request, Math.max(1, Math.floor(remainingSamples / remaining)), Math.floor((budget - columns.sampleBytes) / remaining), budget - columns.sampleBytes);
+            columns.series[key] = page;
+            columns.sampleBytes += sampleColumnBytes(page.columns);
+            remainingSamples -= page.columns.times.length;
+          }
+          return { ok: true, value: columns };
+        }
+        for (const request of cmd.series) {
+          const key = request.queryId ?? pointKey(request.slaveId, request.pointId);
+          if (!result.series[key]) result.series[key] = this.sampleBuffers.read(request, share);
+        }
+        for (const ref of cmd.buffers) result.buffers[pointKey(ref.slaveId, ref.pointId)] = this.sampleBuffers.info(ref);
+        return { ok: true, value: result };
+      }
+      case 'buffer.configure': {
+        const current = bufferCapacity(wsSvc.current, cmd.config);
+        if (cmd.expectedCapacity !== undefined && cmd.expectedCapacity !== current) return { ok: false, error: '共享缓冲容量已被其他页面修改，请重新确认当前容量' };
+        wsSvc.set(workspaceSchema.parse(withBufferConfigs(wsSvc.current, [cmd.config])));
+        const saved = wsSvc.saveManaged();
+        this.publishWorkspaceMetadata();
+        if (!saved.ok) return { ok: false, error: `容量已更新，但工作区保存失败：${saved.error}` };
+        return { ok: true, value: this.sampleBuffers.info(cmd.config) };
+      }
+      case 'buffer.export':
+        return { ok: true, value: await this.sampleBuffers.exportCsv(cmd.points, cmd.path, cmd.startMs, cmd.endMs) };
+      case 'workbench.saveLayout':
+        wsSvc.set({ ...wsSvc.current, schemaVersion: 2, workbench: cmd.layout });
+        this.publishWorkspaceMetadata();
+        return { ok: true, value: null };
+      case 'script.save':
+      case 'script.delete': {
+        try {
+          const scripts = wsSvc.current.masterScripts ?? [];
+          const scriptId = cmd.type === 'script.save' ? cmd.script.id : cmd.scriptId;
+          const current = scripts.find(script => script.id === scriptId);
+          if ((current?.revision ?? null) !== cmd.expectedRevision) return { ok: false, error: '流程已在其他页面修改，请重新打开后编辑' };
+          if (cmd.type === 'script.delete' && this.scripts.snapshot?.scriptId === scriptId
+            && scriptIsActive(this.scripts.snapshot)) return { ok: false, error: '请先停止正在运行的流程' };
+          let saved: MasterScript | null = null;
+          let next = scripts.filter(script => script.id !== scriptId);
+          if (cmd.type === 'script.save') {
+            saved = { ...cmd.script, revision: current ? current.revision + 1 : 0 };
+            next = current ? scripts.map(script => script.id === scriptId ? saved! : script) : [...scripts, saved];
+          }
+          wsSvc.set(workspaceSchema.parse({ ...wsSvc.current, schemaVersion: 2, masterScripts: next }));
+          const result = wsSvc.saveManaged();
+          this.publishWorkspaceMetadata();
+          return result.ok ? { ok: true, value: saved } : { ok: false, error: result.error ?? '保存流程失败' };
+        } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+      }
+      case 'script.plan':
+      case 'script.start': {
+        const script = wsSvc.current.masterScripts?.find(item => item.id === cmd.scriptId);
+        if (!script || script.revision !== cmd.revision) return { ok: false, error: '流程已变更，请重新保存后运行' };
+        try {
+          const plan = this.scripts.prepare(script);
+          if (cmd.type === 'script.plan') return { ok: true, value: plan.approval };
+          return { ok: true, value: this.scripts.start(plan, cmd.approval, cmd.debug) };
+        } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+      }
+      case 'script.pause':
+        return this.scripts.pause(cmd.runId) ? { ok: true, value: null } : { ok: false, error: '流程当前无法暂停' };
+      case 'script.resume':
+        return this.scripts.resume(cmd.runId, cmd.token, cmd.mode) ? { ok: true, value: null } : { ok: false, error: '本次暂停已结束' };
+      case 'script.breakpoint':
+        return this.scripts.setBreakpoint(cmd.runId, cmd.blockId, cmd.enabled) ? { ok: true, value: null } : { ok: false, error: '此步骤不在当前运行的流程中' };
+      case 'script.stop':
+        this.scripts.stop(cmd.runId);
+        return { ok: true, value: null };
+      case 'script.confirmWrite':
+        return this.scripts.confirmWrite(cmd.runId, cmd.token)
+          ? { ok: true, value: null } : { ok: false, error: '本次写入确认已失效' };
+      case 'script.exportFile': {
+        const script = wsSvc.current.masterScripts?.find(item => item.id === cmd.scriptId);
+        if (!script) return { ok: false, error: '流程已不存在' };
+        const text = JSON.stringify({ format: 'modbus-master-script', version: 1, name: script.name, graph: script.graph }, null, 2);
+        const result = exportTextToFile(cmd.path, text);
+        return result.ok ? { ok: true, value: result.path } : { ok: false, error: result.error ?? '导出流程失败' };
+      }
+      case 'canvas.create':
+      case 'canvas.edit':
+      case 'canvas.delete': {
+        try {
+          let canvases = wsSvc.current.canvases ?? [];
+          if (cmd.type === 'canvas.create') {
+            if (canvases.some(c => c.id === cmd.canvas.id)) throw new Error('画布 ID 已存在');
+            validateCanvasBindings(wsSvc.current, cmd.canvas.widgets);
+            canvases = [...canvases, { ...cmd.canvas, revision: 0 }];
+          } else {
+            const current = canvases.find(c => c.id === cmd.canvasId);
+            if (!current) throw new Error('画布已删除，当前草稿仍保留');
+            if (current.revision !== cmd.expectedRevision) throw new Error('画布已在其他页面修改。草稿已保留，请重新载入最新版本后再编辑。');
+            if (cmd.type === 'canvas.delete') canvases = canvases.filter(c => c.id !== cmd.canvasId);
+            else {
+              // Existing broken references remain visible and repairable after template edits.
+              validateCanvasBindings(wsSvc.current, cmd.changes.upsertWidgets.filter(w => {
+                const old = current.widgets.find(x => x.id === w.id);
+                return !old || old.kind !== w.kind || old.inputMode !== w.inputMode || JSON.stringify(old.binding) !== JSON.stringify(w.binding) || JSON.stringify(old.signals) !== JSON.stringify(w.signals);
+              }));
+              const changed = applyCanvasChanges(current, cmd.expectedRevision, cmd.changes);
+              canvases = canvases.map(c => c.id === changed.id ? changed : c);
+            }
+          }
+          const next = workspaceSchema.parse({ ...wsSvc.current, schemaVersion: 2, canvases });
+          validateBufferBudget(next, wsSvc.current);
+          wsSvc.set(next);
+          const saved = wsSvc.saveManaged();
+          this.publishWorkspaceMetadata();
+          return saved.ok ? { ok: true, value: canvases } : { ok: false, error: `画布已更新，但写入文件失败：${saved.error}` };
+        } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+      }
       case 'template.save': {
         const template = wsSvc.current.templates.find(t => t.id === cmd.templateId);
         if (!template || (cmd.blockId !== undefined && !template.blocks.some(b => b.id === cmd.blockId))) return {ok:false,error:'模板或数据块不存在'};
@@ -763,6 +807,7 @@ export class RuntimeManager {
       }
       case 'template.rename': {
         if (!wsSvc.current.templates.some(t => t.id === cmd.templateId)) return {ok:false,error:'模板不存在'};
+        if (cmd.expectedName !== undefined && wsSvc.current.templates.find(t => t.id === cmd.templateId)?.name !== cmd.expectedName) return { ok: false, error: '模板名称已被其他页面修改，请重新载入后编辑。' };
         wsSvc.set(workspaceSchema.parse({...wsSvc.current,templates:wsSvc.current.templates.map(t => t.id === cmd.templateId ? {...t,name:cmd.name} : t)}));
         this.workspaceChanged();
         return {ok:true,value:null};
@@ -789,16 +834,20 @@ export class RuntimeManager {
         if (!session) return { ok: false, error: 'session not found' };
         const duration = Math.max(0, new Date(session.endUtc ?? new Date().toISOString()).getTime() - new Date(session.startUtc).getTime());
         if (cmd.tMs > duration) return { ok: false, error: 'Note is outside the session' };
-        this.history.insertEvents(cmd.sessionId, [{ signalId: '', tMs: cmd.tMs, kind: 'marker', value: cmd.text }]);
+        this.history.addNote(cmd.sessionId, cmd.tMs, cmd.text);
+        this.sessionsRev++;
         return { ok: true, value: null };
       }
       case 'workspace.new':
+        this.sampleBuffers.reset();
         wsSvc.newWorkspace();
         this.workspaceChanged();
         return { ok: true, value: null };
       case 'workspace.open': {
         const res = wsSvc.loadFrom(cmd.path);
         if (!res.ok) return { ok: false, error: res.error ?? 'open failed' };
+        this.scripts.stop();
+        this.sampleBuffers.reset();
         this.workspaceRev++;
         this.rebuildRuntimes();
         return { ok: true, value: wsSvc.currentPath };
@@ -822,11 +871,13 @@ export class RuntimeManager {
         const res = wsSvc.importFromBuffer(cmd.text);
         if (!res.ok || !res.workspace) return { ok: false, error: res.error ?? 'import failed' };
         wsSvc.adopt(res.workspace, null);
+        this.sampleBuffers.reset();
         this.workspaceChanged();
         return { ok: true, value: null };
       }
       case 'workspace.apply':
         wsSvc.set(cmd.workspace);
+        this.sampleBuffers.reset();
         this.workspaceChanged();
         return { ok: true, value: null };
       case 'connection.upsert':
@@ -844,8 +895,12 @@ export class RuntimeManager {
       case 'trend.setSignalVisible':
       case 'trend.setWindow':
         try {
-          wsSvc.set(mutateWorkspace(wsSvc.current, cmd));
-          this.workspaceChanged();
+          let next = mutateWorkspace(wsSvc.current, cmd);
+          if (cmd.type === 'trend.addSignals' && cmd.buffers) next = workspaceSchema.parse(withBufferConfigs(next, cmd.buffers, wsSvc.current));
+          if (cmd.type.startsWith('trend.')) validateBufferBudget(next, wsSvc.current);
+          wsSvc.set(next);
+          if (cmd.type.startsWith('trend.')) { wsSvc.scheduleAutosave(); this.publishWorkspaceMetadata(); }
+          else this.workspaceChanged();
           return { ok: true, value: null };
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -862,7 +917,7 @@ export class RuntimeManager {
         const rt = this.runtimes.get(cmd.connectionId);
         if (!rt) return { ok: false, error: 'connection runtime missing' };
         if (rt instanceof SlaveRuntime || rt.state === 'offline' || rt.state === 'error') await rt.start();
-        if (rt instanceof SlaveRuntime && rt.state === 'error') return { ok: false, error: rt.detail ?? '从站启动失败' };
+        if (rt.state === 'error') return { ok: false, error: rt.detail ?? '连接或启动失败' };
         return { ok: true, value: null };
       }
       case 'connection.disconnect': {
@@ -921,10 +976,6 @@ export class RuntimeManager {
         await rt.refresh(cmd.slaveId, cmd.blockId);
         return { ok: true, value: null };
       }
-      case 'trend.startRecording':
-        return this.startRecording(cmd.groupId);
-      case 'trend.stopRecording':
-        return this.stopRecording();
       case 'history.sessions':
         return { ok: true, value: this.history.listSessions() };
       case 'history.session':
@@ -943,7 +994,6 @@ export class RuntimeManager {
         };
       }
       case 'prefs.set': {
-        if (cmd.patch.persistRawComm !== undefined) this.persistTransactions();
         const prefs = wsSvc.updatePrefs(cmd.patch as Partial<import('../services/workspace').Prefs>);
         return { ok: true, value: prefs };
       }
@@ -951,70 +1001,128 @@ export class RuntimeManager {
         return { ok: true, value: this.diagnostics.healthSeriesFor(cmd.connectionId, cmd.windowMs) };
       case 'diagnostics.clear':
         this.diagnostics.clear();
-        // Totals stay monotonic across clear(); park the cursors so only new records stream.
-        this.sentTxTotal = this.diagnostics.transactionTotal;
-        this.sentEventTotal = this.diagnostics.parseEventTotal;
+        this.healthCache.clear();
+        this.healthDirty = true;
         this.diagRev += 1;
         return { ok: true, value: null };
+      case 'diagnostics.read':
+        return { ok: true, value: this.diagnostics.read(cmd) };
       default:
         return { ok: false, error: `unhandled command ${(cmd as { type: string }).type}` };
     }
   }
 
-  private async writePoint(cmd: Extract<Command, { type: 'point.write' }>): Promise<CommandResult> {
+  private scriptSlave(slaveId: string) {
+    const workspace = this.workspaceService.current;
+    const slave = workspace.slaves.find(item => item.id === slaveId);
+    const connection = workspace.connections.find(item => item.id === slave?.connectionId);
+    if (!slave || !connection || connection.role === 'slave') throw new Error('请选择工作区中的主站从站');
+    return {
+      label: `${connection.name} / ${slave.name} (Unit ${slave.unitId})`,
+      state: () => this.runtimeFor(connection.id)?.slaveState(slave).state ?? (slave.enabled ? 'offline' : 'disabled'),
+    };
+  }
+
+  private scriptPoint(reference: ScriptPointRef, access: 'read' | 'write'): ScriptPointBinding {
+    const ref = this.pointIndex().get(pointKey(reference.slaveId, reference.pointId));
+    if (!ref || ref.slave.id !== reference.slaveId || ref.point.id !== reference.pointId || ref.connection.role === 'slave') throw new Error('积木绑定的主站点位已失效，请重新选择');
+    const label = `${ref.connection.name} / ${ref.slave.name} (Unit ${ref.slave.unitId}) / ${ref.point.name}`;
+    if (!ref.slave.enabled) throw new Error(`${label} · 从站已停用`);
+    if (access === 'read' ? !canReadPoint(ref.point) : !canWritePoint(ref.point)) {
+      throw new Error(`${label} · ${access === 'read' ? '点位为只写' : '点位为只读'}`);
+    }
+    const key = blockKey(ref.slave.id, ref.block.id);
+    const span = { offset: ref.point.mapping.offset, length: mappingWidth(ref.block.area, ref.point.mapping) };
+    return {
+      ref: reference, blockKey: key, label, span, type: ref.point.mapping.rawType, highRisk: ref.point.highRisk,
+      identity: JSON.stringify([this.writeIdentity(ref), label, this.writeBindings.get(pointKey(reference.slaveId, reference.pointId))?.epoch]),
+      validateWrite: fields => { preparePointWrite(ref.point, fields); },
+      read: () => {
+        if (this.runtimeFor(ref.connection.id)?.state !== 'online') return { detail: '连接离线' };
+        const failure = this.cache.readFailure(key, span);
+        if (failure) return { detail: failure.status === 'exception' && failure.code !== null
+          ? `读取异常 0x${failure.code.toString(16).toUpperCase().padStart(2, '0')}` : failure.status === 'timeout' ? '读取超时' : '传输异常' };
+        const point = this.pointView(ref);
+        if (!point.hasValue) return { detail: '点位尚无确认值' };
+        const numeric = Object.keys(ref.point.enumMap).length ? point.rawNumber : point.engNumber;
+        const value = point.boolValue ?? point.stringValue ?? numeric;
+        if (value === null || (typeof value === 'number' && !Number.isFinite(value))) return { detail: '设备值无效' };
+        return { value, detail: point.engText || '空字符串', sampledAtMs: this.cache.confirmedAt(key, span) };
+      },
+    };
+  }
+
+  private async writePoint(cmd: Extract<Command, { type: 'point.write' }>, signal?: AbortSignal): Promise<CommandResult<PointWriteResult>> {
     const index = this.pointIndex();
     const ref = index.get(pointKey(cmd.slaveId, cmd.pointId));
     if (!ref) return { ok: false, error: '点位不存在' };
     const rt = this.runtimes.get(ref.connection.id);
     if (!rt || (!(rt instanceof SlaveRuntime) && rt.state !== 'online')) return { ok: false, error: '连接不在线' };
     if (!ref.slave.enabled) return { ok: false, error: '从站未启用' };
-    if (ref.point.access !== 'rw') return { ok: false, error: '点位为只读' };
+    if (!canWritePoint(ref.point)) return { ok: false, error: '点位为只读' };
     const m = ref.point.mapping;
 
     let rawValue: number | boolean | string;
-    if (m.rawType === 'Bool') {
-      if (cmd.boolValue === null) return { ok: false, error: 'Bool 点位需要布尔值' };
-      rawValue = cmd.boolValue;
-    } else if (m.rawType === 'String') {
-      if (cmd.stringValue === null) return { ok: false, error: 'String 点位需要文本值' };
-      const error = stringWriteError(m, cmd.stringValue);
-      if (error) return { ok: false, error };
-      rawValue = cmd.stringValue;
-    } else if (Object.keys(ref.point.enumMap).length > 0 && cmd.engineering !== null) {
-      const conv = engineeringToRaw(cmd.engineering, { scale: 1, offset: 0 }, m.rawType, m.bitWidth);
-      if (!conv.ok) return { ok: false, error: conv.reason };
-      rawValue = conv.value;
-    } else {
-      if (cmd.engineering === null) return { ok: false, error: '缺少工程值' };
-      const conv = engineeringToRaw(cmd.engineering, { scale: ref.point.scale, offset: ref.point.offset }, m.rawType, m.bitWidth);
-      if (!conv.ok) return { ok: false, error: conv.reason };
-      rawValue = conv.value;
-    }
+    try { rawValue = preparePointWrite(ref.point, cmd); }
+    catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
 
     if (rt instanceof SlaveRuntime) {
       try {
         rt.setPoint(ref.slave.id, ref.block.id, m, rawValue);
-        this.recordWriteEvent(`${ref.slave.name} / ${ref.point.name} 本地设值`);
         const delta = this.collectDelta(); if (delta) this.onDelta?.(delta);
-        return { ok: true, value: { phase: 'confirmed', result: 'ok', exceptionCode: null } satisfies PointWriteResult };
+        const result: PointWriteResult = { phase: 'confirmed', result: 'ok', exceptionCode: null };
+        this.recordWrite(ref, rawValue, cmd, result);
+        return { ok: true, value: result };
       } catch (error) { return { ok: false, error: String(error) }; }
     }
+    const identity = this.writeIdentity(ref);
+    const bindingEpoch = this.writeBindings.get(pointKey(cmd.slaveId, cmd.pointId))?.epoch;
     const outcome = await rt.writePoint({
       slave: ref.slave,
       block: ref.block,
       mapping: m,
       rawValue,
       pointId: ref.point.id,
-      readBackRange: { start: ref.block.start, length: ref.block.length },
+      access: ref.point.access as 'rw' | 'wo',
+      signal,
+      guard: () => {
+        const current = this.pointIndex().get(pointKey(cmd.slaveId, cmd.pointId));
+        if (!current || this.writeIdentity(current) !== identity || this.writeBindings.get(pointKey(cmd.slaveId, cmd.pointId))?.epoch !== bindingEpoch || this.runtimes.get(ref.connection.id) !== rt) throw new Error('点位配置已改变，请核对原设备的写入结果');
+      },
     });
-    this.recordWriteEvent(`${ref.slave.name} / ${ref.point.name} ← ${cmd.boolValue !== null ? cmd.boolValue : cmd.stringValue ?? cmd.engineering} · ${outcome.result}${outcome.exceptionCode === null ? '' : ` (0x${outcome.exceptionCode.toString(16)})`}${outcome.writeSent ? '' : ' · 预读失败，未发送写请求'}`);
     this.healthDirty = true;
     const value: PointWriteResult = {
-      phase: !outcome.writeSent ? 'not-sent' : outcome.result === 'exception' ? 'rejected' : outcome.readBack?.result === 'ok' ? 'confirmed' : 'unknown',
+      phase: !outcome.writeSent ? 'not-sent' : outcome.result === 'exception' ? 'rejected' : outcome.result === 'ok' ? 'confirmed' : 'unknown',
       result: outcome.result,
       exceptionCode: outcome.exceptionCode,
     };
+    this.recordWrite(ref, rawValue, cmd, value);
     return { ok: true, value };
+  }
+
+  private writeReceipts = new Map<string, { identity: string; receipt: PointWriteReceipt }>();
+  private pendingWrites = new Map<string, PointWriteReceipt>();
+  private writeBindings = new Map<string, { identity: string; epoch: number }>();
+  private writeBindingSequence = 0;
+
+  private writeIdentity(ref: PointRef): string {
+    return JSON.stringify([ref.connection, ref.slave.unitId, ref.block.area, ref.block.start, ref.point.mapping, ref.point.access, ref.point.scale, ref.point.offset, ref.point.enumMap]);
+  }
+
+  private receiptFor(ref: PointRef): PointWriteReceipt | undefined {
+    const record = this.writeReceipts.get(pointKey(ref.slave.id, ref.point.id));
+    return record && record.identity === this.writeIdentity(ref) ? record.receipt : undefined;
+  }
+
+  private recordWrite(ref: PointRef, raw: number | boolean | string, cmd: Extract<Command, { type: 'point.write' }>, result: PointWriteResult): void {
+    const atMs = Date.now();
+    const engineering = typeof raw === 'number' ? Object.keys(ref.point.enumMap).length ? raw : toEngineering(raw, ref.point) : null;
+    const text = typeof raw === 'boolean' ? raw ? 'ON' : 'OFF' : typeof raw === 'string' ? raw : ref.point.enumMap[String(raw)] ?? formatEngineeringNumber(engineering!, ref.point.decimalPlaces);
+    const previous = this.receiptFor(ref);
+    const receipt: PointWriteReceipt = { phase: result.phase, result: result.result, attempted: String(cmd.stringValue ?? cmd.boolValue ?? cmd.engineering), atMs, exceptionCode: result.exceptionCode,
+      accepted: result.phase === 'confirmed' ? { value: raw, engineering, text, atMs } : previous?.accepted };
+    this.writeReceipts.set(pointKey(ref.slave.id, ref.point.id), { identity: this.writeIdentity(ref), receipt });
+    this.pendingWrites.set(pointKey(ref.slave.id, ref.point.id), receipt);
   }
 
   sessions(): SessionSummary[] {

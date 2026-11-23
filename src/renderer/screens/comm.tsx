@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useApp, useHealth, useParseEvents, useTransactions, useWorkspace } from '../store/app';
+import { useApp, useHealth, useWorkspace } from '../store/app';
+import { useDiagnostics } from '../features/diagnostics/use-diagnostics';
 import { Button, InfoBand, OverflowMenu, PageHeader, TextInput } from '../components/ui';
 import { DataTable, type Column } from '../components/table';
 import { NumericChart, type LineSeries } from '../components/chart';
@@ -60,8 +61,6 @@ export function CommScreen() {
   const { t } = useTranslation();
   const resultLabel = useCallback((kind: ResultKind) => t(RESULT_LABEL[kind]), [t]);
   const workspace = useWorkspace();
-  const allTransactions = useTransactions();
-  const parseEvents = useParseEvents();
   const selection = useApp((s) => s.selection);
   const select = useApp((s) => s.select);
   const command = useApp((s) => s.command);
@@ -75,6 +74,9 @@ export function CommScreen() {
 
   const connectionId = selection.connectionId ?? workspace?.connections[0]?.id ?? null;
   const connection = workspace?.connections.find((c) => c.id === connectionId);
+  const diagnostics = useDiagnostics(connection?.id ?? null, selection.commView === 'messages' && paused === null);
+  const allTransactions = diagnostics.transactions;
+  const parseEvents = diagnostics.parseEvents;
 
   // Keep filters at transaction scope: a result/slave/search choice applies to both frames.
   const transactions = useMemo(() => {
@@ -176,6 +178,8 @@ export function CommScreen() {
         selectedKey={selectedMessage?.key ?? null}
         onRowClick={handleRowClick}
       />
+      {diagnostics.error && <InfoBand>{`诊断读取失败 · ${diagnostics.error}`}</InfoBand>}
+      {diagnostics.overwritten && <InfoBand>部分通信记录已被新的记录覆盖，当前显示可用记录。</InfoBand>}
       {selected ? (
         <>
           <div className="flex items-center justify-between mt-6 mb-3">
@@ -264,6 +268,7 @@ function HealthView(props: { connectionId: string; connectionName: string }) {
   const setModule = useApp((s) => s.setModule);
   const command = useApp((s) => s.command);
   const connectionId = props.connectionId;
+  const tcp = workspace?.connections.find(connection => connection.id === connectionId)?.transport === 'tcp';
   const [chart, setChart] = useState<HealthChart>({ series: [], startMs: 0, endMs: 0, samples: 0 });
 
   // The samples are produced in Main (one per health recomputation, ~1 Hz) and pulled with a
@@ -280,8 +285,8 @@ function HealthView(props: { connectionId: string; connectionName: string }) {
         endMs,
         samples: res.value.length,
         series: [
-          { name: t('comm.busLoadSeries'), color: '#0078D4', data: res.value.map((s) => [s.t, s.busLoadPercent] as [number, number]) },
-          { name: t('comm.p95Series'), color: '#D97706', data: res.value.map((s) => [s.t, s.p95Ms] as [number, number]) },
+          { name: tcp ? '吞吐' : t('comm.busLoadSeries'), unit: tcp ? 'KiB/s' : '%', color: '#0078D4', data: res.value.map((s) => [s.t, tcp ? (s.throughputBytesPerSec ?? 0) / 1024 : s.busLoadPercent] as [number, number]) },
+          { name: t('comm.p95Series'), unit: 'ms', color: '#D97706', data: res.value.map((s) => [s.t, s.p95Ms] as [number, number]) },
         ],
       });
     };
@@ -291,7 +296,7 @@ function HealthView(props: { connectionId: string; connectionName: string }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [command, connectionId, t]);
+  }, [command, connectionId, t, tcp]);
 
   const health = healthMap[connectionId];
   // Stable identity so DataTable's row memo can bail out between health refreshes.
@@ -323,11 +328,11 @@ function HealthView(props: { connectionId: string; connectionName: string }) {
     );
   }
   const cards = [
-    { label: t('comm.cardBusLoad'), value: `${health.busLoadPercent.toFixed(0)}%`, sub: health.busLoadPercent > 80 ? <span className="text-warn">{t('comm.busLoadHigh')}</span> : <span className="text-ok">{t('comm.busLoadOk')}</span>, tone: health.busLoadPercent > 80 ? 'text-warn' : 'text-ok' },
+    { label: tcp ? '通信吞吐' : t('comm.cardBusLoad'), value: tcp ? `${((health.throughputBytesPerSec ?? 0) / 1024).toFixed(1)} KiB/s` : `${health.busLoadPercent.toFixed(0)}%`, sub: tcp ? <span className="text-ink2">Modbus 收发字节速率</span> : health.busLoadPercent > 80 ? <span className="text-warn">{t('comm.busLoadHigh')}</span> : <span className="text-ok">{t('comm.busLoadOk')}</span>, tone: !tcp && health.busLoadPercent > 80 ? 'text-warn' : 'text-ok' },
     { label: t('comm.cardRequestRate'), value: `${health.requestRatePerSec.toFixed(1)} /s`, sub: <span className="text-ink2">{t('comm.recent1min')}</span>, tone: 'text-ink' },
     { label: t('comm.cardAvgLatency'), value: `${health.p50Ms.toFixed(1)} ms`, sub: <span className="text-ink2">{t('comm.p95Value', { value: health.p95Ms.toFixed(1) })}</span>, tone: 'text-ink' },
-    { label: t('comm.cardTimeouts'), value: String(health.timeouts), sub: <span className="text-ink2">{t('comm.recent10min')}</span>, tone: health.timeouts ? 'text-warn' : 'text-ink' },
-    { label: t('comm.cardCrcErrors'), value: String(health.crcErrors), sub: <span className="text-ink2">{t('comm.recent10min')}</span>, tone: health.crcErrors ? 'text-err' : 'text-ok' },
+    { label: t('comm.cardTimeouts'), value: String(health.timeouts), sub: <span className="text-ink2">{t('comm.recent1min')}</span>, tone: health.timeouts ? 'text-warn' : 'text-ink' },
+    { label: t('comm.cardCrcErrors'), value: String(health.crcErrors), sub: <span className="text-ink2">{t('comm.recent1min')}</span>, tone: health.crcErrors ? 'text-err' : 'text-ok' },
   ];
 
   return (
@@ -365,7 +370,8 @@ function TraceView(props: { connectionId: string }) {
   const { t } = useTranslation();
   const resultLabel = useCallback((kind: ResultKind) => t(RESULT_LABEL[kind]), [t]);
   const workspace = useWorkspace();
-  const allTransactions = useTransactions();
+  const diagnostics = useDiagnostics(props.connectionId);
+  const allTransactions = diagnostics.transactions;
   const select = useApp((s) => s.select);
   const setModule = useApp((s) => s.setModule);
   const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
@@ -395,6 +401,8 @@ function TraceView(props: { connectionId: string }) {
   return (
     <>
       <PageHeader title={t('comm.title')} subtitle={t('comm.traceSubtitle')} />
+      {diagnostics.error && <InfoBand>{`诊断读取失败 · ${diagnostics.error}`}</InfoBand>}
+      {diagnostics.overwritten && <InfoBand>部分通信记录已被新的记录覆盖，当前显示可用记录。</InfoBand>}
       <DataTable
         columns={traceCols}
         rows={txs}

@@ -87,7 +87,6 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     await click('图表');
     await browser.waitUntil(async()=> (await charts()).length===1);
     expect((await charts())[0]).toEqual({units:['V','°C'],count:3});
-    await click('● 开始记录'); await browser.pause(1300); await click('■ 停止记录');
     await rail('历史'); await click('状态与事件'); await waitText('固件版本');
     const track=await $('[data-state-track="string"]');
     expect(await track.$$('[data-string-label]')).toHaveLength(1);

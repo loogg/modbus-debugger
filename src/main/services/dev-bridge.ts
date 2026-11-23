@@ -7,6 +7,8 @@ import type { AppBackendService } from './backend-service';
 import type { BridgeClientMessage, BridgeServerMessage } from '../../shared/preload-api';
 import type { AppDelta } from '../../shared/snapshot';
 import { validateBridgeCommand } from './dev-bridge-access';
+import { encodeDataReadFrame } from '../../shared/data-read-frame';
+import type { ColumnDataReadResult } from '../../shared/point-data';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_FRAME_BYTES = 4 * 1024 * 1024;
@@ -248,7 +250,7 @@ export class DevBridgeServer {
 
     if (msg.type === 'snapshot') {
       try {
-        const snapshot = this.backend.getSnapshot();
+        const snapshot = this.backend.getSnapshot(msg.options);
         this.sendJson(socket, {
           type: 'response',
           id: msg.id,
@@ -281,7 +283,9 @@ export class DevBridgeServer {
         const command = validateBridgeCommand(msg.command,this.fileRoots,this.backend.manager);
         const result = await this.backend.handleCommand(command);
         if (result.ok) {
-          this.sendJson(socket, {
+          if (command.type === 'data.read' && command.format === 'columns-v1') {
+            if (!socket.destroyed && socket.writable) this.sendFrame(socket, 0x2, Buffer.from(encodeDataReadFrame(msg.id, result.value as ColumnDataReadResult)));
+          } else this.sendJson(socket, {
             type: 'response',
             id: msg.id,
             ok: true,

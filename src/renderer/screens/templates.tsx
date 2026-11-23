@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp, useConnectionStates, useWorkspace } from '../store/app';
 import { BlockMemoryLayout } from '../components/block-memory-layout';
 import { TemplateProperties } from '../components/template-properties';
+import { PollPeriodSelect } from '../components/poll-period-select';
 import { PointPropertyInspector } from '../components/point-property-inspector';
 import { Button, EmptyState, InfoBand, InfoColumns, PageHeader, SectionTitle, Select, StatusDot, TextInput } from '../components/ui';
 import { DataTable, type Column } from '../components/table';
@@ -10,6 +11,7 @@ import { findBlockOverlaps } from '../../domain/overlap';
 import type { BlockDef, PointDef } from '../../domain/model';
 import { buildImportPlan } from '../../domain/import-plan';
 import { useTranslation } from '../i18n';
+import { useViewActive, useViewWindow } from '../workbench/view-context';
 
 export function TemplatesScreen() {
   const { t } = useTranslation();
@@ -107,6 +109,8 @@ export function TemplatesScreen() {
 }
 
 function TemplateEdit(props: { templateId: string }) {
+  const viewWindow = useViewWindow();
+  const active = useViewActive();
   const { t } = useTranslation();
   const workspace = useWorkspace();
   const selection = useApp((s) => s.selection);
@@ -144,7 +148,7 @@ function TemplateEdit(props: { templateId: string }) {
   }, [command, openOverlay, selectedPoint, t, template, toast]);
 
   useEffect(() => {
-    if (!template || !block) return;
+    if (!template || !block || !active) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const target = e.target as HTMLElement | null;
@@ -158,9 +162,9 @@ function TemplateEdit(props: { templateId: string }) {
         }
       }
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [block, deletePoint, search, selectedPoint, template]);
+    viewWindow.addEventListener('keydown', onKeyDown);
+    return () => viewWindow.removeEventListener('keydown', onKeyDown);
+  }, [block, deletePoint, search, selectedPoint, template, active, viewWindow]);
 
   const save = async () => {
     const res = await command({ type: 'template.save', templateId:props.templateId,blockId:block?.id });
@@ -173,8 +177,8 @@ function TemplateEdit(props: { templateId: string }) {
   const points = template.points.filter((p) => p.blockId === block.id && (!search || p.name.includes(search)));
   const detail = points.find((p) => p.id === selectedPoint) ?? points[0];
 
-  const handleSavePoint = async (updated: PointDef): Promise<boolean> => {
-    const res = await command({ type: 'template.upsertPoint', templateId: template.id, point: updated });
+  const handleSavePoint = async (updated: PointDef, expected: PointDef): Promise<boolean> => {
+    const res = await command({ type: 'template.upsertPoint', templateId: template.id, point: updated, expected });
     if (res.ok) {
       toast({ kind: 'success', title: t('templates.pointSavedToast') });
       return true;
@@ -189,7 +193,7 @@ function TemplateEdit(props: { templateId: string }) {
     { id: 'type', header: t('templates.colType'), width: 100, render: (p) => <span className="text-xs text-ink2">{p.mapping.rawType}</span> },
     { id: 'map', header: t('templates.colMap'), width: 120, render: (p) => <span className="text-xs">{p.mapping.rawType === 'Bool' ? `bit ${p.mapping.bitOffset}` : p.mapping.rawType === 'BitField' ? `bits ${p.mapping.bitOffset}..${p.mapping.bitOffset + p.mapping.bitWidth - 1}` : t('templates.registers', { n: p.mapping.registerCount })}</span> },
     { id: 'unit', header: t('templates.colUnit'), width: 70, render: (p) => <span className="text-xs">{p.unit || '—'}</span> },
-    { id: 'access', header: t('templates.colAccess'), width: 90, render: (p) => <span className={`text-xs ${p.access === 'rw' ? 'text-accent font-medium' : 'text-ink2'}`}>{p.access === 'rw' ? t('templates.accessRw') : t('templates.accessRo')}</span> },
+    { id: 'access', header: t('templates.colAccess'), width: 90, render: (p) => <span className={`text-xs ${p.access !== 'ro' ? 'text-accent font-medium' : 'text-ink2'}`}>{p.access === 'wo' ? t('templates.accessWo') : p.access === 'rw' ? t('templates.accessRw') : t('templates.accessRo')}</span> },
     { id: 'desc', header: t('templates.colDesc'), width: 140, render: (p) => <span className="text-xs text-ink2">{p.mapping.wordOrder !== 'ABCD' ? p.mapping.wordOrder : p.enumMap && Object.keys(p.enumMap).length ? 'Enum' : p.mapping.rawType === 'String' ? p.mapping.stringEncoding.toUpperCase() : ''}</span> },
     {
       id: 'actions',
@@ -275,7 +279,7 @@ function TemplateEdit(props: { templateId: string }) {
           <div className="grid grid-cols-3 gap-4">
             <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.startAddress')}</div><TextInput type="number" value={String(block.start)} onChange={(e) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { start: Number(e.target.value) } })} /></label>
             <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.length')}</div><TextInput type="number" value={String(block.length)} onChange={(e) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { length: Number(e.target.value) } })} /></label>
-            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.period')}</div><Select value={String(block.periodMs)} onChange={(v) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { periodMs: Number(v) } })} options={[...new Set([50, 100, 200, 500, 1000, block.periodMs])].sort((a, b) => a - b).map(value => ({ value: String(value), label: `${value} ms` }))} /></label>
+            <label className="block"><div className="text-xs text-ink2 mb-1.5">{t('templates.period')}</div><PollPeriodSelect value={String(block.periodMs)} onChange={(v) => void command({ type: 'template.patchBlock', templateId: template.id, blockId: block.id, patch: { periodMs: Number(v) } })} /></label>
           </div>
           <InfoBand tone="blue">{t(block.area <= 2 ? 'templates.calcBitRange' : 'templates.calcRange', { start: block.start, end: block.start + block.length - 1, n: block.length })}</InfoBand>
         </div>

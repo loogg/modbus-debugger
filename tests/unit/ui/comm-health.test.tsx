@@ -21,7 +21,7 @@ it('keeps shared-template health rows distinct, displays real Unit IDs, and open
     command: async <T,>() => ({ ok: true, value: [] as T }),
     snapshot: { revision: 1, workspace, workspacePath: null, dirty: false, connections: {}, blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0,
       health: { 'tcp-master': { connectionId: 'tcp-master', busLoadPercent: 5, requestRatePerSec: 1, p50Ms: 1, p95Ms: 2, timeouts: 0, crcErrors: 0, exceptions: 0, unexpected: 0, windowSec: 60, blocks } },
-      recording: null, warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '', sessions: [] },
+      warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '', sessions: [] },
   });
   render(<CommScreen />);
   expect(screen.getByText('从站 1 / HR')).toBeInTheDocument();

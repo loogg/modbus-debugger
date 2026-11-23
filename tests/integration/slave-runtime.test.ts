@@ -16,6 +16,7 @@ import { createScratch } from '../../tools/test-paths.mjs';
 import { slaveWorkspace } from '../support/slave-workspace';
 import { FakeClock, hex, unhex } from '../support/fake';
 import type { ConnectionDef } from '../../src/domain/model';
+import type { DataReadResult } from '../../src/shared/point-data';
 import type { AppDelta } from '../../src/shared/snapshot';
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -198,7 +199,7 @@ it('uses the formal SerialTransport for RTU fragmentation, broadcast, disabled U
   expect(hex(port.sent[0]!)).toBe(firstResponse);
 });
 
-it('Main commands publish confirmed values, persist initial memory, record samples and prevent master-only requests', async () => {
+it('Main commands publish confirmed values, persist initial memory, buffer samples and prevent master-only requests', async () => {
   const dir = createScratch('slave-manager-');
   const workspace = slaveWorkspace(await freePort());
   const service = new WorkspaceService(dir); service.adopt(workspace, null);
@@ -217,11 +218,11 @@ it('Main commands publish confirmed values, persist initial memory, record sampl
   expect(JSON.parse(fs.readFileSync(service.currentPath!, 'utf8')).slaves[0].initialValues.find((value: { blockId: string }) => value.blockId === 'b3').values[0]).toBe(321);
   expect((await manager.handleCommand({ type: 'device.temporaryRead', connectionId: 'server', unitId: 1, area: 3, start: 0, quantity: 1 })).ok).toBe(false);
   expect((await manager.handleCommand({ type: 'device.scan', connectionId: 'server', from: 1, to: 2 })).ok).toBe(false);
-  expect(manager.startRecording('trend').ok).toBe(true);
-  await waitFor(() => manager.buildSnapshot().recording!.sampleCount > 0);
-  const sessionId = manager.buildSnapshot().recording!.sessionId;
-  manager.stopRecording();
-  expect(history.readSamples(sessionId).some(sample => sample.value === 321)).toBe(true);
+  const buffered = await manager.handleCommand({ type: 'data.read', points: [], blocks: [], buffers: [],
+    series: [{ slaveId: 's1', pointId: 'p3', limit: 2000 }] });
+  expect(buffered.ok).toBe(true);
+  expect((buffered as { ok: true; value: DataReadResult }).value.series['s1::p3']!.samples.some(sample => sample.value === 321)).toBe(true);
+  expect(history.listSessions()).toEqual([]);
   const secondService = new WorkspaceService(path.join(dir, 'second')); secondService.adopt(service.current, null);
   const secondHistory = await HistoryStore.open(path.join(dir, 'second-history.db'));
   const second = new RuntimeManager(secondService, secondHistory); second.start(); cleanup.push(() => second.stop());

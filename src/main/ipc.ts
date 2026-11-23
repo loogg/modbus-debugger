@@ -13,11 +13,11 @@ export function registerIpc(
   const service =
     managerOrService instanceof AppBackendService
       ? managerOrService
-      : new AppBackendService(managerOrService, updater!, getWindow, {
+      : new AppBackendService(managerOrService, updater!, () => BrowserWindow.getFocusedWindow() ?? getWindow(), {
         allowWholeWorkspaceApply: !app.isPackaged || Boolean(process.env.MODBUS_E2E_WORKSPACE),
       });
 
-  ipcMain.handle(IPC_CHANNELS.snapshot, () => service.getSnapshot());
+  ipcMain.handle(IPC_CHANNELS.snapshot, (_event, options) => service.getSnapshot(options));
   ipcMain.handle(IPC_CHANNELS.versions, () => service.getVersions());
   ipcMain.handle(IPC_CHANNELS.command, async (_event, raw: unknown): Promise<CommandResult> => {
     return service.handleCommand(raw);

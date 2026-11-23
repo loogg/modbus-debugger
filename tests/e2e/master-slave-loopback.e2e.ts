@@ -1,31 +1,47 @@
-import { browser, $, expect } from '@wdio/globals';
+import { browser, $, $$, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loopbackWorkspace, loopVectors } from '../support/loopback-workspace';
 import type { ModbusApi } from '../../src/shared/preload-api';
 import type { Workspace } from '../../src/domain/model';
+import type { DataReadResult } from '../../src/shared/point-data';
 import type { Command } from '../../src/shared/commands';
 
 const snapshot = () => browser.execute(() => (window as unknown as { modbus: ModbusApi }).modbus.getSnapshot());
 const command = (command: Command) => browser.execute(command => (window as unknown as { modbus: ModbusApi }).modbus.command(command), command);
 const rail = (name: string) => $(`//nav//button[normalize-space(.)="${name}"]`).click();
-const click = (name: string) => $(`//button[normalize-space(.)="${name}"]`).click();
+async function visibleElement(selector: string) {
+  for (const element of await $$(selector)) if (await element.isDisplayed()) return element;
+  throw new Error(`Visible control not found: ${selector}`);
+}
+const click = async (name: string) => (await visibleElement(`//button[normalize-space(.)="${name}"]`)).click();
 const evidence = path.resolve('out/test-temp/loopback-evidence/native');
 const capture = async (name: string) => { fs.mkdirSync(evidence, { recursive: true }); await browser.saveScreenshot(path.join(evidence, name)); };
 async function apply(workspace: Workspace) {
   for (const connection of (await snapshot()).workspace.connections) await command({ type: 'connection.disconnect', connectionId: connection.id });
   expect((await command({ type: 'workspace.apply', workspace })).ok).toBe(true);
 }
-async function selectSlave(name: string) { await rail('实时'); await $(`//button[.//span[normalize-space(.)="${name}"]]`).click(); }
+async function selectSlave(name: string) { await rail('实时'); await (await visibleElement(`//button[.//span[normalize-space(.)="${name}"]]`)).click(); }
 async function editPoint(name: string, value: string) {
   const search = await $('//input[@placeholder="搜索点位"]');
   await search.setValue(name);
   const cell = await $(`//div[normalize-space(text())="${name}"]/following-sibling::div[2]`);
   await cell.doubleClick();
   const input = await $('input.w-24'); await input.click();
-  // ChromeDriver's sendKeys supports BMP only; a real clipboard paste also covers emoji.
-  await browser.electron.execute((electron, text) => electron.clipboard.writeText(text), value);
-  await browser.keys(['Control', 'a']); await browser.keys(['Control', 'v']); await browser.keys('Enter');
+  // Electron's native text input supports full Unicode and the editor's normal input events.
+  await browser.electron.execute(electron => {
+    const windows = electron.BrowserWindow.getAllWindows();
+    if (windows.length !== 1) throw new Error('Expected one native test window');
+    windows[0]!.focus(); windows[0]!.webContents.focus();
+  });
+  await browser.keys(['Control', 'a']); await browser.keys('Backspace');
+  await browser.electron.execute(async (electron, text) => {
+    const window = electron.BrowserWindow.getFocusedWindow();
+    if (!window) throw new Error('Native editor window is not focused');
+    await window.webContents.insertText(text);
+  }, value);
+  await browser.waitUntil(async () => await input.getValue() === value, { timeoutMsg: 'Native text input did not reach the editor' });
+  await browser.keys('Enter');
 }
 
 describe('packaged native application tests its own TCP and RTU master/slave together', () => {
@@ -75,35 +91,37 @@ describe('packaged native application tests its own TCP and RTU master/slave tog
       expect(await $('.spin').isExisting()).toBe(false);
       await capture(`${transport}-string-invalid-keeps-confirmed.png`);
       await selectSlave(`${transport.toUpperCase()} 从站 Unit 1`);
-      expect(await $('//button[normalize-space(.)="编辑从站内存"]').isDisplayed()).toBe(true);
-      expect(await $('//button[normalize-space(.)="刷新全部"]').isExisting()).toBe(false);
+      await browser.waitUntil(async () => {
+        for (const button of await $$('//button[normalize-space(.)="编辑从站内存"]')) if (await button.isDisplayed()) return true;
+        return false;
+      });
+      expect(await (await visibleElement('//button[normalize-space(.)="编辑从站内存"]')).isDisplayed()).toBe(true);
+      for (const button of await $$('//button[normalize-space(.)="刷新全部"]')) expect(await button.isDisplayed()).toBe(false);
       await capture(`${transport}-server-realtime.png`);
     });
 
-    it(`${transport.toUpperCase()} records both ends, opens charts/history/replay and exports full-precision CSV`, async () => {
-      expect((await command({ type: 'prefs.set', patch: { persistRawComm: true } })).ok).toBe(true);
+    it(`${transport.toUpperCase()} buffers both ends, opens charts and exports full-precision CSV`, async () => {
       await rail('趋势');
       await $(`//button[contains(.,"${transport.toUpperCase()} 主从四类趋势")]`).click();
-      await click('● 开始记录');
-      await browser.waitUntil(async () => (await snapshot()).recording?.groupId === `${transport}-trend`);
-      const sessionId = (await snapshot()).recording!.sessionId;
+      const group = (await snapshot()).workspace.trendGroups.find(item => item.id === `${transport}-trend`)!;
+      const refs = group.signals.map(signal => ({ slaveId: signal.pointRef.slaveId, pointId: signal.pointRef.pointId }));
       for (const [pointId, value] of [['Float32-ABCD-holding', 15.25], ['Enum-holding', 2], ['UTF8-holding', '记录🙂']] as const) {
         expect((await command({ type: 'point.write', slaveId: `${transport}-master-1`, pointId, engineering: typeof value === 'number' ? value : null, boolValue: null, stringValue: typeof value === 'string' ? value : null })).ok).toBe(true);
       }
-      await browser.waitUntil(async () => (await snapshot()).recording!.sampleCount >= 4);
+      let data: DataReadResult | null = null;
+      await browser.waitUntil(async () => {
+        const result = await command({ type: 'data.read', points: [], blocks: [], buffers: refs, series: refs.map(ref => ({ ...ref, limit: 2000 })) });
+        if (!result.ok) return false;
+        data = result.value as DataReadResult;
+        return Object.values(data.series).every(series => series.samples.length > 0);
+      });
       await click('图表'); await capture(`${transport}-four-renderer-charts.png`);
-      await click('■ 停止记录');
-      await rail('历史');
-      await $(`//button[contains(.,"${transport.toUpperCase()} 主从四类趋势")]`).click();
-      await browser.waitUntil(async () => (await $('body').getText()).includes('导出 CSV'));
-      await click('导出 CSV');
-      const csv = await browser.execute(() => navigator.clipboard.readText());
+      const file = path.join(evidence, `${transport}-samples.csv`);
+      expect((await command({ type: 'buffer.export', points: refs, path: file })).ok).toBe(true);
+      const csv = fs.readFileSync(file, 'utf8');
       expect(csv).toContain('15.25'); expect(csv).toContain('2.345678901234'); expect(csv).toContain('记录🙂');
-      await capture(`${transport}-history.png`);
-      await click('回放'); await capture(`${transport}-replay.png`);
-      const data = await command({ type: 'history.sessionData', sessionId });
-      expect(data.ok).toBe(true);
-      fs.writeFileSync(path.join(evidence, `${transport}-session.json`), JSON.stringify(data, null, 2));
+      await capture(`${transport}-buffers.png`);
+      fs.writeFileSync(path.join(evidence, `${transport}-buffers.json`), JSON.stringify(data, null, 2));
     });
   }
 });

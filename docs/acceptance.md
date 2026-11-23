@@ -13,32 +13,40 @@
 - Exception Response、Unexpected Response 与 malformed frame 分类正确；至少区分 OK / Exception Response / Unexpected Response / Timeout / CRC Error / Malformed Frame / Transport Error。结构合法但 TCP TID/Unit/FC 不匹配或 RTU Unit/FC/预期响应不匹配时，必须进入 Unexpected Response，不能污染当前请求结果。
 - 协议尺寸边界按 PDU ≤ 253、RTU ADU ≤ 256、TCP ADU ≤ 260 bytes 测试；buffer 上限和异常等待边界明确，非法 Length / 连续噪声不会导致无限等待、无限内存增长或永久失步。
 - TCP Timeout 后迟到旧响应通过 Transaction ID 被识别，不得错误匹配到后续请求。
-- RTU Timeout / 截断 / 严重帧错误后执行 bounded drain / quiet recovery；在有界 drain 窗口结束前不启动也不接受下一请求的响应，并有“迟到旧响应 + 后续同 Unit/同 FC 新请求”的回归用例。
+- RTU 超时清理过期半包并结束事务，空闲期间的完整迟到帧记诊断，下一请求发送前清理事务间残留并满足发送侧帧间静默。覆盖超时半包、空闲迟到帧和后续合法请求恢复，同格式迟到应答的归属歧义按现行协议文档记录。
 - Parser 错误恢复不得依赖无条件清空整个接收缓冲区；错误帧后合法帧不得被一起丢弃。
 - Malformed / Unexpected / Resync 都产生可诊断记录，至少包含错误类型、原因、相关 Raw Bytes、Resync 丢弃字节数/范围和 request/connection context；不得静默吞掉异常数据。
 - Block overlap 被拒绝，Point overlap 被允许；四类地址区与 0-based 行为正确。
-- Realtime / Trend / Recorder 复用同一 Block Cache，没有重复 Poll。
+- Realtime / Trend / Canvas / 采样缓冲 复用同一 Block Cache，没有重复 Poll。
+- 主站同一连接的从站分别判定通信状态和最后应答时间。覆盖首次确认、连续三轮无有效应答、匹配异常应答、恢复、断开和停用。设备通信状态可绑定到画布指示灯，实时与趋势显示实际读取错误并保留已确认值。
 - Renderer 通过共享 DTO 和细粒度 Main 命令编辑工作区；连续编辑不丢失已提交的其他字段，非法引用与重复 ID 不改变当前状态，配置重建不与旧传输关闭重叠。
-- Editing / Pending / Confirmed / Exception / Timeout / Read Back 状态完整。
-- 写请求在传输错误（即使驱动已接收字节）、超时或坏响应后不得自动重发；除设备明确拒绝外须尝试回读。回读失败须结束“写入中”并显示未知，不冒充写成功或设备值。
+- Editing / Pending / 写应答成功 / 设备拒绝 / 结果未知 / 预读失败状态完整。
+- 写请求发送一次，正常应答按地址、写值/数量/掩码完整匹配，异常应答拒绝，超时、传输错误或持续错误应答标记未知。命令结果与设备采集值分别验证，只写点位保留最近成功命令，输入及 pending 独立于确认缓存。
 - Point Mapping 的 Int/UInt/Float/Bool/Enum/String、Endian、UInt8 高低字节、BitField、String encoding/length 有 Golden Test；数值点位显示精度 0–12、旧工作区默认值、趋势 Tooltip/历史显示及原始样本不舍入有相关测试。
 - Scale/Offset、量化、raw range、bit width、Scale=0、NaN/±∞ 写前校验有测试。
-- RTU / TCP 正式 Transport 已实现；Scheduler 优先级、Scanner 独占、Write→Read Back、RMW 原子序列有 Integration Test。
+- RTU / TCP 正式 Transport、Scheduler 优先级、Scanner 独占、写应答确认、最新值 RMW 与 FC22 掩码写有 Integration Test。混合块分片、只写地址排除、范围有效性及真实样本覆盖有定向验证。
 - 每个事务的 `traceId`、source metadata、Raw ADU/PDU、duration、result 完整；TCP MBAP ID 与 `traceId` 分离。
+
+## 主站积木脚本
+
+- Blockly 可保存、导入和导出流程，Lua 预览随积木更新。点位按主站实例和权限选择，失效绑定可重新选择，多个页面的过期编辑会被拒绝。
+- 核对读、写、等待、断言、延时、判断和限次循环。高风险写入需要确认，已发送请求按应答结算，停止会取消后续步骤和未发送写入。断言使用当前有效确认值，显式等待新采样可验证写后反馈，失败步骤可定位。
+- 主窗口、独立窗口和紧凑尺寸验证编辑、保存、运行与停止。通信联调使用隔离工作区和独立模拟器。
 
 ## 本机从站
 
-- TCP Server / RTU 从站均支持 FC01/02/03/04/05/06/15/16、多 Unit、独立内存、广播写不响应和正确异常码；完整请求校验失败不发生部分写入。
+- TCP Server / RTU 从站均支持 FC01/02/03/04/05/06/15/16/22、多 Unit、独立内存、广播写不响应和正确异常码。完整请求校验后原子提交，网络读取遵守点位可读范围。
 - TCP 多客户端独立分帧/TID、任意分片和连续多帧、坏帧恢复、客户端与缓冲/发送队列有界；停止后关闭客户端/监听器/串口，立即重启可用，端口冲突有明确错误。
-- 从站不创建 Poll，四区本地设值、实时/趋势/Recorder/诊断共享 Main Cache；草稿和失败不污染实际值。保存初始值后重启恢复，旧工作区保持主站语义。
+- 从站不创建 Poll，四区本地设值、实时/趋势/采样缓冲/诊断共享 Main Cache；草稿和失败不污染实际值。保存初始值后重启恢复，旧工作区保持主站语义。
 - 连接角色、监听/串口参数、启动/停止、添加本机 Unit/模板、内存编辑/保存初始值，以及 RX 请求/TX 响应方向经真实界面审查；原生与虚拟串口互操作分别记录证据。
 
 ## Trend / History / Diagnosis / Import
 
 - 从站扫描页提供默认折叠的高级配置；FC01/02/03/04、起始地址、超时、重试经 IPC 校验并作用于实际请求。折叠不重置参数，扫描中禁止修改，不改变连接默认值；FC01/02 读取 1 位的短响应正常识别。
 - 临时读取默认 10 个寄存器；从站扫描支持停止、保留部分结果、恢复排队请求与轮询。扫描等待当前写确认原子组结束，不并发占用连接；重复扫描/非法范围拒绝，切换页面后进度和停止操作仍可用，合法异常响应显示实际异常码。
-- Numeric / Bool / Enum / String 四类 Trend Renderer 与记录语义完整。
-- Record Session Schema Snapshot 能抵抗后续 Template 修改。
+- 扫描接受目标从站的匹配正常或设备异常应答。网关路径不可用及目标无应答的异常码在诊断中可查，扫描发现列表仅包含目标从站应答。
+- Numeric / Bool / Enum / String 四类 Trend Renderer、确认采样缓冲和手动导出语义完整。
+- 既有历史会话的 Schema Snapshot 在当前 Template 修改后保持原来的解释。
 - Scanner、Temporary Read、Raw Inspector、Connection Health、Point Trace、Offline Replay 全部真实接线。
 - 扫描常用范围预填按钮只修改输入，不自动发包；通信帧详情复制请求/响应 Hex 的内容与原始报文一致。
 - Import 支持 XLSX / CSV / JSON / Clipboard 的 Mapping + Preview + overlap 阻止。
@@ -47,7 +55,7 @@
 
 - `.workspace.json` 自动保存、另存为、导入/导出、schema migration、原子写入、重启恢复有测试。
 - Workspace 中共享 Template 不按 Slave 复制；Template 独立导入/导出后绑定关系正确。
-- `history.db` 路径配置、Session 持久化、10 GB 提醒和可选 Raw Communication 正确。
+- `history.db` 路径、已有 Session/原始通信读取、备注持久化和 10 GB 提醒正确。
 - 历史库增长基准有可重复结果；当前目标为单会话 100 万数值样本，打包版打开会话与完整 CSV 导出各应在 30 秒内完成，回放游标操作应在 5 秒内完成。容量提醒不得被表述成同等容量的性能验收；目标变化时须重测。
 - 更新包、临时文件和备份均落在选定的数据根目录；启动路径不可写时明确报错退出，不静默回退到 AppData。自动化测试不修改日常用户偏好、工作区或历史库。
 
@@ -65,7 +73,7 @@
 - 09 — 趋势 / 信号
 - 10 — 趋势 / 添加信号
 - 11 — 趋势 / 图表
-- 11B — 趋势 / 记录中
+- 11B — 趋势 / 采样缓冲与导出
 - 12 — 历史 / 记录会话
 - 12B — 历史 / 信号
 - 13 — 通信 / 诊断
@@ -97,14 +105,14 @@
 ## Simulator / Fixtures
 
 - Fake Transport 可重复制造 Exception / Timeout / Delay / CRC / Disconnect / Reconnect，并可按任意 chunk 边界注入半包、粘包、混合切分、噪声与 malformed frame。
-- Standalone Simulator 与正式 TS Client 保持独立实现，并覆盖 FC01/02/03/04/05/06/15/16、多 Unit、动态 Numeric、Bool edge、Enum、String、写成功/拒绝/结果未知、RMW、Scanner、Temporary Read。
+- Standalone Simulator 与正式 TS Client 保持独立实现，覆盖 FC01/02/03/04/05/06/15/16/22、多 Unit、动态 Numeric、Bool edge、Enum、String、写成功/拒绝/结果未知、只写地址、RMW、Scanner、Temporary Read。
 - Golden Fixtures 的 expected bytes 不由被测 Codec 生成；额外包含错误帧/垃圾数据后紧跟合法帧、TCP 迟到 TID、RTU Timeout 后迟到旧响应等恢复序列，验证 Parser / Runtime 能继续正确关联后续正常帧。
 
 ## 更新与自升级
 
 - 当前版本由 Main 提供；只查询本项目 GitHub Releases 的正式版本，按 SemVer 比较并匹配同架构、同运行形式的附件，不自动降级。
 - Main 完成流式下载、进度、取消、大小与 SHA-256 校验；校验失败不可安装或打开下载位置，切换页面不丢失状态且不干扰通信轮询。
-- 用户确认后保存工作区、结束记录与通信，再安装并重启；目录/ZIP、Portable、Setup 均完成真实版本切换。保留原工作区、偏好、历史库、自选数据目录及未知用户文件。
+- 用户确认后保存工作区、停止通信并关闭历史库，再安装并重启；目录/ZIP、Portable、Setup 均完成真实版本切换。保留原工作区、偏好、历史库、自选数据目录及未知用户文件。
 - 文件清单校验拒绝路径越界、链接和用户文件冲突；新程序启动失败或安装中断时恢复旧程序及必要的安装登记。覆盖中文/空格路径和 Portable 外层 EXE 改名。
 
 ## 模板与数据块

@@ -158,7 +158,7 @@ describe('PLC reference conversion (import layer only)', () => {
 
 describe('Workspace schema + migration', () => {
   it('empty workspace validates', () => {
-    expect(emptyWorkspace().schemaVersion).toBe(1);
+    expect(emptyWorkspace().schemaVersion).toBe(2);
   });
   it('v0 payload with top-level blocks/points migrates into templates', () => {
     const migrated = migrateWorkspace({

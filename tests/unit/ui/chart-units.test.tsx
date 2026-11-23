@@ -2,12 +2,28 @@ import React from 'react';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 import { NumericChart, type LineSeries } from '../../../src/renderer/components/chart';
-const mocks = vi.hoisted(() => ({ setOption: vi.fn() }));
-vi.mock('echarts', () => ({ init: () => ({ setOption: mocks.setOption, dispose: vi.fn(), resize: vi.fn() }) }));
-beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
-afterEach(() => { cleanup(); mocks.setOption.mockClear(); });
+const mocks = vi.hoisted(() => ({ setOption: vi.fn(), resize: vi.fn(), observers: [] as ResizeObserverCallback[] }));
+vi.mock('echarts', () => ({ init: () => ({ setOption: mocks.setOption, dispose: vi.fn(), resize: mocks.resize, on: vi.fn(), dispatchAction: vi.fn(), getOption: () => undefined }) }));
+beforeEach(() => { vi.stubGlobal('ResizeObserver', class { constructor(callback: ResizeObserverCallback) { mocks.observers.push(callback); } observe() {} disconnect() {} }); });
+afterEach(() => { cleanup(); mocks.setOption.mockClear(); mocks.resize.mockClear(); mocks.observers.length = 0; });
 const series = (unit: string, value: number): LineSeries => ({ name: unit, unit, color: '#000', data: [[0, value], [1, value]] });
 describe('numeric chart unit axes', () => {
+  it('passes current layout dimensions when a Host is resized or shown', () => {
+    render(<NumericChart series={[series('V', 48)]} />);
+    const observer = mocks.observers[0]!;
+    observer([{ contentRect: { width: 609, height: 300 } } as ResizeObserverEntry], {} as ResizeObserver);
+    expect(mocks.resize).toHaveBeenLastCalledWith({ width: 609, height: 300 });
+    observer([{ contentRect: { width: 0, height: 0 } } as ResizeObserverEntry], {} as ResizeObserver);
+    expect(mocks.resize).toHaveBeenLastCalledWith({ width: 1, height: 1 });
+  });
+  it('exposes real zoom and crosshair controls for interactive curve views', () => {
+    render(<NumericChart series={[series('V', 48), series('A', 1.2)]} interactive />);
+    const option = mocks.setOption.mock.calls[0]![0];
+    expect(option.dataZoom.map((zoom: { type: string }) => zoom.type)).toEqual(['inside', 'slider']);
+    expect(option.tooltip.axisPointer.type).toBe('cross');
+    expect(option.toolbox.feature.dataZoom.yAxisIndex).toBe('none');
+    expect(option.legend.formatter('V')).toBe('V (V)');
+  });
   it('uses independent axes and matching series indices for unlike physical units', () => {
     render(<NumericChart series={[series('V', 48), series('rpm', 1500), { ...series('V', 24), name: 'supply' }]} />);
     const option = mocks.setOption.mock.calls[0]![0];

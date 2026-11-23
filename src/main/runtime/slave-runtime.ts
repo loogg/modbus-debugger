@@ -1,6 +1,7 @@
 import net from 'node:net';
 import log from 'electron-log';
 import type { ConnectionDef, SlaveDef } from '../../domain/model';
+import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_RECONNECT_INTERVAL_MS } from '../../domain/model';
 import { buildRtuAdu, buildTcpAdu, parseMbap, splitRtuAdu, RtuStreamingFramer, TcpStreamingFramer, systemClock, type Clock, type Framer, type FramerEvent } from '../../domain/protocol';
 import { decodeSlaveRequest, executeSlaveRequest, SlaveRequestError, slaveExceptionPdu, slaveRequestRange, type SlaveMemory } from '../../domain/protocol/slave';
 import { encodeRaw, type PointMapping } from '../../domain/mapping';
@@ -28,8 +29,8 @@ export class SlaveRuntime {
   private serialQueue = Promise.resolve();
   private serialPending = 0;
   private serialFramer: Framer;
-  private retryAt = 0;
-  private retryDelay = 1000;
+  private retryAt: number | null = null;
+  private openAbort: AbortController | null = null;
   private closing = false;
   readonly clock: Clock;
 
@@ -98,7 +99,20 @@ export class SlaveRuntime {
     return {
       read: (area, start, quantity) => {
         const parts = segments(area, start, quantity);
-        return parts ? parts.flatMap(part => this.values(part.entry).slice(part.offset, part.offset + part.length)) : null;
+        if (!parts) return null;
+        for (const part of parts) {
+          const ranges = this.targets.find(target => blockKey(target.slave.id, target.block.id) === part.entry.key)?.readRanges;
+          if (ranges && Array.from({ length: part.length }, (_, index) => part.offset + index).some(offset => !ranges.some(range => range.offset <= offset && range.offset + range.length > offset))) return null;
+        }
+        return parts.flatMap(part => this.values(part.entry).slice(part.offset, part.offset + part.length));
+      },
+      maskWrite: (address, andMask, orMask) => {
+        const part = segments(3, address, 1)?.[0];
+        if (!part) return false;
+        const next = this.values(part.entry);
+        next[part.offset] = (next[part.offset]! & andMask) | (orMask & ~andMask & 0xffff);
+        this.commit(part.entry, next);
+        return true;
       },
       write: (area, start, values) => {
         const parts = segments(area, start, values.length);
@@ -148,13 +162,14 @@ export class SlaveRuntime {
     if (this.opening) return this.opening;
     if (this.state === 'online') return;
     this.stopped = false;
-    this.retryAt = 0;
+    this.retryAt = null;
     if (!this.timer) this.timer = setInterval(() => this.tick(), 25);
-    this.opening = this.open();
-    try { await this.opening; } finally { this.opening = null; }
+    this.openAbort = new AbortController();
+    this.opening = this.open(this.openAbort.signal);
+    try { await this.opening; } finally { this.opening = null; this.openAbort = null; }
   }
 
-  private async open(): Promise<void> {
+  private async open(signal: AbortSignal): Promise<void> {
     await this.closeResources();
     if (this.stopped) return;
     this.setState('connecting');
@@ -165,21 +180,43 @@ export class SlaveRuntime {
         const server = net.createServer(socket => this.accept(socket));
         this.server = server;
         await new Promise<void>((resolve, reject) => {
-          const failed = (error: Error) => reject(error);
-          server.once('error', failed);
-          server.listen({ host: settings.host, port: settings.port, exclusive: true }, () => {
-            server.off('error', failed);
-            server.on('error', error => { if (!this.stopped) this.fail(error); });
-            resolve();
+          let settled = false;
+          const finish = (error?: Error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            signal.removeEventListener('abort', cancelled);
+            if (error) reject(error); else resolve();
+          };
+          const cancelled = () => finish(new Error('TCP listen cancelled'));
+          const timeoutMs = this.opts.config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+          const timer = setTimeout(() => {
+            finish(new Error(`TCP listen timeout (${timeoutMs} ms)`));
+            this.openAbort?.abort();
+          }, timeoutMs);
+          signal.addEventListener('abort', cancelled, { once: true });
+          server.on('error', error => {
+            if (!settled) finish(error);
+            else if (this.server === server && !this.stopped && !this.closing) this.fail(error);
           });
+          if (signal.aborted) { cancelled(); return; }
+          try {
+            server.listen({ host: settings.host, port: settings.port, exclusive: true, signal }, () => {
+              if (settled || this.stopped) { server.close(); return; }
+              finish();
+            });
+          } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
         });
       } else {
         if (!this.opts.serial) throw new Error('缺少串口配置');
         this.serialFramer.reset();
-        await this.opts.serial.connect();
+        const serial = this.opts.serial;
+        const cancelled = () => { void serial.close().catch(() => undefined); };
+        signal.addEventListener('abort', cancelled, { once: true });
+        try { await serial.connect(this.opts.config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS); }
+        finally { signal.removeEventListener('abort', cancelled); }
       }
       if (this.stopped) { await this.closeResources(); return; }
-      this.retryDelay = 1000;
       this.setState('online');
     } catch (error) {
       await this.closeResources();
@@ -200,7 +237,7 @@ export class SlaveRuntime {
 
   private tick(): void {
     if (this.stopped) return;
-    if (this.retryAt && this.clock.now() >= this.retryAt && !this.opening) { void this.start(); return; }
+    if (this.retryAt !== null && this.clock.now() >= this.retryAt && !this.opening) { void this.start(); return; }
     if (this.state !== 'online') return;
     this.handleEvents(this.serialFramer.tick());
     for (const [socket, framer] of this.clients) this.handleEvents(framer.tick(), socket);
@@ -208,9 +245,8 @@ export class SlaveRuntime {
 
   private fail(error: Error): void {
     this.setState('error', error.message);
-    if (this.opts.config.reconnect === 'auto') {
-      this.retryAt = this.clock.now() + this.retryDelay;
-      this.retryDelay = Math.min(10000, this.retryDelay * 2);
+    if (!this.stopped && this.opts.config.reconnect === 'auto' && this.retryAt === null) {
+      this.retryAt = this.clock.now() + (this.opts.config.reconnectIntervalMs ?? DEFAULT_RECONNECT_INTERVAL_MS);
     }
   }
 
@@ -306,7 +342,8 @@ export class SlaveRuntime {
   stop(): Promise<void> {
     if (this.stopping) return this.stopping;
     this.stopped = true;
-    this.retryAt = 0;
+    this.retryAt = null;
+    this.openAbort?.abort();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     const shutdown = this.finishStop();

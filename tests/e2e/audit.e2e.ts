@@ -87,7 +87,7 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     expect(tcpPeer?.hasValue).toBe(true);
     expect(tcpPeer?.engNumber).not.toBe(2345);
     const transactions = confirmed.transactions.filter(tx => tx.connectionId === conn.id);
-    expect(transactions.some(tx => tx.sourceKind === 'readback' && tx.sourceId === 'pt-speed' && tx.result === 'ok' && tx.responseAduHex)).toBe(true);
+    expect(transactions.some(tx => tx.sourceKind === 'poll' && tx.result === 'ok' && tx.responseAduHex)).toBe(true);
     fs.mkdirSync('out/test-temp/full-e2e/rtu', { recursive: true });
     fs.writeFileSync('out/test-temp/full-e2e/rtu/ui-write-readback.json', JSON.stringify({ connection: conn, slave, point: confirmed.points[`${slave.id}::pt-speed`], tcpPeer, transactions }, null, 2));
     await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/rtu/ui-write-readback.png'));
@@ -210,8 +210,7 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await click('保存');
     expect((await snap()).dirty).toBe(false);
   });
-  it('历史：记录实际样本、备注持久化、CSV 转义、回放播放/暂停与返回', async () => {
-    await realtime(); await rail('趋势'); await click('● 开始记录'); await browser.pause(1400); await click('■ 停止记录');
+  it('历史：读取旧库样本、备注持久化、CSV 转义、回放播放/暂停与返回', async () => {
     await rail('历史'); await waitText('功耗分析');
     await click('添加备注'); await fill('input[aria-label="备注内容"]','audit "note",测试'); await click('保存备注'); await waitText('audit "note",测试');
     await click('导出 CSV');
@@ -281,6 +280,7 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await click('复制组'); await browser.waitUntil(async () => (await snap()).workspace.trendGroups.length === 3);
     await click('删除组'); await browser.waitUntil(async () => (await snap()).workspace.trendGroups.length === 2);
     await realtime(); await $('button[role="checkbox"]').click(); await click('加入趋势组');
+    await click('添加信号');
     await browser.waitUntil(async () => (await snap()).workspace.trendGroups.some(g => g.signals.length >= 9));
   });
 

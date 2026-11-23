@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import type { BlockDef, DeviceTemplate, PointDef } from '../../domain/model';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useDirtyGuard } from '../workbench/view-context';
+import { pointSchema, type BlockDef, type DeviceTemplate, type PointDef } from '../../domain/model';
 import { registersForType, type RawType } from '../../domain/mapping';
 import { DEFAULT_DECIMAL_PLACES, MAX_DECIMAL_PLACES } from '../../domain/point-format';
 import { useTranslation } from '../i18n';
@@ -9,13 +10,13 @@ export interface PointPropertyInspectorProps {
   point: PointDef;
   template: DeviceTemplate;
   block: BlockDef;
-  onSave: (updated: PointDef) => Promise<boolean>;
+  onSave: (updated: PointDef, expected: PointDef) => Promise<boolean>;
   onDelete: (point: PointDef) => void;
   onOpenDrawer: () => void;
 }
 
 export function PointPropertyInspector({
-  point,
+  point: incoming,
   template,
   block,
   onSave,
@@ -23,13 +24,15 @@ export function PointPropertyInspector({
   onOpenDrawer,
 }: PointPropertyInspectorProps) {
   const { t } = useTranslation();
+  const [point, setBaseline] = useState(incoming);
+  const sync = useRef({ incoming, dirty: false });
 
   const [name, setName] = useState(point.name);
   const [rawType, setRawType] = useState<RawType>(point.mapping.rawType);
   const [offset, setOffset] = useState(String(point.mapping.offset));
   const [bitOffset, setBitOffset] = useState(String(point.mapping.bitOffset ?? 0));
   const [bitWidth, setBitWidth] = useState(String(point.mapping.bitWidth ?? 1));
-  const [access, setAccess] = useState<'ro' | 'rw'>(point.access);
+  const [access, setAccess] = useState<PointDef['access']>(point.access);
   const [unit, setUnit] = useState(point.unit ?? '');
   const [format, setFormat] = useState(point.displayFormat ?? 'auto');
   const [decimalPlaces, setDecimalPlaces] = useState(String(point.decimalPlaces ?? DEFAULT_DECIMAL_PLACES));
@@ -51,32 +54,40 @@ export function PointPropertyInspector({
   );
   const [saving, setSaving] = useState(false);
 
-  // Sync draft when selected point changes
-  useEffect(() => {
-    setName(point.name);
-    setRawType(point.mapping.rawType);
-    setOffset(String(point.mapping.offset));
-    setBitOffset(String(point.mapping.bitOffset ?? 0));
-    setBitWidth(String(point.mapping.bitWidth ?? 1));
-    setAccess(point.access);
-    setUnit(point.unit ?? '');
-    setFormat(point.displayFormat ?? 'auto');
-    setDecimalPlaces(String(point.decimalPlaces ?? DEFAULT_DECIMAL_PLACES));
-    setScale(String(point.scale ?? 1));
-    setOffsetEng(String(point.offset ?? 0));
-    setWordOrder(point.mapping.wordOrder ?? 'ABCD');
-    setEncoding(point.mapping.stringEncoding ?? 'ascii');
-    setStrLen(String(point.mapping.stringLength ?? 8));
-    setEnumText(Object.entries(point.enumMap ?? {}).map(([k, v]) => `${k}=${v}`).join(', '));
-    setHighRisk(point.highRisk ?? false);
-    setDescription(point.description ?? '');
+  const resetDraft = useCallback((incoming: PointDef) => {
+    setBaseline(incoming);
+    setName(incoming.name);
+    setRawType(incoming.mapping.rawType);
+    setOffset(String(incoming.mapping.offset));
+    setBitOffset(String(incoming.mapping.bitOffset ?? 0));
+    setBitWidth(String(incoming.mapping.bitWidth ?? 1));
+    setAccess(incoming.access);
+    setUnit(incoming.unit ?? '');
+    setFormat(incoming.displayFormat ?? 'auto');
+    setDecimalPlaces(String(incoming.decimalPlaces ?? DEFAULT_DECIMAL_PLACES));
+    setScale(String(incoming.scale ?? 1));
+    setOffsetEng(String(incoming.offset ?? 0));
+    setWordOrder(incoming.mapping.wordOrder ?? 'ABCD');
+    setEncoding(incoming.mapping.stringEncoding ?? 'ascii');
+    setStrLen(String(incoming.mapping.stringLength ?? 8));
+    setEnumText(Object.entries(incoming.enumMap ?? {}).map(([k, v]) => `${k}=${v}`).join(', '));
+    setHighRisk(incoming.highRisk ?? false);
+    setDescription(incoming.description ?? '');
     setShowAdvanced(
-      point.mapping.wordOrder !== 'ABCD' ||
-      Boolean(point.enumMap && Object.keys(point.enumMap).length) ||
-      point.mapping.rawType === 'String' ||
-      Boolean(point.highRisk)
+      incoming.mapping.wordOrder !== 'ABCD' ||
+      Boolean(incoming.enumMap && Object.keys(incoming.enumMap).length) ||
+      incoming.mapping.rawType === 'String' ||
+      Boolean(incoming.highRisk)
     );
-  }, [point]);
+  }, []);
+
+  // Refresh clean forms, but retain the original baseline of a dirty editor.
+  useEffect(() => {
+    if (JSON.stringify(incoming) === JSON.stringify(sync.current.incoming)) return;
+    sync.current.incoming = incoming;
+    if (incoming.id === point.id && sync.current.dirty) return;
+    resetDraft(incoming);
+  }, [incoming, point.id, resetDraft]);
 
   const offsetNum = Math.max(0, parseInt(offset, 10) || 0);
   const strLenNum = Math.max(1, parseInt(strLen, 10) || 1);
@@ -105,6 +116,9 @@ export function PointPropertyInspector({
     highRisk !== (point.highRisk ?? false) ||
     description !== (point.description ?? '') ||
     enumText !== Object.entries(point.enumMap ?? {}).map(([k, v]) => `${k}=${v}`).join(', ');
+
+  sync.current.dirty = isDirty;
+  useDirtyGuard(isDirty);
 
   const shared = template.points.filter(
     (p) =>
@@ -159,7 +173,7 @@ export function PointPropertyInspector({
 
     setSaving(true);
     try {
-      await onSave(updated);
+      if (await onSave(updated, point)) resetDraft(pointSchema.parse(updated));
     } finally {
       setSaving(false);
     }
@@ -182,6 +196,7 @@ export function PointPropertyInspector({
       </div>
 
       <form onSubmit={handleSave} className="space-y-3 text-xs">
+        {isDirty && incoming.id === point.id && JSON.stringify(incoming) !== JSON.stringify(point) && <InfoBand tone="gray">此点位已在其他页面修改。当前草稿已保留，保存将检查冲突。</InfoBand>}
         {/* Basic Information */}
         <Field label={t('templates.name')}>
           <TextInput
@@ -268,10 +283,11 @@ export function PointPropertyInspector({
           <Field label={t('templates.colAccess')}>
             <Select
               value={access}
-              onChange={(v) => setAccess(v as 'ro' | 'rw')}
+              onChange={(v) => setAccess(v as PointDef['access'])}
               options={[
                 { value: 'ro', label: t('templates.accessRo') },
                 { value: 'rw', label: t('templates.accessRw') },
+                { value: 'wo', label: t('templates.accessWo') },
               ]}
               disabled={block.area === 2 || block.area === 4}
             />
@@ -287,6 +303,7 @@ export function PointPropertyInspector({
         </div>
 
         {/* Scaling and Display Section */}
+        {access === 'wo' && block.area === 3 && (['Bool', 'Int8', 'UInt8'].includes(rawType) || rawType === 'BitField' && (Number(bitWidth) !== 16 || Number(bitOffset) !== 0)) && <p className="text-xs leading-5 text-ink2">只写位/字节使用 FC22（0x16）掩码写，需设备支持。完整字命令可选 UInt16。</p>}
         <div className="border-t border-line pt-2">
           <div className="text-xs font-medium text-ink mb-1.5">{t('templates.scalingAndDisplay')}</div>
           <div className="grid grid-cols-2 gap-2 mb-2">

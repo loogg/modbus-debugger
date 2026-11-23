@@ -1,4 +1,4 @@
-"""Independent TCP/RTU slave simulator for FC01/02/03/04/05/06/15/16.
+"""Independent TCP/RTU slave simulator for FC01/02/03/04/05/06/15/16/22.
 
 No COM number is implicit: --transport rtu requires --serial-port.
 Use --static for deterministic register/coil write/read-back tests.
@@ -58,6 +58,11 @@ class Faults:
             self.outgoing = getattr(pdu, '_sim_fault', 'none')
             return pdu
         args = self.args
+        if pdu.function_code == 3 and any(pdu.address < start + count and pdu.address + pdu.count > start for start, count in args.write_only_register):
+            async def write_only(_context, _device_id):
+                return ExceptionResponse(3, 2)
+            pdu.datastore_update = write_only
+            return pdu
         if pdu.dev_id not in args.units and not (args.transport == 'rtu' and args.broadcast and pdu.dev_id == 0):
             async def missing_device(_context, _device_id):
                 raise NoSuchIdException('unit is not configured in this simulator')
@@ -140,6 +145,16 @@ def parse_units(text: str) -> list[int]:
     return values
 
 
+def parse_register_range(text: str) -> tuple[int, int]:
+    try:
+        start, count = (int(value, 0) for value in text.split(':'))
+        if start < 0 or count < 1 or start + count > 65536:
+            raise ValueError('outside register address space')
+        return start, count
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('expected address:count in 0..65535') from error
+
+
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument('--transport', choices=['tcp', 'rtu'], default='tcp')
@@ -158,7 +173,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument('--trace', action='store_true', help='print RX/TX frames to stdout')
     cli.add_argument('--fault', choices=['none', 'timeout', 'exception', 'delay', 'bad-crc', 'malformed'], default='none')
     cli.add_argument('--fault-unit', type=ranged_int(1, 247))
-    cli.add_argument('--fault-fc', type=int, choices=[1, 2, 3, 4, 5, 6, 15, 16])
+    cli.add_argument('--fault-fc', type=int, choices=[1, 2, 3, 4, 5, 6, 15, 16, 22])
+    cli.add_argument('--write-only-register', type=parse_register_range, action='append', default=[], help='reject FC03 over this address:count range, repeatable')
     cli.add_argument('--fault-quantity', type=ranged_int(1, 2000), help='only fault requests with this decoded item count (e.g. an RMW pre-read)')
     cli.add_argument('--fault-count', type=ranged_int(0, 100000), default=0, help='0 means unlimited')
     cli.add_argument('--delay-ms', type=ranged_int(0, 60000), default=500)

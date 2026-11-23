@@ -6,11 +6,21 @@ import './i18n';
 import './styles.css';
 import { resolveAppTransport } from './transport';
 import { DevReviewIndicator } from './components/dev-review-indicator';
+import type { ScriptEditorWindow } from './features/scripts/editor-host';
 
-const transport = resolveAppTransport();
+const isWindowHost = new URLSearchParams(window.location.search).has('viewHost');
+if (isWindowHost) {
+  (window as ScriptEditorWindow).mountMasterScriptEditor = async (element, input) => {
+    const { mountScriptEditor } = await import('./features/scripts/editor-host');
+    return element.ownerDocument === document && element.isConnected ? mountScriptEditor(element, input) : null;
+  };
+  document.documentElement.dataset.viewHost = 'ready';
+}
+
+const transport = isWindowHost ? null : resolveAppTransport();
 const root = createRoot(document.getElementById('root') as HTMLElement);
 
-root.render(
+if (transport) root.render(
   <React.StrictMode>
     <App />
     <DevReviewIndicator transport={transport} />
@@ -18,6 +28,7 @@ root.render(
 );
 
 async function start() {
+  if (!transport) return;
   try {
     await useApp.getState().init(transport);
   } catch (err) {

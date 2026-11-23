@@ -14,8 +14,7 @@ const snapshot = (): AppSnapshot => ({
     timeoutMs: 500, retries: 2, reconnect: 'manual', interFrameMs: 0, rtsControl: 'none', logLevel: 'info',
   }] },
   workspacePath: null, dirty: false, connections: { c1: { state: 'online', detail: null, lastResponseUtc: null } },
-  blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, recording: null,
-  sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
+  blocks: {}, points: {}, transactions: [], parseEvents: [], diagRev: 0, health: {}, sessions: [], warnings: [], prefs: DEFAULT_PREFS, historyDbPath: '',
 });
 const scanState = (phase: ScanStateView['phase']): ScanStateView => ({
   options: { fc: 3, start: 0, timeoutMs: 150, retries: 2 },

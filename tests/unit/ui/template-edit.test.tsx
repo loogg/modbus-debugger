@@ -1,6 +1,6 @@
 import React from 'react';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react';
 import { TemplatesSidebar } from '../../../src/renderer/shell';
 import { TemplatesScreen } from '../../../src/renderer/screens/templates';
 import { Overlays } from '../../../src/renderer/screens/overlays';
@@ -10,8 +10,41 @@ import { DEFAULT_PREFS } from '../../../src/main/services/workspace';
 import { templateWorkspace } from '../../support/template-workspace';
 import type { Command } from '../../../src/shared/commands';
 const calls=vi.fn();
-beforeEach(()=>{calls.mockClear();useApp.setState({overlay:null,module:'templates',selection:{...useApp.getState().selection,templateId:'t1',templateEditing:false,editBlockId:null},command:async<T,>(cmd:Command)=>{calls(cmd);return {ok:true,value:null as T}},snapshot:{revision:1,workspace:templateWorkspace(),workspacePath:null,dirty:true,connections:{},blocks:{},points:{},transactions:[],parseEvents:[],diagRev:0,health:{},recording:null,sessions:[],warnings:[],prefs:DEFAULT_PREFS,historyDbPath:''}})});
+beforeEach(()=>{calls.mockClear();useApp.setState({overlay:null,module:'templates',selection:{...useApp.getState().selection,templateId:'t1',templateEditing:false,editBlockId:null},command:async<T,>(cmd:Command)=>{calls(cmd);return {ok:true,value:null as T}},snapshot:{revision:1,workspace:templateWorkspace(),workspacePath:null,dirty:true,connections:{},blocks:{},points:{},transactions:[],parseEvents:[],diagRev:0,health:{},sessions:[],warnings:[],prefs:DEFAULT_PREFS,historyDbPath:''}})});
 afterEach(cleanup);
+it('saves write-only access through the point inspector', async () => {
+  useApp.setState({ selection: { ...useApp.getState().selection, templateEditing: true, editBlockId: 'b1' } });
+  render(<TemplatesScreen />);
+  fireEvent.keyDown(within(screen.getByRole('group', { name: '访问权限' })).getByRole('combobox'), { key: 'ArrowDown' });
+  fireEvent.click(screen.getByRole('option', { name: '只写' }));
+  fireEvent.click(screen.getByRole('button', { name: '保存点位' }));
+  expect(calls).toHaveBeenCalledWith(expect.objectContaining({ type: 'template.upsertPoint', point: expect.objectContaining({ access: 'wo' }) }));
+  await waitFor(() => expect(screen.queryByText(/•.*未保存/)).not.toBeInTheDocument());
+});
+it('offers fast polling periods and persists zero through the normal block editor', () => {
+  useApp.setState({ selection: { ...useApp.getState().selection, templateEditing: true, editBlockId: 'b1' } });
+  render(<TemplatesScreen />);
+  fireEvent.click(screen.getByRole('button', { name: '块设置' }));
+  const caption = screen.getByText('默认轮询周期');
+  const trigger = caption.closest('label')!.querySelector('button')!;
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+  expect(screen.getByRole('option', { name: '1 ms' })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: '5 ms' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('option', { name: '0 ms · 尽快采集' }));
+  expect(calls).toHaveBeenCalledWith({ type: 'template.patchBlock', templateId: 't1', blockId: 'b1', patch: { periodMs: 0 } });
+});
+it('preserves an inspector draft through unrelated workspace metadata updates and detects a changed point', () => {
+  useApp.setState({ selection: { ...useApp.getState().selection, templateEditing: true, editBlockId: 'b1' } });
+  render(<TemplatesScreen />);
+  fireEvent.change(screen.getByDisplayValue('Ia'), { target: { value: 'My local draft' } });
+  act(() => { const snapshot = useApp.getState().snapshot!; useApp.setState({ snapshot: { ...snapshot, workspace: JSON.parse(JSON.stringify(snapshot.workspace)) } }); });
+  expect(screen.getByDisplayValue('My local draft')).toBeInTheDocument();
+  act(() => { const snapshot = useApp.getState().snapshot!; const workspace = structuredClone(snapshot.workspace); workspace.templates[0]!.points[0]!.unit = 'V'; useApp.setState({ snapshot: { ...snapshot, workspace } }); });
+  expect(screen.getByDisplayValue('My local draft')).toBeInTheDocument();
+  expect(screen.getByText(/此点位已在其他页面修改/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '保存点位' }));
+  expect(calls).toHaveBeenCalledWith(expect.objectContaining({ expected: expect.objectContaining({ name: 'Ia', unit: '' }), point: expect.objectContaining({ name: 'My local draft' }) }));
+});
 it('template links from other modules clear the previous block editing state',()=>{
   useApp.getState().select({templateId:'t1',templateEditing:true,editBlockId:'b1'});useApp.getState().select({templateId:'t2'});expect(useApp.getState().selection).toMatchObject({templateId:'t2',templateEditing:false,editBlockId:null});
 });
@@ -33,7 +66,7 @@ it('saves only through typed template persistence without invoking workspace exp
   useApp.setState({selection:{...useApp.getState().selection,templateEditing:true,editBlockId:'b1'}});render(<TemplatesScreen/>);fireEvent.click(screen.getByRole('button',{name:'保存'}));expect(calls).toHaveBeenCalledWith({type:'template.save',templateId:'t1',blockId:'b1'});expect(calls.mock.calls.some(([cmd])=>cmd.type.startsWith('dialog.')||cmd.type==='workspace.saveAs')).toBe(false);
 });
 it('renames from the overview and only deletes a block after confirmation',()=>{
-  render(<><TemplatesScreen/><Overlays/></>);fireEvent.change(screen.getByLabelText('模板名称'),{target:{value:'改名模板'}});fireEvent.click(screen.getByRole('button',{name:'保存模板名称'}));expect(calls).toHaveBeenCalledWith({type:'template.rename',templateId:'t1',name:'改名模板'});
+  render(<><TemplatesScreen/><Overlays/></>);fireEvent.change(screen.getByLabelText('模板名称'),{target:{value:'改名模板'}});fireEvent.click(screen.getByRole('button',{name:'保存模板名称'}));expect(calls).toHaveBeenCalledWith({type:'template.rename',templateId:'t1',name:'改名模板',expectedName:'模板 A'});
   calls.mockClear();fireEvent.click(screen.getAllByRole('button',{name:'删除数据块'})[0]!);expect(screen.getByRole('dialog')).toHaveTextContent('6 个点位');fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(calls).not.toHaveBeenCalledWith(expect.objectContaining({type:'template.deleteBlock'}));
   fireEvent.click(screen.getAllByRole('button',{name:'删除数据块'})[0]!);fireEvent.click(within(screen.getByRole('dialog')).getByRole('button',{name:'删除数据块'}));expect(calls).toHaveBeenCalledWith({type:'template.deleteBlock',templateId:'t1',blockId:'b1'});
 });
@@ -49,6 +82,7 @@ it('configures point directly in the right inspector and saves through Main poin
     templateId: 't1',
     point: expect.objectContaining({ name: 'Ia_Mod' }),
   }));
+  await waitFor(() => expect(screen.queryByText(/•.*未保存/)).not.toBeInTheDocument());
 });
 it('deletes point with confirmation dialog and calls template.deletePoint', async () => {
   useApp.setState({ selection: { ...useApp.getState().selection, templateEditing: true, editBlockId: 'b1' } });

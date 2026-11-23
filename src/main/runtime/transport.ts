@@ -1,5 +1,6 @@
 import net from 'node:net';
 import type { RtuSettings, TcpSettings } from '../../domain/model';
+import { DEFAULT_CONNECT_TIMEOUT_MS } from '../../domain/model';
 
 export interface TransportHandlers {
   onData(chunk: Uint8Array): void;
@@ -11,7 +12,7 @@ export interface TransportHandlers {
 export interface Transport {
   readonly kind: 'rtu' | 'tcp';
   readonly connected: boolean;
-  connect(): Promise<void>;
+  connect(timeoutMs?: number): Promise<void>;
   write(bytes: Uint8Array): Promise<void>;
   close(): Promise<void>;
   setHandlers(handlers: TransportHandlers): void;
@@ -22,8 +23,10 @@ export class TcpTransport implements Transport {
   private socket: net.Socket | null = null;
   private handlers: TransportHandlers | null = null;
   private open = false;
+  private opening: Promise<void> | null = null;
+  private cancelOpening: (() => void) | null = null;
 
-  constructor(private readonly settings: TcpSettings, private readonly connectTimeoutMs = 3000) {}
+  constructor(private readonly settings: TcpSettings, private readonly connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS) {}
 
   get connected(): boolean {
     return this.open;
@@ -33,32 +36,56 @@ export class TcpTransport implements Transport {
     this.handlers = h;
   }
 
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+  connect(timeoutMs = this.connectTimeoutMs): Promise<void> {
+    if (this.opening) return this.opening;
+    if (this.open) return Promise.resolve();
+    this.socket?.destroy();
+    const opening = new Promise<void>((resolve, reject) => {
       const socket = net.connect({ host: this.settings.host, port: this.settings.port });
+      this.socket = socket;
       socket.setNoDelay(true);
-      const timer = setTimeout(() => {
-        socket.destroy();
-        reject(new Error(`TCP connect timeout to ${this.settings.host}:${this.settings.port}`));
-      }, this.connectTimeoutMs);
-      socket.once('connect', () => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        this.socket = socket;
-        this.open = true;
-        socket.on('data', (buf) => this.handlers?.onData(new Uint8Array(buf)));
-        socket.on('error', (err) => this.handlers?.onError(err));
-        socket.on('close', () => {
+        this.cancelOpening = null;
+        if (error) {
+          if (this.socket === socket) this.socket = null;
           this.open = false;
-          this.handlers?.onClose();
-        });
-        this.handlers?.onOpen();
-        resolve();
+          socket.destroy();
+          reject(error);
+        } else {
+          this.open = true;
+          this.handlers?.onOpen();
+          resolve();
+        }
+      };
+      const timer = setTimeout(() => finish(new Error(`TCP connect timeout (${timeoutMs} ms) to ${this.settings.host}:${this.settings.port}`)), timeoutMs);
+      this.cancelOpening = () => finish(new Error('TCP connection cancelled'));
+      socket.once('connect', () => {
+        if (settled || this.socket !== socket) { socket.destroy(); return; }
+        finish();
       });
-      socket.once('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
+      socket.on('data', bytes => {
+        if (this.socket === socket && this.open) this.handlers?.onData(new Uint8Array(bytes));
+      });
+      socket.on('error', error => {
+        if (!settled) finish(error);
+        else if (this.socket === socket) this.handlers?.onError(error);
+      });
+      socket.on('close', () => {
+        if (!settled) { finish(new Error('TCP connection closed while connecting')); return; }
+        if (this.socket !== socket) return;
+        this.socket = null;
+        this.open = false;
+        this.handlers?.onClose();
       });
     });
+    this.opening = opening;
+    const clear = () => { if (this.opening === opening) this.opening = null; };
+    void opening.then(clear, clear);
+    return opening;
   }
 
   write(bytes: Uint8Array): Promise<void> {
@@ -73,17 +100,13 @@ export class TcpTransport implements Transport {
   }
 
   close(): Promise<void> {
-    return new Promise((resolve) => {
-      const socket = this.socket;
-      this.socket = null;
-      if (!socket) {
-        resolve();
-        return;
-      }
-      socket.once('close', () => resolve());
-      socket.destroy();
-      this.open = false;
-    });
+    const socket = this.socket;
+    this.socket = null;
+    this.open = false;
+    const closed = !socket || socket.closed ? Promise.resolve() : new Promise<void>(resolve => socket.once('close', () => resolve()));
+    this.cancelOpening?.();
+    socket?.destroy();
+    return closed;
   }
 }
 
@@ -124,6 +147,10 @@ export class SerialTransport implements Transport {
   readonly kind = 'rtu' as const;
   private port: SerialPortLike | null = null;
   private handlers: TransportHandlers | null = null;
+  private opening: Promise<void> | null = null;
+  private pendingPort: SerialPortLike | null = null;
+  private cancelOpening: (() => void) | null = null;
+  private closing: Promise<void> | null = null;
 
   constructor(
     private readonly settings: RtuSettings,
@@ -139,29 +166,68 @@ export class SerialTransport implements Transport {
     this.handlers = h;
   }
 
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+  connect(timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS): Promise<void> {
+    if (this.opening) return this.opening;
+    if (this.pendingPort || this.closing) return Promise.reject(new Error('Previous serial open/close is still completing'));
+    if (this.connected) return Promise.resolve();
+    const opening = new Promise<void>((resolve, reject) => {
       const port = this.factory(this.settings);
+      this.pendingPort = port;
+      let settled = false;
+      let openCompleted = false;
+      const finish = (error?: Error | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.cancelOpening = null;
+        if (error) {
+          if (port.isOpen) void this.closePort(port);
+          else if (openCompleted && this.pendingPort === port) this.pendingPort = null;
+          reject(error);
+        } else {
+          this.pendingPort = null;
+          this.port = port;
+          this.handlers?.onOpen();
+          resolve();
+        }
+      };
+      const timer = setTimeout(() => finish(new Error(`Serial open timeout (${timeoutMs} ms) for ${this.settings.port}`)), timeoutMs);
+      this.cancelOpening = () => finish(new Error('Serial connection cancelled'));
       port.on('data', (chunk: unknown) => {
+        if (this.port !== port) return;
         const buf = chunk as Buffer;
         this.handlers?.onData(new Uint8Array(buf));
       });
-      port.on('error', (err: unknown) => this.handlers?.onError(err as Error));
-      port.on('close', () => this.handlers?.onClose());
+      port.on('error', (error: unknown) => {
+        if (!settled) finish(error as Error);
+        else if (this.port === port) this.handlers?.onError(error as Error);
+      });
+      port.on('close', () => {
+        if (!settled) finish(new Error('Serial port closed while opening'));
+        if (this.port !== port) return;
+        this.port = null;
+        this.handlers?.onClose();
+      });
       port.open((err) => {
-        if (err) {
-          reject(err);
+        openCompleted = true;
+        if (settled) {
+          if (port.isOpen) void this.closePort(port);
+          else if (this.pendingPort === port) this.pendingPort = null;
           return;
         }
-        this.port = port;
+        if (err) { finish(err); return; }
         const ready = (error?: Error | null) => {
-          if (error) { port.close(); this.port = null; reject(error); return; }
-          this.handlers?.onOpen(); resolve();
+          if (settled) { if (port.isOpen) void this.closePort(port); return; }
+          finish(error);
         };
         // Discard bytes retained by the driver before this connection was opened.
         if (port.flush) port.flush(ready); else ready();
       });
     });
+    this.opening = opening;
+    const clear = () => { if (this.opening === opening) this.opening = null; };
+    void opening.then(clear, clear);
+    return opening;
   }
 
   async write(bytes: Uint8Array): Promise<void> {
@@ -181,17 +247,27 @@ export class SerialTransport implements Transport {
     } finally { if (this.rtsControl === 'toggle') await control(false); }
   }
 
-  close(): Promise<void> {
-    return new Promise((resolve) => {
-      const port = this.port;
-      this.port = null;
-      if (!port) {
-        resolve();
-        return;
-      }
+  private closePort(port: SerialPortLike): Promise<void> {
+    if (this.closing) return this.closing;
+    if (this.port === port) this.port = null;
+    const closing = new Promise<void>(resolve => {
       // Windows virtual/USB drivers can release a cancelled overlapped read just after
       // CloseHandle's callback. Keep the shutdown barrier through that completion turn.
       port.close(() => { if (process.platform === 'win32') setTimeout(resolve, 20); else resolve(); });
     });
+    this.closing = closing;
+    void closing.then(() => {
+      if (this.pendingPort === port) this.pendingPort = null;
+      if (this.closing === closing) this.closing = null;
+    });
+    return closing;
+  }
+
+  close(): Promise<void> {
+    this.cancelOpening?.();
+    if (this.closing) return this.closing;
+    const port = this.port ?? this.pendingPort;
+    if (!port?.isOpen) return Promise.resolve();
+    return this.closePort(port);
   }
 }

@@ -40,6 +40,53 @@ function ev(i: number): Omit<ParseEventRecord, 'id'> {
 }
 
 describe('DiagnosticsStore absolute cursors', () => {
+  it('bounds a large detail page by bytes and continues from its unconsumed cursor', () => {
+    const diagnostics = new DiagnosticsStore();
+    const before = diagnostics.read({ type: 'diagnostics.read', limit: 500 });
+    for (let index = 0; index < 100; index++) diagnostics.recordTransaction(tx(index, { requestAduHex: '00'.repeat(4096) }));
+    const page = diagnostics.read({ type: 'diagnostics.read', generation: before.generation, afterTransactions: before.transactionCursor, limit: 500 });
+    expect(page.transactions.length).toBeLessThan(100);
+    expect(Buffer.byteLength(JSON.stringify(page.transactions))).toBeLessThan(129 * 1024);
+    const next = diagnostics.read({ type: 'diagnostics.read', afterTransactions: page.transactionCursor, throughTransactions: page.throughTransactions, limit: 500 });
+    expect(next.transactions[0]!.traceId).toBe(`t${page.transactions.length}`);
+  });
+  it('keeps a full time window after detail records are overwritten and isolates connections', () => {
+    const diagnostics = new DiagnosticsStore();
+    for (let index = 1; index <= 12000; index++) {
+      diagnostics.recordTransaction(tx(index, { startMono: index * 5 }));
+      diagnostics.recordTransaction(tx(index, { startMono: index * 5, connectionId: 'c2', result: 'timeout' }));
+    }
+    expect(diagnostics.recentTransactions(20000)).toHaveLength(5000);
+    expect(diagnostics.health('c1', 60000, [])).toMatchObject({ requestRatePerSec: 200, timeouts: 0 });
+    diagnostics.health('c1', 60000, [], 1);
+    expect(diagnostics.health('c1', 60000, []).requestRatePerSec).toBe(200);
+    expect(diagnostics.health('c2', 60000, [])).toMatchObject({ requestRatePerSec: 200, timeouts: 12000 });
+    expect(diagnostics.health('c1', 120001, []).requestRatePerSec).toBe(0);
+    diagnostics.clear();
+    expect(diagnostics.health('c2', 60000, []).timeouts).toBe(0);
+  });
+  it('uses actual serial framing and exposes TCP byte throughput', () => {
+    const diagnostics = new DiagnosticsStore();
+    diagnostics.recordTransaction(tx(1000, { requestAduHex: '00'.repeat(60), responseAduHex: '00'.repeat(60) }));
+    const rtu = { transport: 'rtu' as const, rtu: { port: 'test', baudRate: 1200, dataBits: 8 as const, parity: 'even' as const, stopBits: 1 as const } };
+    expect(diagnostics.health('c1', 1000, [], 1, rtu).busLoadPercent).toBe(100);
+    expect(diagnostics.health('c1', 1000, [], 1, { ...rtu, rtu: { ...rtu.rtu, baudRate: 2400 } }).busLoadPercent).toBeCloseTo(55);
+    expect(diagnostics.health('c1', 1000, [], 1, { ...rtu, rtu: { ...rtu.rtu, baudRate: 2400, parity: 'none' } }).busLoadPercent).toBeCloseTo(50);
+    expect(diagnostics.health('c1', 1000, [], 1, { transport: 'tcp' })).toMatchObject({ throughputBytesPerSec: 120, busLoadPercent: 0, transport: 'tcp' });
+  });
+  it('pages scoped details through overwrites and a clear without consuming other readers', () => {
+    const diagnostics = new DiagnosticsStore();
+    const first = diagnostics.read({ type: 'diagnostics.read', connectionId: 'c1', limit: 2 });
+    for (let index = 0; index < 8; index++) diagnostics.recordTransaction(tx(index));
+    const page = diagnostics.read({ type: 'diagnostics.read', connectionId: 'c1', generation: first.generation, afterTransactions: first.transactionCursor, limit: 2 });
+    expect(page.transactions.map(row => row.traceId)).toEqual(['t0', 't1']);
+    expect(page.hasMore).toBe(true);
+    expect(diagnostics.read({ type: 'diagnostics.read', connectionId: 'c1', generation: first.generation, afterTransactions: 0, limit: 2 }).transactions).toEqual(page.transactions);
+    for (let index = 8; index < 5100; index++) diagnostics.recordTransaction(tx(index));
+    expect(diagnostics.read({ type: 'diagnostics.read', afterTransactions: page.transactionCursor, throughTransactions: page.throughTransactions, limit: 2 }).overwritten).toBe(true);
+    diagnostics.clear();
+    expect(diagnostics.read({ type: 'diagnostics.read', generation: page.generation, limit: 2 })).toMatchObject({ reset: true, transactions: [] });
+  });
   it('does not combine polling periods, latency or failures across Units sharing one block', () => {
     const diagnostics = new DiagnosticsStore();
     for (const index of [0, 1, 2]) {
