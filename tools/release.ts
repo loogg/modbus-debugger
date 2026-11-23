@@ -1,7 +1,20 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { ForgeMakeResult } from '@electron-forge/shared-types';
 import { extractFile } from '@electron/asar';
+
+export async function renameArtifact(from: string, to: string): Promise<void> {
+  // A newly written executable or directory can still be held briefly by a Windows scanner.
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.rename(from, to); return; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== 'win32' || !['EBUSY', 'EACCES', 'EPERM'].includes(code ?? '') || attempt >= 8) throw error;
+      await delay(Math.min(150 * 2 ** attempt, 1000));
+    }
+  }
+}
 
 export function releaseBase(version: string, arch: string): string {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
@@ -110,12 +123,12 @@ export async function assembleRelease(root: string, results: ForgeMakeResult[]):
           const destination = path.resolve(release, name);
           if (path.dirname(destination) !== release) throw new Error('Release path escapes release/');
           try {
-            await fs.rename(destination, path.join(backup, name));
+            await renameArtifact(destination, path.join(backup, name));
             saved.push(name);
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
           }
-          await fs.rename(path.join(staging, name), destination);
+          await renameArtifact(path.join(staging, name), destination);
           promoted.push(name);
         }
         // Retire older generated versions only after the new four outputs are in place.
@@ -124,7 +137,7 @@ export async function assembleRelease(root: string, results: ForgeMakeResult[]):
           if (!isOldReleaseArtifact(name, pkg.version)) continue;
           const source = path.resolve(release, name);
           if (path.dirname(source) !== release) throw new Error('Cleanup path escapes release/');
-          await fs.rename(source, path.join(backup, name));
+          await renameArtifact(source, path.join(backup, name));
           saved.push(name);
         }
         // Preserve runtime/user files before removing an older generated program directory.
@@ -142,8 +155,8 @@ export async function assembleRelease(root: string, results: ForgeMakeResult[]):
       } catch (error) {
         // If restoring itself fails (for example a file becomes locked), preserve the backup for recovery.
         keepStaging = true;
-        for (const name of promoted.reverse()) await fs.rename(path.join(release, name), path.join(staging, name));
-        for (const name of saved) await fs.rename(path.join(backup, name), path.join(release, name));
+        for (const name of promoted.reverse()) await renameArtifact(path.join(release, name), path.join(staging, name));
+        for (const name of saved) await renameArtifact(path.join(backup, name), path.join(release, name));
         keepStaging = false;
         throw error;
       }

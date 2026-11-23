@@ -11,7 +11,7 @@ describe('packaged app first use', () => {
     const text = await $('body').getText();
     expect(text).toContain('开始配置 Modbus 调试环境');
     expect(text).toContain('推荐流程');
-    expect(text).toContain('在趋势组中观察信号并按需开始记录');
+    expect(text).toContain('在趋势组中观察信号并按需导出采样数据');
     const screenshot = path.resolve('out/audit/figma-current/15-empty-first-use.png');
     fs.mkdirSync(path.dirname(screenshot), { recursive: true });
     await browser.saveScreenshot(screenshot);

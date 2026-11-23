@@ -1,6 +1,6 @@
 # Modbus Debugger
 
-用于现场调试的 Modbus RTU / TCP 桌面工具。可作为主站连接设备，也可作为本机从站响应外部主站；支持配置点位、实时读写、观察趋势，以及记录和回放历史数据。
+用于现场调试的 Modbus RTU / TCP 桌面工具。一个工作区可以同时运行主站和软件从站，用同一套点位搭建操作画布、编排积木脚本并调试实际读写。支持查看通信报文、导出当前采样，以及回放已有历史会话。
 
 [下载已发布版本](https://github.com/loogg/modbus-debugger/releases) · [下载最新构建](https://github.com/loogg/modbus-debugger/actions/workflows/windows-release.yml) · [反馈问题](https://github.com/loogg/modbus-debugger/issues)
 

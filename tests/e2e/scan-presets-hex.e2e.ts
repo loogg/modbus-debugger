@@ -1,6 +1,7 @@
-import { browser, $, $$, expect } from '@wdio/globals';
+import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
+import { activeView } from '../support/workbench-controls';
 import type { ModbusApi } from '../../src/shared/preload-api';
 import type { Workspace } from '../../src/domain/model';
 
@@ -62,7 +63,8 @@ describe('扫描预设与 Raw ADU 复制', () => {
     await search.click();
     await browser.keys(['Control', 'a']);
     await search.addValue(record.traceId);
-    const rows = await $$('tbody tr');
+    await browser.waitUntil(async () => (await activeView().$$('tbody tr')).length === 2);
+    const rows = await activeView().$$('tbody tr');
     expect(rows).toHaveLength(2);
     expect(await rows[0]!.getText()).toContain('RX');
     expect(await rows[1]!.getText()).toContain('TX');
@@ -73,7 +75,7 @@ describe('扫描预设与 Raw ADU 复制', () => {
     await browser.saveScreenshot(screenshot);
     await rows[1]!.click();
     expect(await $('body').getText()).toContain(`地址 ${record.summary}`);
-    const copyButtons = await $$('//button[normalize-space(.)="复制 Hex"]');
+    const copyButtons = await activeView().$$('.//button[normalize-space(.)="复制 Hex"]');
     expect(copyButtons).toHaveLength(2);
     await copyButtons[0]!.click();
     await browser.waitUntil(async () => await clipboardText() === record.requestAduHex);

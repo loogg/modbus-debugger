@@ -6,6 +6,7 @@ import { config as base } from './wdio.conf';
 export const config = {
   ...base,
   specs: ['./tests/capacity/first-use.e2e.ts'],
+  beforeSession: async () => {},
   onPrepare: async () => {
     await base.onPrepare();
     const runDir = process.env.MODBUS_TEST_RUN_DIR;

@@ -1,10 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ForgeMakeResult } from '@electron-forge/shared-types';
-import { isOldReleaseArtifact, makerArtifacts, releaseBase } from '../../tools/release';
+import { isOldReleaseArtifact, makerArtifacts, releaseBase, renameArtifact } from '../../tools/release';
 import { executionDirectory } from '../../src/main/services/execution-directory';
 
 describe('release inputs', () => {
+  it.runIf(process.platform === 'win32')('retries a temporary Windows file lock during release promotion', async () => {
+    const operation = vi.spyOn(fs, 'rename').mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EPERM' })).mockResolvedValue(undefined);
+    try {
+      await renameArtifact('staged', 'published');
+      expect(operation.mock.calls).toEqual([['staged', 'published'], ['staged', 'published']]);
+    } finally { operation.mockRestore(); }
+  });
+
+  it('returns missing artifact errors immediately so promotion can roll back', async () => {
+    const missing = Object.assign(new Error('absent'), { code: 'ENOENT' });
+    const operation = vi.spyOn(fs, 'rename').mockRejectedValue(missing);
+    try {
+      await expect(renameArtifact('staged', 'published')).rejects.toBe(missing);
+      expect(operation).toHaveBeenCalledTimes(1);
+    } finally { operation.mockRestore(); }
+  });
+
   it('retires only older generated release artifacts and preserves the current version and user files', () => {
     for (const suffix of ['', '.zip', '-Portable.exe', '-Setup.exe', '-manifest.json']) {
       expect(isOldReleaseArtifact(`modbus-debugger-0.5.0-win-x64${suffix}`, '0.7.1')).toBe(true);

@@ -4,19 +4,20 @@ import path from 'node:path';
 import { SerialPort } from 'serialport';
 import type { ModbusApi } from '../../src/shared/preload-api';
 import type { Workspace } from '../../src/domain/model';
+import { activeView as view, visibleControl as visible } from '../support/workbench-controls';
 
 const fixture = (): Workspace => JSON.parse(fs.readFileSync('tools/e2e/demo.workspace.json', 'utf8')) as Workspace;
 const snap = () => browser.execute(() => (window as unknown as { modbus: ModbusApi }).modbus.getSnapshot());
 const text = () => $('body').getText();
-const click = async (label: string) => { await $(`//button[normalize-space(.)="${label}"]`).click(); };
+const click = async (label: string) => { await (await visible(`//button[normalize-space(.)="${label}"]`)).click(); };
 const rail = async (label: string) => { await $(`//nav//button[contains(.,"${label}")]`).click(); };
-const fill = async (selector: string, value: string) => { const el = await $(selector); await el.click(); await browser.keys(['Control','a']); await browser.keys('Backspace'); await el.addValue(value); };
+const fill = async (selector: string, value: string) => { const el = await visible(selector); await el.click(); await browser.keys(['Control','a']); await browser.keys('Backspace'); await el.addValue(value); };
 const field = (label: string) => `//div[normalize-space(.)="${label}"]/following-sibling::input`;
 const drawerField = (label: string) => `//div[contains(@class,"fixed") and contains(@class,"z-40")]${field(label)}`;
 const savePointDrawer = () => $('//div[contains(@class,"fixed") and contains(@class,"z-40")]//button[normalize-space(.)="保存点位"]').click();
 const waitText = (fragment: string) => browser.waitUntil(async () => (await text()).includes(fragment), { timeout: 15000 });
 const figmaShot = async (name: string) => { fs.mkdirSync('out/test-temp/full-e2e/figma-current', { recursive: true }); await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/figma-current', `${name}.png`)); };
-const writeValue = async (name: string, value: string) => { await $(`//div[text()="${name}"]/following-sibling::div[2]`).doubleClick(); await fill('input.w-24', value); await browser.keys('Enter'); };
+const writeValue = async (name: string, value: string) => { await view().$(`.//div[text()="${name}"]/following-sibling::div[2]`).doubleClick(); await fill('input.w-24', value); await browser.keys('Enter'); };
 // IPC is only used for fixture setup and read-only observation. Actions under test use real pointer/keyboard input.
 async function setup(ws = fixture()) {
   await browser.keys('Escape'); await browser.keys('Escape');
@@ -24,9 +25,9 @@ async function setup(ws = fixture()) {
   expect(result.ok).toBe(true);
   await rail('设备');
   await browser.pause(250);
-  await $('//button[contains(.,"生产线 TCP")]').click();
+  await view().$('button*=生产线 TCP').click();
 }
-async function realtime() { await rail('实时'); await $('//button[contains(.,"伺服驱动器 A")]').click(); await browser.waitUntil(async () => (await snap()).points['slave-1::pt-speed']?.hasValue === true, { timeout: 15000 }); }
+async function realtime() { await rail('实时'); await view().$('button*=伺服驱动器 A').click(); await browser.waitUntil(async () => (await snap()).points['slave-1::pt-speed']?.hasValue === true, { timeout: 15000 }); }
 async function openDialogFile(file: string) { const mock = await browser.electron.mock('dialog', 'showOpenDialog'); await mock.mockResolvedValue({ canceled: false, filePaths: [file] }); return mock; }
 async function serialPortAvailable(portPath: string): Promise<boolean> {
   const probe = new SerialPort({ path: portPath, baudRate: 115200, autoOpen: false });
@@ -70,14 +71,14 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await browser.waitUntil(async () => (await snap()).workspace.connections.some(c => c.name === '审计 RTU'));
     const conn = (await snap()).workspace.connections.find(c => c.name === '审计 RTU')!;
     expect(conn.rtu?.port).toBe(process.env.MODBUS_RTU_MASTER_PORT);
-    await $('//button[contains(.,"审计 RTU")]').click();
-    await $('//main//button[normalize-space(.)="＋ 添加从站"]').click();
+    await view().$('button*=审计 RTU').click();
+    await view().$('main').$('button=＋ 添加从站').click();
     await fill(field('设备名称'), '串口从站');
     await click('添加从站');
     await browser.waitUntil(async () => (await snap()).workspace.slaves.some(s => s.name === '串口从站'));
     const slave = (await snap()).workspace.slaves.find(s => s.name === '串口从站')!;
     expect(slave.connectionId).toBe(conn.id);
-    await rail('实时'); await $('//button[contains(.,"串口从站")]').click();
+    await rail('实时'); await view().$('button*=串口从站').click();
     await browser.waitUntil(async () => (await snap()).points[`${slave.id}::pt-speed`]?.hasValue === true, { timeout: 15000 });
     await writeValue('目标转速', '2345');
     await browser.waitUntil(async () => (await snap()).points[`${slave.id}::pt-speed`]?.engNumber === 2345);
@@ -109,7 +110,7 @@ describe('审计：实际按钮到持久化/通信结果', () => {
   it('扫描：折叠配置、停止保留结果、重扫替换结果、不自动添加从站', async () => {
     const originalSlaveIds = (await snap()).workspace.slaves.map(slave => slave.id).sort();
     await click('扫描');
-    expect(await $('details').getAttribute('open')).toBeNull();
+    expect(await view().$('details').getAttribute('open')).toBeNull();
     await click('开始扫描');
     await browser.waitUntil(async () => ((await snap()).connections['conn-tcp']?.scan?.checked ?? 0) >= 3);
     await click('停止扫描'); await waitText('扫描已停止');
@@ -117,11 +118,11 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     expect(stopped.checked).toBeLessThan(247);
     expect((await snap()).workspace.slaves.map(slave => slave.id).sort()).toEqual(originalSlaveIds);
     await fill('[data-testid="scan-from"]', '2'); await fill('[data-testid="scan-to"]', '3');
-    await $('summary').click(); await fill('input[aria-label="起始地址（0-based）"]', '128');
+    await view().$('summary').click(); await fill('input[aria-label="起始地址（0-based）"]', '128');
     await click('开始扫描'); await waitText('扫描摘要');
-    const units = await browser.execute(() => [...document.querySelectorAll('tbody tr')].map(row => row.children[0]?.textContent?.trim()));
+    const units = await view().$$('tbody tr td:first-child').map(cell => cell.getText());
     expect(units).toEqual(['2','3']); expect(await text()).toContain('异常响应 0x02');
-    await $('//tbody/tr[1]//button').click();
+    await view().$('.//tbody/tr[1]//button').click();
     expect(await $(field('从站地址 (Unit ID)')).getValue()).toBe('2');
     await click('取消');
   });
@@ -132,6 +133,9 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await writeValue('目标转速', '2100'); await waitText('确认高风险写入'); await click('取消');
     expect((await snap()).points['slave-1::pt-speed']?.engNumber).toBe(before);
     await writeValue('目标转速', '2100'); await click('确认写入');
+    await browser.waitUntil(async () => (await snap()).points['slave-1::pt-speed']?.lastWrite?.phase === 'confirmed');
+    expect((await snap()).points['slave-1::pt-speed']?.engNumber).toBe(before);
+    await click('刷新全部');
     await browser.waitUntil(async () => (await snap()).points['slave-1::pt-speed']?.engNumber === 2100);
     const writes = (await snap()).transactions.filter(tx => tx.sourceKind === 'write').length;
     await writeValue('使能', 'invalid'); await waitText('请输入 ON/OFF');
@@ -164,13 +168,16 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await click('查看最近通信');
     await waitText('通信诊断');
   });
-  it('趋势：暂停冻结时间、恢复继续、窗口配置保存、显隐与删除信号', async () => {
+  it('趋势：暂停冻结时间、恢复继续、窗口按视图独立、显隐与删除信号', async () => {
     await rail('趋势'); await click('图表'); await browser.pause(500);
     await click('暂停'); const end = await $('[data-testid="trend-window"]').getAttribute('data-end-ms');
     await browser.pause(700); expect(await $('[data-testid="trend-window"]').getAttribute('data-end-ms')).toBe(end);
     await click('继续'); await browser.waitUntil(async () => Number(await $('[data-testid="trend-window"]').getAttribute('data-end-ms')) > Number(end));
-    await $('select').selectByAttribute('value','30');
-    await browser.waitUntil(async () => (await snap()).workspace.trendGroups[0]?.windowSec === 30);
+    const groupWindow = (await snap()).workspace.trendGroups[0]?.windowSec;
+    const windowSelect = view().$('select[aria-label="趋势时间窗口"]');
+    await windowSelect.selectByAttribute('value','30');
+    await expect(windowSelect).toHaveValue('30');
+    expect((await snap()).workspace.trendGroups[0]?.windowSec).toBe(groupWindow);
     await click('信号'); await $('button[title="隐藏图表"]').click();
     await browser.waitUntil(async () => (await snap()).workspace.trendGroups[0]?.signals[0]?.visible === false);
     await $('//button[text()="移除"]').click();
@@ -178,15 +185,15 @@ describe('审计：实际按钮到持久化/通信结果', () => {
   });
   it('通信：暂停冻结行、搜索/结果过滤生效、清空、恢复、导出真实帧', async () => {
     await rail('通信'); await click('报文'); await waitText('FC03');
-    await click('暂停'); const rows = await $$('tbody tr').map(row => row.getText());
-    await browser.pause(700); expect(await $$('tbody tr').map(row => row.getText())).toEqual(rows);
-    await fill('input[placeholder*="搜索"]','impossible-search'); expect(await $$('tbody tr')).toHaveLength(0);
-    await fill('input[placeholder*="搜索"]',''); await click('仅异常'); expect((await $$('tbody tr').map(row => row.getText())).every(row => !row.includes('成功'))).toBe(true);
+    await click('暂停'); const rows = await view().$$('tbody tr').map(row => row.getText());
+    await browser.pause(700); expect(await view().$$('tbody tr').map(row => row.getText())).toEqual(rows);
+    await fill('input[placeholder*="搜索"]','impossible-search'); expect(await view().$$('tbody tr')).toHaveLength(0);
+    await fill('input[placeholder*="搜索"]',''); await click('仅异常'); expect((await view().$$('tbody tr').map(row => row.getText())).every(row => !row.includes('成功'))).toBe(true);
     await click('仅异常'); await click('导出日志');
     expect(await browser.electron.execute(electron => electron.clipboard.readText())).toContain('FC03');
-    await click('清空'); expect(await $$('tbody tr')).toHaveLength(0);
+    await click('清空'); expect(await view().$$('tbody tr')).toHaveLength(0);
     await click('继续显示'); await waitText('FC03');
-    await $('//tbody/tr[1]').click(); expect(await text()).toContain('响应');
+    await view().$('.//tbody/tr[1]').click(); expect(await text()).toContain('响应');
   });
   it('模板：复制隔离 ID、内存显示真实数据、编辑保存、导入 CSV 的 UInt16 与宽度', async () => {
     const originalTemplates = (await snap()).workspace.templates;
@@ -279,7 +286,7 @@ describe('审计：实际按钮到持久化/通信结果', () => {
     await browser.waitUntil(async () => (await snap()).workspace.trendGroups.find(g => g.name === 'Audit group')?.signals.length === 1);
     await click('复制组'); await browser.waitUntil(async () => (await snap()).workspace.trendGroups.length === 3);
     await click('删除组'); await browser.waitUntil(async () => (await snap()).workspace.trendGroups.length === 2);
-    await realtime(); await $('button[role="checkbox"]').click(); await click('加入趋势组');
+    await realtime(); await view().$('button[role="checkbox"]').click(); await click('加入趋势组');
     await click('添加信号');
     await browser.waitUntil(async () => (await snap()).workspace.trendGroups.some(g => g.signals.length >= 9));
   });

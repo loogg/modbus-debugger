@@ -1,6 +1,7 @@
 import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
+import { activeView } from '../support/workbench-controls';
 import type { Workspace } from '../../src/domain/model';
 import type { ModbusApi } from '../../src/shared/preload-api';
 
@@ -70,13 +71,13 @@ describe('point decimal precision in real editor and trend', () => {
     expect(Number.isFinite(confirmed.engNumber)).toBe(true);
 
     await rail('趋势');
-    const currentValue = await $('//tr[.//span[normalize-space(.)="母线电压"]]//td[4]');
+    const currentValue = await activeView().$('.//tr[.//span[normalize-space(.)="母线电压"]]//td[4]');
     await browser.waitUntil(async () => /^-?\d+(?:\.\d{1,2})?$/.test((await currentValue.getText()).trim()), { timeout: 15000 });
     await $('//button[normalize-space(.)="图表"]').click();
-    const chart = await $('div[data-chart-units] canvas');
+    const chart = await activeView().$('div[data-chart-units] canvas');
     await chart.waitForExist({ timeout: 15000 });
     const rect = await browser.execute(() => {
-      const canvas = document.querySelector('div[data-chart-units] canvas')!;
+      const canvas = document.querySelector('.workbench-view:not([style*="display: none"]) div[data-chart-units] canvas')!;
       const bounds = canvas.getBoundingClientRect();
       return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
     });
@@ -88,7 +89,9 @@ describe('point decimal precision in real editor and trend', () => {
       if (tooltip.includes('母线电压')) break;
     }
     expect(tooltip).toContain('母线电压');
-    const voltage = tooltip.match(/母线电压:\s*(-?\d+(?:\.\d+)?)/)?.[1];
+    const sampled = await browser.execute(() => [...document.querySelectorAll<HTMLTableRowElement>('.modbus-chart-tooltip tr[data-sample-time]')]
+      .find(row => row.getBoundingClientRect().width && row.cells?.[0]?.textContent?.includes('母线电压'))?.lastElementChild?.textContent);
+    const voltage = sampled?.trim().match(/^-?\d+(?:\.\d+)?/)?.[0] ?? tooltip.match(/母线电压:\s*(-?\d+(?:\.\d+)?)/)?.[1];
     expect(voltage).toBeDefined();
     expect(voltage!.split('.')[1]?.length ?? 0).toBeLessThanOrEqual(2);
     await shot('trend-tooltip-1440.png');

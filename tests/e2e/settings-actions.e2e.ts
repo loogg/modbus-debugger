@@ -2,7 +2,7 @@ import { browser, $, $$, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ModbusApi } from '../../src/shared/preload-api';
-import type { Workspace } from '../../src/domain/model';
+import { WORKSPACE_SCHEMA_VERSION, type Workspace } from '../../src/domain/model';
 
 const rail = (name: string) => $(`//nav//button[normalize-space(.)="${name}"]`).click();
 const click = (name: string) => $(`//button[normalize-space(.)="${name}"]`).click();
@@ -56,7 +56,7 @@ describe('桌面菜单与设置实际操作', () => {
     await click('另存为');
     await browser.waitUntil(() => fs.existsSync(savedPath), { timeout: 10000 });
     expect((await snapshot()).workspacePath).toBe(savedPath);
-    expect(JSON.parse(fs.readFileSync(savedPath, 'utf8')).schemaVersion).toBe(1);
+    expect(JSON.parse(fs.readFileSync(savedPath, 'utf8')).schemaVersion).toBe(WORKSPACE_SCHEMA_VERSION);
     expect(await body()).toContain('工作区已另存为');
     await browser.electron.restoreAllMocks();
 

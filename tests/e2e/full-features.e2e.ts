@@ -1,6 +1,7 @@
 import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
+import { activeView, visibleControl } from '../support/workbench-controls';
 import type { ModbusApi } from '../../src/shared/preload-api';
 
 const SHOTS = path.resolve('out', 'test-temp', 'full-e2e', 'screenshots');
@@ -16,7 +17,7 @@ async function figmaShot(name: string): Promise<void> {
 
 /** Use real keyboard input so focus and validation paths participate. */
 async function setNative(selector: string, value: string): Promise<void> {
-  const input = await $(selector);
+  const input = await visibleControl(selector);
   await input.click();
   await browser.keys(['Control', 'a']);
   await browser.keys('Backspace');
@@ -27,7 +28,7 @@ async function bodyText(): Promise<string> {
 }
 
 async function clickText(text: string): Promise<void> {
-  await $(`//button[normalize-space(.)="${text}"]`).click();
+  await (await visibleControl(`//button[normalize-space(.)="${text}"]`)).click();
   await browser.pause(200);
 }
 async function rail(label: string): Promise<void> {
@@ -120,7 +121,7 @@ describe('既有页面操作回归', () => {
     await shot('14-history-1440');
     let text = await bodyText();
     expect(text).toContain('功耗分析');
-    await $('//button[contains(., "功耗分析")]').click();
+    await activeView().$('[data-session-id="legacy-g-power"]').click();
     await browser.pause(800);
     await clickText('信号');
     text = await bodyText();
@@ -171,7 +172,9 @@ describe('既有页面操作回归', () => {
     expect(await (await $(timeoutSel)).isEnabled()).toBe(true);
     await shot('01C-connection-settings-offline-1440');
     // visual check of the restyled Radix Select panel
-    await (await $('//div[text()="日志级别"]/following-sibling::button[1]')).click();
+    const advanced = activeView().$('.//details[summary[normalize-space(.)="高级连接参数"]]');
+    if (await advanced.getAttribute('open') === null) await advanced.$('summary').click();
+    await activeView().$('.//div[text()="日志级别"]/following-sibling::button[1]').click();
     await browser.pause(400);
     await shot('26-select-open-1440');
     await browser.keys('Escape');
@@ -291,14 +294,14 @@ describe('既有页面操作回归', () => {
     await clickText('取消');
     await waitGone('配置 RTU / TCP 通信参数');
   });
-  it('设置页：工作区文件 / 地址规则 / 记录与历史 / 写入安全', async () => {
+  it('设置页：工作区文件 / 地址规则 / 采样与历史 / 写入安全', async () => {
     await rail('设置');
     await browser.pause(400);
     await shot('21-settings-1440');
     const text = await bodyText();
     expect(text).toContain('工作区文件');
     expect(text).toContain('协议地址使用 0-based');
-    expect(text).toContain('记录与历史');
+    expect(text).toContain('采样与历史');
     expect(text).toContain('写入保护流程');
     // 显示偏好：时区与语言必须可见且已接入当前值
     expect(text).toContain('时区');

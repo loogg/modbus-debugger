@@ -9,6 +9,9 @@ import type { Command } from '../../src/shared/commands';
 
 const snapshot = () => browser.execute(() => (window as unknown as { modbus: ModbusApi }).modbus.getSnapshot());
 const command = (command: Command) => browser.execute(command => (window as unknown as { modbus: ModbusApi }).modbus.command(command), command);
+async function readHoldingFeedback(transport: 'rtu' | 'tcp') {
+  expect((await command({ type: 'device.refresh', slaveId: `${transport}-master-1`, blockId: 'holding' })).ok).toBe(true);
+}
 const rail = (name: string) => $(`//nav//button[normalize-space(.)="${name}"]`).click();
 async function visibleElement(selector: string) {
   for (const element of await $$(selector)) if (await element.isDisplayed()) return element;
@@ -66,6 +69,7 @@ describe('packaged native application tests its own TCP and RTU master/slave tog
         const engineering = typeof vector.written === 'number' && !vector.enumMap ? vector.written * (vector.scale ?? 1) + (vector.offset ?? 0) : vector.written;
         const result = await command({ type: 'point.write', slaveId: `${transport}-master-1`, pointId: `${vector.id}-holding`, engineering: typeof engineering === 'number' ? engineering : null, boolValue: typeof engineering === 'boolean' ? engineering : null, stringValue: typeof engineering === 'string' ? engineering : null });
         expect(result.ok && result.value).toMatchObject({ phase: 'confirmed' });
+        await readHoldingFeedback(transport);
         const state = await snapshot();
         const master = state.points[`${transport}-master-1::${vector.id}-holding`]!;
         const slave = state.points[`${transport}-server-1::${vector.id}-holding`]!;
@@ -78,6 +82,7 @@ describe('packaged native application tests its own TCP and RTU master/slave tog
       await selectSlave(`${transport.toUpperCase()} 主站 Unit 1`);
       await editPoint('UTF8', '闭环🙂');
       await browser.waitUntil(async () => (await snapshot()).points[`${transport}-server-1::UTF8-holding`]?.stringValue === '闭环🙂');
+      await readHoldingFeedback(transport);
       expect((await snapshot()).points[`${transport}-master-1::UTF8-holding`]?.stringValue).toBe('闭环🙂');
       await $('//div[normalize-space(text())="UTF8"]/following-sibling::div[2]//button[normalize-space(.)="原始数据"]').click();
       await browser.waitUntil(async () => (await $('body').getText()).includes('0x9982'));
@@ -105,9 +110,10 @@ describe('packaged native application tests its own TCP and RTU master/slave tog
       await $(`//button[contains(.,"${transport.toUpperCase()} 主从四类趋势")]`).click();
       const group = (await snapshot()).workspace.trendGroups.find(item => item.id === `${transport}-trend`)!;
       const refs = group.signals.map(signal => ({ slaveId: signal.pointRef.slaveId, pointId: signal.pointRef.pointId }));
-      for (const [pointId, value] of [['Float32-ABCD-holding', 15.25], ['Enum-holding', 2], ['UTF8-holding', '记录🙂']] as const) {
+      for (const [pointId, value] of [['Float32-ABCD-holding', 15.25], ['Precision-holding', 2.345678901234], ['Enum-holding', 2], ['UTF8-holding', '记录🙂']] as const) {
         expect((await command({ type: 'point.write', slaveId: `${transport}-master-1`, pointId, engineering: typeof value === 'number' ? value : null, boolValue: null, stringValue: typeof value === 'string' ? value : null })).ok).toBe(true);
       }
+      await readHoldingFeedback(transport);
       let data: DataReadResult | null = null;
       await browser.waitUntil(async () => {
         const result = await command({ type: 'data.read', points: [], blocks: [], buffers: refs, series: refs.map(ref => ({ ...ref, limit: 2000 })) });

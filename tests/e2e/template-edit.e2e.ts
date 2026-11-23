@@ -1,6 +1,7 @@
 import { browser, $, $$, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
+import { activeView } from '../support/workbench-controls';
 import { templateWorkspace } from '../support/template-workspace';
 import type { ModbusApi } from '../../src/shared/preload-api';
 const snap=()=>browser.execute(()=>(window as unknown as {modbus:ModbusApi}).modbus.getSnapshot());
@@ -45,7 +46,7 @@ describe('模板与数据块实际交互',()=>{
     expect(JSON.parse(fs.readFileSync(state.workspacePath!,'utf8')).templates[0].points.some((p:{name:string})=>p.name==='新增点')).toBe(true);
     await browser.electron.execute(()=>true);expect(fileDialog.mock.calls).toHaveLength(0);
     await $('//button[contains(.,"返回设备模板：")]').click();expect(await $('//label[span[text()="模板名称"]]//input').getValue()).toBe('模板 A');
-    await block('状态寄存器').click();expect(await $('h1').getText()).toBe('状态寄存器');await block('模板 B').click();expect(await $('//label[span[text()="模板名称"]]//input').getValue()).toBe('模板 B');
+    await block('状态寄存器').click();await expect(activeView().$('h1')).toHaveText('状态寄存器');await block('模板 B').click();expect(await $('//label[span[text()="模板名称"]]//input').getValue()).toBe('模板 B');
     await block('控制寄存器').click();await click('内存布局');await browser.electron.execute(electron=>electron.BrowserWindow.getAllWindows()[0]!.setSize(1024,680));
     await browser.waitUntil(async()=>await browser.execute(()=>innerWidth<=1024));expect(await browser.execute(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await shot('memory-compact');
   });

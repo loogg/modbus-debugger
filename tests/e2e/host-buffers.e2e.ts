@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { browser, $, expect } from '@wdio/globals';
 import type { ModbusApi } from '../../src/shared/preload-api';
@@ -19,6 +20,7 @@ describe('Host reads and shared confirmed sample buffers', () => {
   before(async () => {
     await $('nav').waitForDisplayed({ timeout: 20000 });
     main = await browser.getWindowHandle();
+    execFileSync(process.execPath, [path.resolve('node_modules/vite-node/vite-node.mjs'), 'tools/create-canvas-review-fixture.ts', '--', '--buffers'], { windowsHide: true });
     const workspace = JSON.parse(fs.readFileSync(path.resolve('out/test-temp/host-buffer-review/source.workspace.json'), 'utf8')) as Workspace;
     for (const canvas of workspace.canvases ?? []) for (const widget of canvas.widgets) if (widget.kind === 'trend') widget.windowSec = 5;
     const applied = await browser.execute(async value => (window as unknown as { modbus: ModbusApi }).modbus.command({ type: 'workspace.apply', workspace: value }), workspace);

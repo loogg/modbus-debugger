@@ -1,16 +1,17 @@
-import { browser, $, $$, expect } from '@wdio/globals';
+import { browser, $, expect } from '@wdio/globals';
+import { activeView as view, visibleControl } from '../support/workbench-controls';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../../src/domain/model';
 import type { ModbusApi } from '../../src/shared/preload-api';
 const snap = () => browser.execute(() => (window as unknown as {modbus:ModbusApi}).modbus.getSnapshot());
-const click = (name:string) => $(`//button[normalize-space(.)="${name}"]`).click();
+const click = async (name:string) => (await visibleControl(`//button[normalize-space(.)="${name}"]`)).click();
 const rail = async (name:string) => { await $(`//nav//button[contains(.,"${name}")]`).click(); };
-const fill = async (selector:string,value:string) => { const el=await $(selector); await el.click(); await browser.keys(['Control','a']); await browser.keys('Backspace'); await el.addValue(value); };
+const fill = async (selector:string,value:string) => { const el=await visibleControl(selector); await el.click(); await browser.keys(['Control','a']); await browser.keys('Backspace'); await el.addValue(value); };
 const waitText = (value:string) => browser.waitUntil(async()=> (await $('body').getText()).includes(value),{timeout:15000});
 const filters = ['成功','超时','Modbus 异常','其他错误'];
 const toggle = (name:string) => $(`//label[normalize-space(.)="${name}"]//button[@role="checkbox"]`).click();
-const resultCells = () => $$('tbody tr td:nth-child(7)').map(el=>el.getText());
+const resultCells = () => view().$$('tbody tr td:nth-child(7)').map(el=>el.getText());
 const timezone = async (label:string) => {
   await rail('设置');
   const trigger = await $('//div[text()="时区"]/following-sibling::button[1]');
@@ -33,6 +34,8 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     expect((await browser.execute(workspace=>(window as unknown as {modbus:ModbusApi}).modbus.command({type:'workspace.apply',workspace}),ws)).ok).toBe(true);
     await browser.pause(350);
     await rail('通信'); await click('报文');
+    const resume = view().$('button=继续显示');
+    if (await resume.isDisplayed()) await resume.click();
     for(const name of filters) {
       const checkbox=await $(`//label[normalize-space(.)="${name}"]//button[@role="checkbox"]`);
       if(await checkbox.getAttribute('data-state')==='unchecked') await checkbox.click();
@@ -55,21 +58,25 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     await browser.saveScreenshot(path.resolve('out/test-temp/full-e2e/followup-shots/results.png'));
   });
   it('同一报文在 UTC 与上海时区显示不同时间，原始时间戳不变',async()=>{
-    await browser.waitUntil(async()=> (await snap()).transactions.length>0);
-    const tx=(await snap()).transactions.at(-1)!;
+    const recentTcp = async () => (await snap()).transactions.filter(tx => tx.connectionId === 'conn-tcp' && tx.result === 'ok').at(-1);
+    await browser.waitUntil(recentTcp);
+    const tx=(await recentTcp())!;
+    await fill('input[placeholder*="搜索地址"]',tx.traceId);
+    await browser.waitUntil(async()=> (await view().$$('tbody tr')).length === 2, { timeoutMsg: 'Selected TCP transaction has no visible TX/RX pair' });
+    await click('暂停');
     const expected=(zone:string)=>new Intl.DateTimeFormat('en-GB',{timeZone:zone,hourCycle:'h23',hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3}).format(new Date(tx.startUtc));
     for(const [choice,zone] of [['UTC','UTC'],['Asia/Shanghai（UTC+8）','Asia/Shanghai']]) {
       await timezone(choice!); await rail('通信');
-      await fill('input[placeholder*="搜索"]',tx.traceId);
-      await browser.waitUntil(async()=> (await $$('tbody tr')).length===(tx.responseAduHex?2:1));
-      expect(await $('//tbody/tr[td[4][normalize-space(.)="TX"]]/td[1]').getText()).toBe(expected(zone!));
+      await expect(view().$('input[placeholder*="搜索地址"]')).toHaveValue(tx.traceId);
+      await browser.waitUntil(async()=> (await view().$$('tbody tr')).length===(tx.responseAduHex?2:1));
+      await expect(view().$('.//tbody/tr[td[4][normalize-space(.)="TX"]]/td[1]')).toHaveText(expected(zone!));
       expect((await snap()).transactions.find(t=>t.traceId===tx.traceId)?.startUtc).toBe(tx.startUtc);
     }
     await timezone('跟随系统');
   });
   it('9个混合信号包含6条数值曲线，跨5种单位完整显示，历史字符串不重复叠字',async()=>{
     await rail('趋势'); await click('图表');
-    const charts = () => browser.execute(()=>[...document.querySelectorAll('[data-chart-units]')].map(el=>({units:JSON.parse(el.getAttribute('data-chart-units')!),count:Number(el.getAttribute('data-series-count'))})));
+    const charts = () => browser.execute(()=>[...document.querySelectorAll('.workbench-view:not([style*="display: none"]) [data-chart-units]')].map(el=>({units:JSON.parse(el.getAttribute('data-chart-units')!),count:Number(el.getAttribute('data-series-count'))})));
     await browser.waitUntil(async()=> (await charts()).reduce((sum,c)=>sum+c.count,0)===6,{timeout:15000});
     expect(await charts()).toHaveLength(5);
     expect((await charts()).find(c=>c.units[0]==='V')?.count).toBe(2);
@@ -88,11 +95,11 @@ describe('字符串、结果筛选、时区与多信号专项回归',()=>{
     await browser.waitUntil(async()=> (await charts()).length===1);
     expect((await charts())[0]).toEqual({units:['V','°C'],count:3});
     await rail('历史'); await click('状态与事件'); await waitText('固件版本');
-    const track=await $('[data-state-track="string"]');
+    const track=await view().$('[data-state-track="string"]');
     expect(await track.$$('[data-string-label]')).toHaveLength(1);
     expect(await track.$('[data-string-label]').getText()).toBe('V2.4.0');
     const bounds=await browser.execute(()=>{
-      const track=document.querySelector('[data-state-track="string"]')!;
+      const track=document.querySelector('.workbench-view:not([style*="display: none"]) [data-state-track="string"]')!;
       const svg=track.querySelector('svg')!;
       return {width:svg.clientWidth,labels:[...track.querySelectorAll<SVGTextElement>('[data-string-label],[data-string-time]')].map(t=>{const b=t.getBBox();return {left:b.x,right:b.x+b.width};})};
     });

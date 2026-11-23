@@ -1,9 +1,18 @@
-import { defineConfig } from 'vite';
+import { defineConfig, normalizePath } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    watch: {
+      // On Windows a watcher on a packaged subdirectory can prevent its atomic promotion.
+      ignored: ['out', 'release', 'data', 'cache', 'logs', 'temp'].flatMap(name => {
+        const directory = normalizePath(path.resolve(__dirname, name));
+        return [directory, directory + '/**'];
+      }),
+    },
+  },
   resolve: {
     alias: {
       '@domain': path.resolve(__dirname, 'src/domain'),

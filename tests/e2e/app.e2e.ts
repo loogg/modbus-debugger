@@ -1,6 +1,7 @@
 import { browser, $, expect } from '@wdio/globals';
 import fs from 'node:fs';
 import path from 'node:path';
+import { activeView } from '../support/workbench-controls';
 
 const SHOTS = path.resolve('out', 'test-temp', 'full-e2e', 'screenshots');
 const FIGMA_SHOTS = path.resolve('out', 'test-temp', 'full-e2e', 'figma-current');
@@ -51,19 +52,19 @@ describe('Modbus Debugger packaged app E2E', () => {
   it('realtime page shows live confirmed values from the simulator', async () => {
     await $('//button[contains(., "实时")]').click();
     await browser.pause(500);
-    await $('//button[contains(., "伺服驱动器 A")]').click();
+    await activeView().$('button*=伺服驱动器 A').click();
     await browser.waitUntil(async () => /4[0-9]\.\d+/.test(await bodyText()), {
       timeout: 30000,
       timeoutMsg: 'expected live bus voltage from simulator',
     });
     const text = await bodyText();
     expect(text).toContain('母线电压');
-    expect(text).toContain('后台持续刷新');
+    expect(text).toContain('配置周期：控制寄存器 200 ms · 遥测数据 500 ms');
     await shot('04A-realtime-1440');
-    // The first slave click selects it and collapses its tree; reopen to choose a block.
-    await $('//button[contains(., "伺服驱动器 A")]').click();
-    await $('//button[normalize-space(.)="控制寄存器"]').waitForDisplayed();
-    await $('//button[normalize-space(.)="控制寄存器"]').click();
+    const registers = activeView().$('button=控制寄存器');
+    if (!await registers.isDisplayed()) await activeView().$('button*=伺服驱动器 A').click();
+    await registers.waitForDisplayed();
+    await registers.click();
     await browser.waitUntil(async () => (await bodyText()).includes('当前聚焦：控制寄存器'), { timeout: 10000 });
     expect(await bodyText()).toContain('目标转速');
     await figmaShot('04B-realtime-block-focus');
@@ -126,7 +127,8 @@ describe('Modbus Debugger packaged app E2E', () => {
     const text = await bodyText();
     expect(text).toContain('扫描摘要');
     expect(text).toContain('已发现 3 个从站');
-    const units = await browser.execute(() => [...document.querySelectorAll('tbody tr')].map(row => row.children[0]?.textContent?.trim()));
+    const units = await browser.execute(() => [...document.querySelectorAll('.workbench-view:not([style*="display: none"]) tbody tr')]
+      .map(row => row.children[0]?.textContent?.trim()));
     expect(units).toEqual(['1', '2', '3']);
     await shot('17-scan-1440');
   });

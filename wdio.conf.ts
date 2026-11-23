@@ -115,7 +115,10 @@ export const config = {
     }
   },
   beforeSession: async (_config: unknown, _capabilities: unknown, specs: string[]) => {
-    const workspace = JSON.parse(fs.readFileSync(path.join(testRunDir, 'demo.workspace.json'), 'utf8')) as import('./src/domain/model').Workspace;
+    // Each spec starts a new app. Previous specs may have saved the fixture or switched workspaces.
+    const staged = stageWorkspace();
+    seedPrefs(staged);
+    const workspace = JSON.parse(fs.readFileSync(staged, 'utf8')) as import('./src/domain/model').Workspace;
     if (specs.some(spec => spec.endsWith('display-followup.e2e.ts'))) {
       const slave = workspace.slaves.find(item => workspace.connections.find(connection => connection.id === item.connectionId)?.transport === 'tcp')!;
       const template = workspace.templates.find(item => item.id === slave.templateId)!;

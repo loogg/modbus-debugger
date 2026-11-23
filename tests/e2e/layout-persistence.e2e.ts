@@ -1,4 +1,5 @@
 import { browser, $, expect } from '@wdio/globals';
+import { activeView } from '../support/workbench-controls';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ModbusApi } from '../../src/shared/preload-api';
@@ -6,7 +7,7 @@ import type { Workspace } from '../../src/domain/model';
 
 const rail = (name: string) => $(`//nav//button[normalize-space(.)="${name}"]`).click();
 const fixture = (): Workspace => JSON.parse(fs.readFileSync('tools/e2e/demo.workspace.json', 'utf8')) as Workspace;
-const sidebarWidth = () => browser.execute(() => document.querySelector<HTMLDivElement>('div[title="拖拽调整宽度，双击恢复 244 px"]')!.parentElement!.getBoundingClientRect().width);
+const sidebarWidth = () => browser.execute(() => document.querySelector<HTMLDivElement>('.workbench-view:not([style*="display: none"]) div[title="拖拽调整宽度，双击恢复 244 px"]')!.parentElement!.getBoundingClientRect().width);
 
 async function useIsolatedWorkspace(extraBlocks = false) {
   const ws = fixture();
@@ -34,17 +35,17 @@ describe('Sidebar, sticky engineering columns and compact overlays', () => {
   it('keeps the realtime header and Point column fixed while the 1024 window scrolls in both directions', async () => {
     await setWindowSize(1024, 680);
     try {
-      const handle = await $('div[title="拖拽调整宽度，双击恢复 244 px"]');
+      const handle = await activeView().$('div[title="拖拽调整宽度，双击恢复 244 px"]');
       await browser.action('pointer').move({ origin: handle, x: 0, y: 0 }).down('left')
         .move({ origin: 'pointer', x: 100, y: 0, duration: 250 }).up('left').perform();
       expect(await sidebarWidth()).toBe(320);
       await rail('实时');
-      await $('//button[contains(.,"伺服驱动器 A")]').click();
-      const scroller = await $('main div.overflow-auto[style*="max-height"]');
+      await activeView().$('button*=伺服驱动器 A').click();
+      const scroller = await activeView().$('main div.overflow-auto[style*="max-height"]');
       await scroller.waitForExist();
       await browser.action('wheel').scroll({ origin: scroller, deltaX: 180, deltaY: 220, duration: 200 }).perform();
       const metrics = await browser.execute(() => {
-        const box = document.querySelector<HTMLElement>('main div.overflow-auto[style*="max-height"]')!;
+        const box = document.querySelector<HTMLElement>('.workbench-view:not([style*="display: none"]) main div.overflow-auto[style*="max-height"]')!;
         const header = box.querySelector<HTMLElement>(':scope > div > div.sticky.top-0')!;
         const pointHeader = header.querySelector<HTMLElement>('.sticky.left-0')!;
         const pointCell = box.querySelector<HTMLElement>('div.absolute .sticky.left-0')!;
@@ -66,7 +67,7 @@ describe('Sidebar, sticky engineering columns and compact overlays', () => {
       expect(Math.abs(metrics.pointCellLeft - metrics.boxLeft)).toBeLessThan(4);
       expect(metrics.pointCellBackground).not.toBe('rgba(0, 0, 0, 0)');
     } finally {
-      await $('div[title="拖拽调整宽度，双击恢复 244 px"]').doubleClick();
+      await activeView().$('div[title="拖拽调整宽度，双击恢复 244 px"]').doubleClick();
       await setWindowSize(1440, 960);
     }
   });
@@ -112,8 +113,10 @@ describe('Sidebar, sticky engineering columns and compact overlays', () => {
 
   it('persists a mouse-dragged sidebar width to prefs and restores it after a new Electron session', async () => {
     await rail('设备');
+    const handle = await activeView().$('div[title="拖拽调整宽度，双击恢复 244 px"]');
+    await handle.doubleClick();
+    await browser.waitUntil(async () => (await sidebarWidth()) === 244);
     const before = await sidebarWidth();
-    const handle = await $('div[title="拖拽调整宽度，双击恢复 244 px"]');
     await browser.action('pointer').move({ origin: handle, x: 0, y: 0 }).down('left')
       .move({ origin: 'pointer', x: 55, y: 0, duration: 250 }).up('left').perform();
     const resized = await sidebarWidth();
@@ -124,7 +127,7 @@ describe('Sidebar, sticky engineering columns and compact overlays', () => {
     const oldSession = browser.sessionId;
     await browser.reloadSession();
     expect(browser.sessionId).not.toBe(oldSession);
-    await $('div[title="拖拽调整宽度，双击恢复 244 px"]').waitForExist({ timeout: 20000 });
+    await activeView().$('div[title="拖拽调整宽度，双击恢复 244 px"]').waitForExist({ timeout: 20000 });
     await browser.waitUntil(async () => (await sidebarWidth()) === resized, { timeout: 20000 });
     expect(JSON.parse(fs.readFileSync(prefsPath, 'utf8')).sidebarWidth).toBe(resized);
   });
