@@ -32,6 +32,8 @@ RTU 两端不能打开同一个串口。`--serial-port` 在 RTU 模式必填；�
 
 默认动态更新 HR0–3、IR0–3 与 DI0；控制字、目标转速、字符串和 Coil 写入后保持，不会每200ms被初始值覆盖。`--static` 关闭动态更新，可在整片寄存器上验证 Bool/BitField/Enum/String/整数/浮点映射。重启进程会重新初始化。
 
+`--temperature-cycle` 用于[连续三次温度超限示例](../../docs/examples/consecutive-temperature.modbus-script.json)。每个 Unit 的 FC04 成功读取覆盖 IR 0–1 时，温度依次返回 69、71、72、70、71、72、74、78、68、73、74、76 °C，随后从头循环。其余寄存器和默认运行模式沿用上述设置。
+
 ## 故障与诊断
 
 `--fault timeout|exception|delay|bad-crc|malformed` 配合 `--fault-unit`、`--fault-fc` 定向注入；`--fault-count 1` 只注入一次，0 表示持续。

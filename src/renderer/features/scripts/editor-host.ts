@@ -1,19 +1,27 @@
 import * as Blockly from 'blockly/core';
 import { isScriptStatement, MAX_SCRIPT_BLOCKS, type ScriptGraph } from '../../../domain/master-script';
 import type { Workspace } from '../../../domain/model';
-import { bindings, generateScriptLua, graphOf, makeFieldOptions, scriptToolbox } from './blocks';
+import { bindings, inspectScriptDraft, graphOf, makeFieldOptions } from './blocks';
+import { scriptToolbox } from './block-palette';
+import type { ScriptPreview } from './lua-source';
+import { synchronizeScriptFunctions } from './function-blocks';
 import { loadScriptGraph } from './block-controls';
 import { ScriptToolbox, type PaletteState } from './palette';
 
 export interface ScriptEditorApi {
-  lua(): string;
-  highlight(blockId: string | null, center?: boolean | 'if-hidden'): void;
+  preview(): ScriptPreview;
+  inspect(blockId: string | null, reveal?: boolean): void;
+  markExecution(blockId: string | null, paused: boolean): void;
 }
 
 export interface ScriptEditorInput {
   graph: ScriptGraph;
   equipment: Workspace | null;
   palette?: PaletteState;
+  search: string;
+  variableNames: readonly string[];
+  onClearSearch(): void;
+  onViewChange?(view: ScriptCanvasView): void;
   breakpoints?: readonly string[];
   onBreakpoint?(id: string): void;
   onChange(graph: ScriptGraph): void;
@@ -21,8 +29,13 @@ export interface ScriptEditorInput {
   onFindPoint?(key: string): void;
 }
 
+export interface ScriptCanvasView { percent: number; undo: boolean; redo: boolean }
 interface EditorHost extends ScriptEditorApi {
+  undo(redo: boolean): void;
+  zoom(direction: number): void;
+  center(): void;
   updateBindings(): void;
+  updatePalette(): void;
   updateBreakpoints(): void;
   dispose(): void;
 }
@@ -32,14 +45,27 @@ export interface ScriptEditorWindow extends Window {
   mountMasterScriptEditor?: (element: HTMLElement, input: () => ScriptEditorInput) => Promise<EditorHost | null>;
 }
 
+// Follow the actual rendered shape when inputs resize or a C-block gains an arm.
+function outlineBlock(block: Blockly.BlockSvg) {
+  const root = block.getSvgRoot();
+  const shape = root.querySelector(':scope > .blocklyPath:not(.blocklyPathSelected)');
+  const group = Blockly.utils.dom.createSvgElement('g', { class: 'script-block-outline', 'aria-hidden': 'true' }, root);
+  const layers = ['rim', 'band', 'core'].map(layer => Blockly.utils.dom.createSvgElement('path', { class: 'outline-' + layer }, group));
+  const sync = () => layers.forEach(path => path.setAttribute('d', shape?.getAttribute('d') ?? ''));
+  const observer = new MutationObserver(sync);
+  if (shape) observer.observe(shape, { attributes: true, attributeFilter: ['d'] });
+  sync();
+  return () => { observer.disconnect(); group.remove(); };
+}
+
 const scriptTheme = Blockly.Theme.defineTheme('modbus', {
   name: 'modbus', base: Blockly.Themes.Classic,
   componentStyles: {
-    workspaceBackgroundColour: '#f9fbfd', toolboxBackgroundColour: '#f3f6f9', toolboxForegroundColour: '#233446',
-    flyoutBackgroundColour: '#ffffff', flyoutOpacity: 1, scrollbarColour: '#93a3b2', scrollbarOpacity: 0.65,
+    workspaceBackgroundColour: '#f5f7fa', toolboxBackgroundColour: '#ffffff', toolboxForegroundColour: '#233446',
+    flyoutBackgroundColour: '#f8fafc', flyoutOpacity: 1, scrollbarColour: '#a9b6c5', scrollbarOpacity: 0.68,
     selectedGlowColour: '#126cc7', selectedGlowOpacity: 0.55, insertionMarkerColour: '#1764ad', replacementGlowColour: '#1976bd',
   },
-  fontStyle: { family: '"Microsoft YaHei", "Segoe UI", sans-serif', size: 10, weight: '500' },
+  fontStyle: { family: '"Segoe UI", "Microsoft YaHei", sans-serif', size: 12, weight: '600' },
 });
 
 const editorInputs = new WeakMap<Blockly.Workspace, () => ScriptEditorInput>();
@@ -65,12 +91,15 @@ export const mountScriptEditor: MountScriptEditor = (element, input) => {
     toolbox: scriptToolbox,
     plugins: { toolbox: ScriptToolbox },
     renderer: 'zelos', theme: scriptTheme, disable: true,
-    rendererOverrides: { MIN_BLOCK_HEIGHT: 36, DUMMY_INPUT_MIN_HEIGHT: 26, EMPTY_INLINE_INPUT_HEIGHT: 26,
-      FIELD_BORDER_RECT_HEIGHT: 26, FIELD_DROPDOWN_BORDER_RECT_HEIGHT: 26, BOTTOM_ROW_AFTER_STATEMENT_MIN_HEIGHT: 16 },
-    grid: { spacing: 24, length: 1, colour: '#d1dce6', snap: false },
+    rendererOverrides: { MIN_BLOCK_HEIGHT: 32, DUMMY_INPUT_MIN_HEIGHT: 23, EMPTY_INLINE_INPUT_HEIGHT: 24,
+      FIELD_BORDER_RECT_HEIGHT: 24, FIELD_DROPDOWN_BORDER_RECT_HEIGHT: 24, EMPTY_STATEMENT_INPUT_HEIGHT: 24,
+      CORNER_RADIUS: 7, NOTCH_WIDTH: 24, NOTCH_HEIGHT: 4, NOTCH_OFFSET_LEFT: 15, FIELD_BORDER_RECT_RADIUS: 10,
+      START_HAT_WIDTH: 86, START_HAT_HEIGHT: 15, TOP_ROW_MIN_HEIGHT: 5, BOTTOM_ROW_MIN_HEIGHT: 5,
+      SMALL_PADDING: 4, MEDIUM_PADDING: 6, LARGE_PADDING: 10, BOTTOM_ROW_AFTER_STATEMENT_MIN_HEIGHT: 10 },
+    grid: { spacing: 20, length: 1.5, colour: '#cbd6e2', snap: false },
     maxBlocks: MAX_SCRIPT_BLOCKS,
     trashcan: true,
-    zoom: { controls: true, wheel: true, startScale: 0.95, minScale: 0.35, maxScale: 2 },
+    zoom: { controls: false, wheel: true, startScale: 0.95, minScale: 0.35, maxScale: 2, scaleSpeed: 1.15 },
     media: new URL('./blockly-media/', document.baseURI).href,
     sounds: false,
     scrollbars: true,
@@ -101,15 +130,48 @@ export const mountScriptEditor: MountScriptEditor = (element, input) => {
   };
   updateBreakpoints();
   const toolbox = workspace.getToolbox();
-  if (toolbox instanceof ScriptToolbox) toolbox.start(input().palette, scriptToolbox.contents.map(category => category.colour));
+  const updatePalette = () => {
+    if (toolbox instanceof ScriptToolbox) toolbox.updatePalette(input().search, input().variableNames);
+  };
+  if (toolbox instanceof ScriptToolbox) toolbox.start(input().palette, () => input().onClearSearch());
+  updatePalette();
+  let canvasView: ScriptCanvasView | undefined;
+  const updateCanvasView = () => {
+    const percent = Math.round(workspace.scale * 100);
+    const undo = workspace.getUndoStack().length > 0;
+    const redo = workspace.getRedoStack().length > 0;
+    if (canvasView?.percent === percent && canvasView.undo === undo && canvasView.redo === redo) return;
+    canvasView = { percent, undo, redo };
+    input().onViewChange?.(canvasView);
+  };
+  updateCanvasView();
   const changed = (event: Blockly.Events.Abstract) => {
     if (event.workspaceId !== workspace.id) return;
-    if (event.type === Blockly.Events.SELECTED) input().onSelect?.((event as Blockly.Events.Selected).newElementId ?? null);
-    if (event.type === Blockly.Events.CLICK && (event as Blockly.Events.Click).targetType === 'block') input().onSelect?.((event as Blockly.Events.Click).blockId ?? null);
-    if (!event.isUiEvent && event.type !== Blockly.Events.FINISHED_LOADING) input().onChange(graphOf(workspace));
+    updateCanvasView();
+    const click = event.type === Blockly.Events.CLICK ? event as Blockly.Events.Click : null;
+    const id = click?.blockId ?? (event.type === Blockly.Events.SELECTED ? (event as Blockly.Events.Selected).newElementId : null);
+    const block = id ? workspace.getBlockById(id) : null;
+    if (block) input().onSelect?.(block.isShadow() ? block.getParent()?.id ?? null : block.id);
+    else if (click?.targetType === 'workspace') input().onSelect?.(null);
+    if (!event.isUiEvent && event.type !== Blockly.Events.FINISHED_LOADING) {
+      synchronizeScriptFunctions(workspace);
+      input().onChange(graphOf(workspace));
+    }
   };
   workspace.addChangeListener(changed);
-  let highlighted: Blockly.BlockSvg | null = null;
+  let selected: Blockly.BlockSvg | null = null;
+  let executing: Blockly.BlockSvg | null = null;
+  const outlines = new Map<Blockly.BlockSvg, () => void>();
+  const updateOutline = (block: Blockly.BlockSvg | null) => {
+    if (!block) return;
+    if (block === selected || block === executing) {
+      if (!outlines.has(block)) outlines.set(block, outlineBlock(block));
+    } else {
+      outlines.get(block)?.();
+      outlines.delete(block);
+    }
+  };
+  let viewportAnchor: Blockly.BlockSvg | null = null;
   const reveal = (block: Blockly.BlockSvg, onlyIfHidden: boolean) => {
     const shape = block.getSvgRoot()?.querySelector(':scope > .blocklyPath')?.getBoundingClientRect();
     const bounds = element.getBoundingClientRect();
@@ -129,33 +191,53 @@ export const mountScriptEditor: MountScriptEditor = (element, input) => {
   };
   const layout = new ResizeObserver(() => {
     Blockly.svgResize(workspace);
-    if (highlighted) reveal(highlighted, true);
+    if (toolbox instanceof ScriptToolbox) toolbox.revealSelectedCategory();
+    if (viewportAnchor && !viewportAnchor.isDisposed()) reveal(viewportAnchor, true);
   });
   layout.observe(element);
   Blockly.svgResize(workspace);
 
   return {
     updateBindings,
+    updatePalette,
     updateBreakpoints,
-    lua: () => generateScriptLua(workspace, graphOf(workspace)),
-    highlight: (id, center) => {
+    undo: redo => { workspace.undo(redo); updateCanvasView(); },
+    zoom: direction => { workspace.zoomCenter(direction); updateCanvasView(); },
+    center: () => workspace.scrollCenter(),
+    preview: () => inspectScriptDraft(workspace, graphOf(workspace)),
+    inspect: (id, center) => {
       const block = id ? workspace.getBlockById(id) : null;
-      if (block !== highlighted) {
-        const previous = highlighted?.getSvgRoot();
-        previous?.classList.remove('script-highlight');
-        previous?.querySelector(':scope > .script-location-arrow')?.remove();
-        highlighted = block;
-        workspace.highlightBlock(block?.id ?? null);
+      if (block !== selected) {
+        const previous = selected;
+        previous?.getSvgRoot()?.classList.remove('script-selected');
+        selected = block;
+        block?.getSvgRoot().classList.add('script-selected');
+        updateOutline(previous); updateOutline(block);
+      }
+      if (center && block) { viewportAnchor = block; reveal(block, false); }
+    },
+    markExecution: (id, paused) => {
+      const block = id ? workspace.getBlockById(id) : null;
+      if (block !== executing) {
+        const previous = executing;
+        previous?.getSvgRoot()?.classList.remove('script-current');
+        previous?.getSvgRoot()?.querySelector(':scope > .script-location-arrow')?.remove();
+        executing = block;
         if (block) {
           const root = block.getSvgRoot();
-          root.classList.add('script-highlight');
-          Blockly.utils.dom.createSvgElement('path', { class: 'script-location-arrow', d: 'M -21 3 L -11 10 L -21 17 Z', 'aria-hidden': 'true' }, root);
+          root.classList.add('script-current');
+          // The margin of the entire stack stays clear of branch and function labels.
+          const margin = block.getRootBlock().getRelativeToSurfaceXY().x - block.getRelativeToSurfaceXY().x;
+          Blockly.utils.dom.createSvgElement('path', { class: 'script-location-arrow', d: 'M -21 3 L -11 10 L -21 17 Z',
+            transform: `translate(${margin},0)`, 'aria-hidden': 'true' }, root);
         }
+        updateOutline(previous); updateOutline(block);
       }
-      if (center && block) reveal(block, center === 'if-hidden');
+      if (paused && block) { viewportAnchor = block; reveal(block, true); }
     },
     dispose: () => {
       layout.disconnect();
+      for (const remove of outlines.values()) remove();
       workspace.removeChangeListener(changed);
       bindings.delete(workspace);
       editorInputs.delete(workspace);

@@ -24,6 +24,30 @@ def float_to_words(value: float) -> tuple[int, int]:
     return struct.unpack('>HH', struct.pack('>f', value))
 
 
+def temperature_cycle(trace_pdu):
+    """Advance the alarm example once per successful FC04 read covering IR 0–1."""
+    readings = (69, 71, 72, 70, 71, 72, 74, 78, 68, 73, 74, 76)
+    cursors = {}
+
+    def trace(sending, pdu):
+        pdu = trace_pdu(sending, pdu)
+        if not sending and pdu.function_code == 4 and pdu.address == 0 and pdu.count >= 2:
+            read = pdu.datastore_update
+
+            async def sample(context, device_id):
+                reply = await read(context, device_id)
+                if not reply.isError():
+                    index = cursors.get(device_id, 0)
+                    reply.registers[:2] = float_to_words(readings[index])
+                    cursors[device_id] = (index + 1) % len(readings)
+                return reply
+
+            pdu.datastore_update = sample
+        return pdu
+
+    return trace
+
+
 def build_context(units: list[int], registers: int = 128, bits: int = 2048) -> ModbusServerContext:
     devices = {}
     for unit in units:
@@ -169,6 +193,7 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument('--register-count', type=ranged_int(12, 65535), default=128)
     cli.add_argument('--bit-count', type=ranged_int(1, 65535), default=2048)
     cli.add_argument('--static', action='store_true', help='disable changing telemetry for deterministic tests')
+    cli.add_argument('--temperature-cycle', action='store_true', help='cycle the temperature input through the consecutive-alarm example')
     cli.add_argument('--broadcast', action='store_true', help='allow RTU unit 0 broadcasts; no reply')
     cli.add_argument('--trace', action='store_true', help='print RX/TX frames to stdout')
     cli.add_argument('--fault', choices=['none', 'timeout', 'exception', 'delay', 'bad-crc', 'malformed'], default='none')
@@ -185,7 +210,8 @@ def parser() -> argparse.ArgumentParser:
 async def serve(args) -> None:
     context = build_context(args.units, args.register_count, args.bit_count)
     faults = Faults(args)
-    common = dict(context=context, ignore_missing_devices=True, trace_pdu=faults.trace_pdu, trace_packet=faults.trace_packet)
+    trace = temperature_cycle(faults.trace_pdu) if args.temperature_cycle else faults.trace_pdu
+    common = dict(context=context, ignore_missing_devices=True, trace_pdu=trace, trace_packet=faults.trace_packet)
     if args.transport == 'rtu':
         # One simulated endpoint owns this serial port and serves all configured Unit IDs.
         server = ModbusSerialServer(port=args.serial_port, baudrate=args.baudrate, bytesize=args.bytesize,

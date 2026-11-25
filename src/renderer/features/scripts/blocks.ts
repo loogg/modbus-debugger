@@ -1,10 +1,15 @@
 import * as Blockly from 'blockly/core';
 import * as zhHans from 'blockly/msg/zh-hans';
-import { luaGenerator, Order } from 'blockly/lua';
-import { compileMasterScript, fieldText, MAX_SCRIPT_MS, scriptBlocks, scriptErrors, scriptGraphBlocks, scriptPointKey, scriptRelations, scriptStates, type ScriptGraph } from '../../../domain/master-script';
+import { blockColours } from './block-palette';
+import { Order } from 'blockly/lua';
+import { compileScriptProgram, fieldText, isScriptDefinition, MAX_SCRIPT_MS, ScriptBlockError, scriptArithmetic, scriptBlocks, scriptErrors, scriptGraphBlocks, scriptPointKey, scriptRelations, scriptStates, splitParameters, type ScriptGraph } from '../../../domain/master-script';
 import type { Workspace } from '../../../domain/model';
 import { canReadPoint, canWritePoint } from '../../../domain/point-access';
-import { BooleanSwitch, conditionInput, initBranch, literalShadow, saveScriptGraph } from './block-controls';
+import { BooleanSwitch, conditionInput, initBranch, literalShadow, LogValueControl, numberSlot, saveScriptGraph } from './block-controls';
+import { ScriptLuaGenerator, type LuaSource, type ScriptPreview } from './lua-source';
+import { initFunctionCall, parameterField, ParameterListField, ScriptReferenceField } from './function-blocks';
+
+const luaGenerator = new ScriptLuaGenerator();
 
 type Option = [string, string];
 type List = 'slave' | 'read' | 'write' | 'numeric';
@@ -14,7 +19,6 @@ interface FieldOptions {
   savedPoints: Set<string>;
   savedSlaves: Set<string>;
   shortNames: Map<string, string>;
-  variables: Set<string>;
 }
 
 export const bindings = new WeakMap<Blockly.Workspace, FieldOptions>();
@@ -61,17 +65,14 @@ export function makeFieldOptions(workspace: Workspace | null, graph: ScriptGraph
     shortNames.set(key, name + ' · ' + identifiers.get(key));
   }
   for (const option of new Set(Object.values(lists).flat())) if (ambiguous.has(option[1])) option[0] += ' · ' + identifiers.get(option[1]);
-  const variables = new Set<string>();
   for (const block of scriptGraphBlocks(graph)) {
     const point = fieldText(block, 'POINT');
     const slave = fieldText(block, 'SLAVE');
     if (point) savedPoints.add(point);
     if (slave) savedSlaves.add(slave);
-    const variable = fieldText(block, 'VARIABLE').trim();
-    if (variable) variables.add(variable);
   }
   const keys = (list: List) => new Set(lists[list].map(([, key]) => key));
-  return { lists, savedPoints, savedSlaves, variables, shortNames, available: { slave: keys('slave'), read: keys('read'), write: keys('write'), numeric: keys('numeric') } };
+  return { lists, savedPoints, savedSlaves, shortNames, available: { slave: keys('slave'), read: keys('read'), write: keys('write'), numeric: keys('numeric') } };
 }
 
 function owner(block: Blockly.Block) {
@@ -106,10 +107,15 @@ function bindingField(block: Blockly.Block, list: List): Blockly.FieldDropdown {
 }
 
 function variableField(block: Blockly.Block): Blockly.FieldDropdown {
-  return new Blockly.FieldDropdown(function(this: Blockly.FieldDropdown) {
+  return new ScriptReferenceField(function(this: Blockly.FieldDropdown) {
     const workspace = owner(block);
-    const names = new Set(bindings.get(workspace)?.variables);
-    for (const item of workspace.getBlocksByType(scriptBlocks.readVariable, false)) {
+    const root = block.getRootBlock();
+    const local = isScriptDefinition(root.type);
+    const names = new Set(local ? splitParameters(String(root.getFieldValue('PARAMS') ?? '')) : []);
+    const declarations = [...workspace.getBlocksByType(scriptBlocks.readVariable, false), ...workspace.getBlocksByType(scriptBlocks.setVariable, false)];
+    for (const item of declarations) {
+      const declaringRoot = item.getRootBlock();
+      if (local ? declaringRoot !== root : isScriptDefinition(declaringRoot.type)) continue;
       const name = String(item.getFieldValue('VARIABLE') ?? '').trim();
       if (name) names.add(name);
     }
@@ -119,10 +125,13 @@ function variableField(block: Blockly.Block): Blockly.FieldDropdown {
   });
 }
 
-const actionColor = '#2868a6';
-const controlColor = '#99601c';
-const conditionColor = '#16755b';
-const valueColor = '#6b55a0';
+const { device: actionColor, control: controlColor, condition: conditionColor, variable: variableColor,
+  math: mathColor, log: logColor, function: functionColor } = blockColours;
+function valueReporter(block: Blockly.Block, colour: string, dynamic = false) {
+  block.setOutput(true, dynamic ? ['ScriptValue', 'ScriptNumber', 'ConditionValue'] : ['ScriptValue', 'ScriptNumber']);
+  block.setColour(colour);
+  if (block.workspace instanceof Blockly.WorkspaceSvg) block.setOutputShape(block.workspace.getRenderer().getConstants().SHAPES.ROUND ?? null);
+}
 function action(block: Blockly.Block, label: string, color = actionColor) {
   block.setPreviousStatement(true);
   block.setNextStatement(true);
@@ -136,27 +145,27 @@ function statementCondition(block: Blockly.Block, label: string) {
   block.setPreviousStatement(true);
   block.setNextStatement(true);
   block.setColour(controlColor);
-  block.setInputsInline(false);
+  block.setInputsInline(true);
   conditionInput(block, 'CONDITION', label);
 }
 function predicate(block: Blockly.Block) {
   block.setOutput(true, 'Boolean');
   block.setColour(conditionColor);
-  block.setInputsInline(false);
+  block.setInputsInline(true);
 }
 
 function installBlocks() {
   const messages = Object.fromEntries(Object.entries(zhHans).flatMap(([key, value]) => typeof value === 'string' ? [[key, value]] : []));
   Blockly.setLocale({ ...messages, DISABLE_BLOCK: '停用此段', ENABLE_BLOCK: '启用此段' });
   Blockly.Blocks[literalShadow] = { init(this: Blockly.Block) {
-    this.setOutput(true, 'ScriptValue'); this.setColour(valueColor);
+    this.setOutput(true, 'ScriptValue'); this.setColour(mathColor);
     this.appendDummyInput().appendField(new Blockly.FieldTextInput('0'), 'TEXT');
   } };
   Blockly.Blocks[scriptBlocks.start] = { init(this: Blockly.Block) {
     this.hat = 'cap';
     this.appendDummyInput().appendField('开始');
     this.setNextStatement(true);
-    this.setColour(controlColor);
+    this.setColour(blockColours.entry);
   } };
   Blockly.Blocks[scriptBlocks.read] = { init(this: Blockly.Block) {
     action(this, '等待新采样').appendField(bindingField(this, 'read'), 'POINT');
@@ -164,7 +173,7 @@ function installBlocks() {
     this.setTooltip('等待下一次确认采样，并记录该值。');
   } };
   Blockly.Blocks[scriptBlocks.readVariable] = { init(this: Blockly.Block) {
-    action(this, '读取到变量').appendField(new Blockly.FieldTextInput('初值'), 'VARIABLE');
+    action(this, '读取到变量').appendField(new Blockly.FieldTextInput('initial_value'), 'VARIABLE');
     this.appendDummyInput().appendField('点位').appendField(bindingField(this, 'read'), 'POINT');
     this.setTooltip('立即将点位最新的有效确认值保存到本次运行的同名变量。');
   } };
@@ -180,9 +189,18 @@ function installBlocks() {
     timeout(this);
   } };
   Blockly.Blocks[scriptBlocks.log] = { init(this: Blockly.Block) {
-    action(this, '记录日志', controlColor).appendField(new Blockly.FieldTextInput('调试信息'), 'TEXT');
-    this.appendValueInput('OPERAND').setCheck(['ScriptValue', 'Boolean']).appendField('附加值');
-    this.setInputsInline(false);
+    const toggle = new LogValueControl();
+    action(this, '记录日志', logColor).appendField(new Blockly.FieldTextInput('调试信息'), 'TEXT').appendField(toggle, 'WITH_VALUE');
+    // Keep short values on the message row. A point path or compound expression gets its own row.
+    this.getInputsInline = () => {
+      const value = this.getInputTargetBlock('OPERAND');
+      return !value || value.type === scriptBlocks.variable || value.type === scriptBlocks.number || value.type === scriptBlocks.boolean;
+    };
+    this.setOnChange(event => {
+      if (event.type !== Blockly.Events.BLOCK_MOVE) return;
+      const move = event as Blockly.Events.BlockMove;
+      if (move.oldParentId === this.id || move.newParentId === this.id) toggle.forceRerender();
+    });
     this.setTooltip('将文字和可选的值写入本次运行结果。点位取当前确认值。');
   } };
   Blockly.Blocks[scriptBlocks.assert] = { init(this: Blockly.Block) {
@@ -199,16 +217,16 @@ function installBlocks() {
   } };
   Blockly.Blocks[scriptBlocks.repeat] = { init(this: Blockly.Block) {
     action(this, '重复', controlColor).appendField(new Blockly.FieldNumber(3, 1, 100, 1), 'COUNT').appendField('次');
-    this.appendStatementInput('BODY').appendField('执行');
+    this.appendStatementInput('BODY');
   } };
   Blockly.Blocks[scriptBlocks.forever] = { init(this: Blockly.Block) {
     action(this, '主循环', controlColor);
-    this.appendStatementInput('BODY').appendField('执行');
+    this.appendStatementInput('BODY');
     this.setTooltip('重复执行直到停止或跳出。轮次间让出调度，间隔用延时或等待新采样设定。');
   } };
   Blockly.Blocks[scriptBlocks.repeatUntil] = { init(this: Blockly.Block) {
     statementCondition(this, '重复直到');
-    this.appendStatementInput('BODY').appendField('执行');
+    this.appendStatementInput('BODY');
     this.setTooltip('每轮开始时判断，条件为真就离开循环。');
   } };
   for (const [type, label] of [[scriptBlocks.stop, '停止流程'], [scriptBlocks.breakLoop, '跳出循环']] as const) {
@@ -225,11 +243,62 @@ function installBlocks() {
     this.appendDummyInput().appendField('本次错误是').appendField(new Blockly.FieldDropdown(scriptErrors.map(([name, code]) => [name, code])), 'CODE');
   } };
   Blockly.Blocks[scriptBlocks.variable] = { init(this: Blockly.Block) {
-    this.setOutput(true, 'ScriptValue'); this.setColour(valueColor);
-    this.appendDummyInput().appendField('变量').appendField(variableField(this), 'VARIABLE');
+    valueReporter(this, variableColor, true);
+    this.appendDummyInput().appendField(variableField(this), 'VARIABLE');
+    this.setTooltip('取本次运行中已赋值的变量。');
+  } };
+  Blockly.Blocks[scriptBlocks.setVariable] = { init(this: Blockly.Block) {
+    action(this, '把', variableColor).appendField(new Blockly.FieldTextInput('count'), 'VARIABLE');
+    numberSlot(this, 'OPERAND', false).appendField('设为');
+    this.setInputsInline(true);
+    this.setTooltip('创建或更新本次运行的变量，可接入数值、确认值或表达式。');
+  } };
+  Blockly.Blocks[scriptBlocks.changeVariable] = { init(this: Blockly.Block) {
+    action(this, '给', variableColor).appendField(variableField(this), 'VARIABLE');
+    numberSlot(this, 'OPERAND', true).appendField('加');
+    this.setInputsInline(true);
+    this.setTooltip('给已赋值的数值变量加上指定数值，可使用负数。');
+  } };
+  Blockly.Blocks[scriptBlocks.number] = { init(this: Blockly.Block) {
+    valueReporter(this, mathColor);
+    this.appendDummyInput().appendField(new Blockly.FieldNumber(0), 'NUM');
+  } };
+  Blockly.Blocks[scriptBlocks.arithmetic] = { init(this: Blockly.Block) {
+    valueReporter(this, mathColor);
+    numberSlot(this, 'A', true);
+    numberSlot(this, 'B', true).appendField(new Blockly.FieldDropdown(scriptArithmetic.map(([symbol, key]) => [symbol, key])), 'OP');
+    this.setInputsInline(true);
+    this.setTooltip('对两个数值执行加、减、乘或除，可嵌套其他运算。');
+  } };
+  for (const type of [scriptBlocks.procedure, scriptBlocks.calculation]) {
+    Blockly.Blocks[type] = { init(this: Blockly.Block) {
+      const calculation = type === scriptBlocks.calculation;
+      this.hat = 'cap'; this.setColour(functionColor);
+      this.appendDummyInput().appendField(calculation ? '定义计算函数' : '定义流程函数')
+        .appendField(new Blockly.FieldTextInput(calculation ? 'compute_value' : 'run_step'), 'NAME')
+        .appendField('参数').appendField(new ParameterListField(), 'PARAMS');
+      if (calculation) numberSlot(this, 'RESULT', false).appendField('返回');
+      else this.appendStatementInput('BODY').appendField('执行');
+      this.setInputsInline(false);
+      this.setTooltip('函数名和参数建议使用英文标识符。参数用逗号分隔，调用时按顺序传值。');
+    } };
+  }
+  Blockly.Blocks[scriptBlocks.call] = { init(this: Blockly.Block) {
+    initFunctionCall(this, action(this, '调用流程', functionColor));
+    this.setTooltip('执行所选函数内的步骤，结束后回到调用处继续。');
+  } };
+  Blockly.Blocks[scriptBlocks.callValue] = { init(this: Blockly.Block) {
+    valueReporter(this, functionColor, true);
+    initFunctionCall(this, this.appendDummyInput().appendField('计算'));
+    this.setTooltip('按本次传入的参数求值，返回值可接入条件或值槽。');
+  } };
+  Blockly.Blocks[scriptBlocks.parameter] = { init(this: Blockly.Block) {
+    valueReporter(this, functionColor, true);
+    this.appendDummyInput().appendField('参数').appendField<string>(parameterField(this), 'PARAM');
+    this.setTooltip('接入函数定义内，选择该函数声明的参数。');
   } };
   Blockly.Blocks[scriptBlocks.pointValue] = { init(this: Blockly.Block) {
-    this.setOutput(true, 'ScriptValue'); this.setColour(valueColor);
+    valueReporter(this, actionColor, true);
     this.appendDummyInput().appendField('点位值').appendField(bindingField(this, 'read'), 'POINT');
   } };
   Blockly.Blocks[scriptBlocks.boolean] = { init(this: Blockly.Block) {
@@ -249,11 +318,17 @@ function installBlocks() {
     this.appendValueInput('OPERAND').setCheck(['ScriptValue', 'Boolean']).appendField(new Blockly.FieldDropdown(scriptRelations.map(([label, value]) => [label, value])), 'OP')
       .connection!.setShadowState({ type: literalShadow, fields: { TEXT: '0' } });
   } };
+  Blockly.Blocks[scriptBlocks.compareValues] = { init(this: Blockly.Block) {
+    predicate(this);
+    numberSlot(this, 'A', false);
+    numberSlot(this, 'B', false).appendField(new Blockly.FieldDropdown(scriptRelations.map(([label, key]) => [label, key])), 'OP');
+    this.setTooltip('比较运行变量、点位值或表达式。大小比较适用于数值。');
+  } };
   Blockly.Blocks[scriptBlocks.compareVariable] = { init(this: Blockly.Block) {
     predicate(this);
     this.appendDummyInput().appendField('与变量比较').appendField(bindingField(this, 'read'), 'POINT');
     this.appendDummyInput().appendField(new Blockly.FieldDropdown(scriptRelations.map(([label, value]) => [label, value])), 'OP')
-      .appendField('变量').appendField(new Blockly.FieldTextInput('初值'), 'VARIABLE');
+      .appendField('变量').appendField(new Blockly.FieldTextInput('initial_value'), 'VARIABLE');
     this.setTooltip('比较点位的确认值与本次运行中已保存的同名变量。');
   } };
   Blockly.Blocks[scriptBlocks.range] = { init(this: Blockly.Block) {
@@ -268,8 +343,8 @@ function installBlocks() {
   ] as const) {
     Blockly.Blocks[type] = { init(this: Blockly.Block) {
       predicate(this);
-      conditionInput(this, 'A', label);
-      conditionInput(this, 'B');
+      conditionInput(this, 'A');
+      conditionInput(this, 'B', label);
       this.setTooltip(tooltip);
     } };
   }
@@ -293,14 +368,48 @@ function pointArgs(block: Blockly.Block): string {
   const ref = JSON.parse(field(block, 'POINT') || '["",""]') as string[];
   return ref.map(quoteLua).join(', ');
 }
+function conditionCode(block: Blockly.Block, input = 'CONDITION', order = Order.NONE): string {
+  return luaGenerator.valueToCode(block, input, order) || (field(block, 'BOOL_' + input) === 'TRUE' ? 'true' : 'false');
+}
 function conditionLua(block: Blockly.Block, input = 'CONDITION'): string {
-  const code = luaGenerator.valueToCode(block, input, Order.NONE) || (field(block, 'BOOL_' + input) === 'TRUE' ? 'true' : 'false');
+  const code = conditionCode(block, input);
   const result = `return ${code}`;
   return result.includes('\n')
     ? `function()\n${luaGenerator.prefixLines(result, luaGenerator.INDENT)}\nend`
     : `function() ${result} end`;
 }
+const deviceExpressions = new Set<string>([scriptBlocks.pointValue, scriptBlocks.state, scriptBlocks.range, scriptBlocks.compare, scriptBlocks.compareVariable, scriptBlocks.error]);
+function includesDeviceOperand(block: Blockly.Block | null): boolean {
+  if (!block) return false;
+  if (deviceExpressions.has(block.type)) return true;
+  if (block.type === scriptBlocks.callValue) {
+    const definition = block.workspace.getBlockById(field(block, 'FUNCTION'))!;
+    if (includesDeviceOperand(definition.getInputTargetBlock('RESULT'))) return true;
+  }
+  return block.inputList.some(input => includesDeviceOperand(input.connection?.targetBlock() ?? null));
+}
+
+// A device predicate can be indeterminate until a confirmed sample arrives.
+function nativePredicate(block: Blockly.Block | null): boolean {
+  if (!block || block.type === scriptBlocks.boolean) return true;
+  if (block.type === scriptBlocks.compareValues) return !luaGenerator.names.needsHostCheck(block) && !includesDeviceOperand(block);
+  if (block.type === scriptBlocks.callValue && !includesDeviceOperand(block)) {
+    const fn = block.workspace.getBlockById(field(block, 'FUNCTION'))!;
+    return nativePredicate(fn.getInputTargetBlock('RESULT'));
+  }
+  if (block.type === scriptBlocks.not) return nativePredicate(block.getInputTargetBlock('CONDITION'));
+  if (block.type === scriptBlocks.and || block.type === scriptBlocks.or)
+    return nativePredicate(block.getInputTargetBlock('A')) && nativePredicate(block.getInputTargetBlock('B'));
+  return false;
+}
+function branchTest(block: Blockly.Block, input = 'CONDITION', order = Order.NONE): string {
+  return nativePredicate(block.getInputTargetBlock(input)) ? conditionCode(block, input, order) : `modbus.check(${conditionLua(block, input)})`;
+}
 function combinationLua(block: Blockly.Block, operator: 'all' | 'any'): [string, Order] {
+  if (nativePredicate(block)) {
+    const order = operator === 'all' ? Order.AND : Order.OR;
+    return [`${conditionCode(block, 'A', order)} ${operator === 'all' ? 'and' : 'or'} ${conditionCode(block, 'B', order)}`, order];
+  }
   const operands = `${conditionLua(block, 'A')},\n${conditionLua(block, 'B')}`;
   return [`modbus.${operator}(\n${luaGenerator.prefixLines(operands, luaGenerator.INDENT)}\n)`, Order.ATOMIC];
 }
@@ -318,20 +427,62 @@ function installLua() {
   luaGenerator.forBlock[scriptBlocks.start] = () => '';
   luaGenerator.forBlock[literalShadow] = block => [quoteLua(field(block, 'TEXT')), Order.ATOMIC];
   luaGenerator.forBlock[scriptBlocks.read] = block => `modbus.read(${pointArgs(block)}, ${field(block, 'TIMEOUT')})\n`;
-  luaGenerator.forBlock[scriptBlocks.readVariable] = block => `modbus.read_into(${quoteLua(field(block, 'VARIABLE').trim())}, ${pointArgs(block)})\n`;
+  luaGenerator.forBlock[scriptBlocks.readVariable] = block => `${luaGenerator.names.assignment(block)} = modbus.value(${pointArgs(block)})\n`;
   const valueCode = (block: Blockly.Block) => luaGenerator.valueToCode(block, 'OPERAND', Order.NONE) || quoteLua(field(block, 'VALUE'));
   luaGenerator.forBlock[scriptBlocks.write] = block => `modbus.write(${pointArgs(block)}, ${valueCode(block)})\n`;
+  const slot = (block: Blockly.Block, name: string, order = Order.NONE) => luaGenerator.valueToCode(block, name, order);
+  luaGenerator.forBlock[scriptBlocks.number] = block => [field(block, 'NUM'), Number(field(block, 'NUM')) < 0 ? Order.UNARY : Order.ATOMIC];
+  luaGenerator.forBlock[scriptBlocks.arithmetic] = block => {
+    const symbol = scriptArithmetic.find(([, key]) => key === field(block, 'OP'))![2];
+    if (luaGenerator.names.needsHostCheck(block) || includesDeviceOperand(block))
+      return [`modbus.arithmetic(${slot(block, 'A')}, ${quoteLua(symbol)}, ${slot(block, 'B')})`, Order.HIGH];
+    const order = symbol === '+' || symbol === '-' ? Order.ADDITIVE : Order.MULTIPLICATIVE;
+    return [`${slot(block, 'A', order)} ${symbol} ${slot(block, 'B', order)}`, order];
+  };
+  const relations: Record<string, string> = { eq: '==', ne: '~=', gt: '>', ge: '>=', lt: '<', le: '<=' };
+  luaGenerator.forBlock[scriptBlocks.compareValues] = block => {
+    const op = field(block, 'OP');
+    if (luaGenerator.names.needsHostCheck(block) || includesDeviceOperand(block))
+      return [`modbus.compare_values(${slot(block, 'A')}, ${quoteLua(op)}, ${slot(block, 'B')})`, Order.HIGH];
+    return [`${slot(block, 'A', Order.RELATIONAL)} ${relations[op]} ${slot(block, 'B', Order.RELATIONAL)}`, Order.RELATIONAL];
+  };
+  const variable = (block: Blockly.Block) => luaGenerator.names.variable(block, field(block, 'VARIABLE').trim());
+  luaGenerator.forBlock[scriptBlocks.setVariable] = block => `${luaGenerator.names.assignment(block)} = ${slot(block, 'OPERAND')}\n`;
+  luaGenerator.forBlock[scriptBlocks.changeVariable] = block => {
+    const name = variable(block);
+    if (luaGenerator.names.needsHostCheck(block)) return `${name} = modbus.arithmetic(${name}, "+", ${slot(block, 'OPERAND')})\n`;
+    return `${name} = ${name} + ${slot(block, 'OPERAND', Order.ADDITIVE)}\n`;
+  };
+  const call = (block: Blockly.Block) => {
+    const args = block.inputList.filter(input => /^ARG\d+$/.test(input.name)).map(input => slot(block, input.name));
+    const values = args.join(', ');
+    // A single wide call would otherwise need one VM register per argument.
+    const argumentsLua = args.length > 50 ? `table.unpack({${values}}, 1, ${args.length})` : values;
+    return `${luaGenerator.names.functionName(field(block, 'FUNCTION'))}(${argumentsLua})`;
+  };
+  const definition = (block: Blockly.Block) => {
+    const args = luaGenerator.names.parameters(block);
+    return `local function ${luaGenerator.names.functionName(block.id)}(${args})\n` + luaGenerator.names.preamble(block, '  ');
+  };
+  luaGenerator.forBlock[scriptBlocks.procedure] = block => definition(block) + luaGenerator.statementToCode(block, 'BODY') + 'end\n';
+  luaGenerator.forBlock[scriptBlocks.calculation] = block => definition(block) + `  return ${slot(block, 'RESULT')}\nend\n`;
+  luaGenerator.forBlock[scriptBlocks.call] = block => call(block) + '\n';
+  luaGenerator.forBlock[scriptBlocks.callValue] = block => [call(block), Order.HIGH];
+  luaGenerator.forBlock[scriptBlocks.parameter] = block => {
+    const name = splitParameters(field(block.getRootBlock(), 'PARAMS'))[Number(field(block, 'PARAM'))]!;
+    return [luaGenerator.names.variable(block, name), Order.ATOMIC];
+  };
   luaGenerator.forBlock[scriptBlocks.log] = block => {
     const message = field(block, 'TEXT');
-    const value = luaGenerator.valueToCode(block, 'OPERAND', Order.NONE);
+    const value = block.getInput('OPERAND') ? slot(block, 'OPERAND') : '';
     return `print(${[message && quoteLua(message), value].filter(Boolean).join(', ')})\n`;
   };
   luaGenerator.forBlock[scriptBlocks.wait] = block => `modbus.wait(${conditionLua(block)}, ${field(block, 'TIMEOUT')})\n`;
   luaGenerator.forBlock[scriptBlocks.assert] = block => `modbus.assert(${conditionLua(block)})\n`;
   luaGenerator.forBlock[scriptBlocks.branch] = block => {
-    let code = `if modbus.check(${conditionLua(block)}) then\n${luaGenerator.statementToCode(block, 'YES')}`;
+    let code = `if ${branchTest(block)} then\n${luaGenerator.statementToCode(block, 'YES')}`;
     for (let i = 1; block.getInput('COND' + i); i++) {
-      code += `elseif modbus.check(${conditionLua(block, 'COND' + i)}) then\n${luaGenerator.statementToCode(block, 'YES' + i)}`;
+      code += `elseif ${branchTest(block, 'COND' + i)} then\n${luaGenerator.statementToCode(block, 'YES' + i)}`;
     }
     if (block.getInput('NO')) code += 'else\n' + luaGenerator.statementToCode(block, 'NO');
     return code + 'end\n';
@@ -339,7 +490,7 @@ function installLua() {
   luaGenerator.forBlock[scriptBlocks.delay] = block => `modbus.delay(${field(block, 'MS')})\n`;
   luaGenerator.forBlock[scriptBlocks.repeat] = block => `for _step = 1, ${field(block, 'COUNT')} do\n${loopLuaBody(block)}end\n`;
   luaGenerator.forBlock[scriptBlocks.forever] = block => `while true do\n${loopLuaBody(block)}  modbus.yield_io()\nend\n`;
-  luaGenerator.forBlock[scriptBlocks.repeatUntil] = block => `while not modbus.check(${conditionLua(block)}) do\n${loopLuaBody(block)}  modbus.yield_io()\nend\n`;
+  luaGenerator.forBlock[scriptBlocks.repeatUntil] = block => `while not ${branchTest(block, 'CONDITION', Order.UNARY)} do\n${loopLuaBody(block)}  modbus.yield_io()\nend\n`;
   luaGenerator.forBlock[scriptBlocks.stop] = () => 'modbus.stop()\n';
   luaGenerator.forBlock[scriptBlocks.breakLoop] = () => 'modbus.break_loop()\n';
   luaGenerator.forBlock[scriptBlocks.attempt] = block => {
@@ -347,34 +498,48 @@ function installLua() {
     const handler = luaGenerator.statementToCode(block, 'ERROR');
     return `modbus.attempt(function()\n${body}end${handler ? ', function()\n' + handler + 'end' : ''})\n`;
   };
-  luaGenerator.forBlock[scriptBlocks.variable] = block => [`modbus.variable(${quoteLua(field(block, 'VARIABLE').trim())})`, Order.ATOMIC];
+  luaGenerator.forBlock[scriptBlocks.variable] = block => [variable(block), Order.ATOMIC];
   luaGenerator.forBlock[scriptBlocks.pointValue] = block => [`modbus.value(${pointArgs(block)})`, Order.ATOMIC];
   luaGenerator.forBlock[scriptBlocks.boolean] = block => [field(block, 'BOOL') === 'TRUE' ? 'true' : 'false', Order.ATOMIC];
   luaGenerator.forBlock[scriptBlocks.error] = block => [`modbus.error_is(${quoteLua(field(block, 'CODE'))})`, Order.ATOMIC];
   luaGenerator.forBlock[scriptBlocks.state] = block => [`modbus.state(${quoteLua(field(block, 'SLAVE'))}, ${quoteLua(field(block, 'STATE'))})`, Order.ATOMIC];
   luaGenerator.forBlock[scriptBlocks.compare] = block => [`modbus.compare(${pointArgs(block)}, ${quoteLua(field(block, 'OP'))}, ${valueCode(block)})`, Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.compareVariable] = block => [`modbus.compare_variable(${pointArgs(block)}, ${quoteLua(field(block, 'OP'))}, ${quoteLua(field(block, 'VARIABLE').trim())})`, Order.ATOMIC];
+  luaGenerator.forBlock[scriptBlocks.compareVariable] = block => [`modbus.compare(${pointArgs(block)}, ${quoteLua(field(block, 'OP'))}, ${variable(block)})`, Order.HIGH];
   luaGenerator.forBlock[scriptBlocks.range] = block => [`modbus.in_range(${pointArgs(block)}, ${field(block, 'MIN')}, ${field(block, 'MAX')})`, Order.ATOMIC];
   luaGenerator.forBlock[scriptBlocks.and] = block => combinationLua(block, 'all');
   luaGenerator.forBlock[scriptBlocks.or] = block => combinationLua(block, 'any');
-  luaGenerator.forBlock[scriptBlocks.not] = block => [`modbus.negate(${conditionLua(block)})`, Order.ATOMIC];
+  luaGenerator.forBlock[scriptBlocks.not] = block => nativePredicate(block)
+    ? [`not ${conditionCode(block, 'CONDITION', Order.UNARY)}`, Order.UNARY]
+    : [`modbus.negate(${conditionLua(block)})`, Order.HIGH];
+}
+
+export function generateScriptLuaSource(workspace: Blockly.Workspace, graph: ScriptGraph): LuaSource {
+  const program = compileScriptProgram(graph);
+  const start = workspace.getBlocksByType(scriptBlocks.start, false).find(block => block.isEnabled())!;
+  return luaGenerator.preview(start, program.functions.map(fn => workspace.getBlockById(fn.id)!));
 }
 
 export function generateScriptLua(workspace: Blockly.Workspace, graph: ScriptGraph): string {
-  compileMasterScript(graph);
-  return luaGenerator.workspaceToCode(workspace).trim();
+  return generateScriptLuaSource(workspace, graph).text;
 }
 
-const paletteBlocks = (types: string[]) => types.map(type => ({ kind: 'block', type, gap: 14 }));
-export const scriptToolbox = {
-  kind: 'categoryToolbox' as const,
-  contents: [
-    { kind: 'category', name: '设备操作', colour: actionColor, contents: paletteBlocks([scriptBlocks.read, scriptBlocks.write, scriptBlocks.readVariable]) },
-    { kind: 'category', name: '流程', colour: controlColor, contents: paletteBlocks([scriptBlocks.start, scriptBlocks.log, scriptBlocks.branch, scriptBlocks.repeat, scriptBlocks.repeatUntil, scriptBlocks.forever, scriptBlocks.delay, scriptBlocks.wait, scriptBlocks.assert, scriptBlocks.attempt, scriptBlocks.breakLoop, scriptBlocks.stop]) },
-    { kind: 'category', name: '条件', colour: conditionColor, contents: paletteBlocks([scriptBlocks.state, scriptBlocks.compare, scriptBlocks.range, scriptBlocks.and, scriptBlocks.or, scriptBlocks.not, scriptBlocks.error]) },
-    { kind: 'category', name: '取值', colour: valueColor, contents: paletteBlocks([scriptBlocks.variable, scriptBlocks.pointValue, scriptBlocks.boolean]) },
-  ],
-};
+export function inspectScriptDraft(workspace: Blockly.Workspace, graph: ScriptGraph): ScriptPreview {
+  try {
+    const source = generateScriptLuaSource(workspace, graph);
+    const available = bindings.get(workspace)?.available;
+    for (const blockId of source.ranges.keys()) {
+      const block = workspace.getBlockById(blockId);
+      const field = block?.getField('POINT') ?? block?.getField('SLAVE');
+      if (!(field instanceof PointDropdown) || !field.access || !available || available[field.access].has(String(field.getValue()))) continue;
+      const labels: Record<List, string> = { slave: '从站', read: '可读点位', write: '可写点位', numeric: '数值点位' };
+      return { source, issue: { blockId, message: '工作区中的绑定已失效，请重新选择' + labels[field.access] + '。' } };
+    }
+    return { source, issue: null };
+  } catch (reason) {
+    return { source: null, issue: { message: reason instanceof Error ? reason.message : String(reason),
+      blockId: reason instanceof ScriptBlockError ? reason.blockId : undefined } };
+  }
+}
 
 export function graphOf(workspace: Blockly.Workspace): ScriptGraph {
   return saveScriptGraph(workspace);

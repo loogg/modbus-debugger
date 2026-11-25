@@ -32,6 +32,195 @@ const graphFor = (...steps: ScriptBlock[]): ScriptGraph => {
 };
 const scriptDef = (graph: ScriptGraph): MasterScript => ({ id: 'demo', name: '验证转速', revision: 0, graph });
 
+const counter = '超限次数';
+const counterValue: ScriptBlock = { id: 'counter-value', type: 'mb_variable', fields: { VARIABLE: counter } };
+const setCounter: ScriptBlock = { id: 'set', type: 'mb_set_var', fields: { VARIABLE: counter, OPERAND: 3 } };
+const changeCounter: ScriptBlock = { id: 'change', type: 'mb_change_var', fields: { VARIABLE: counter, OPERAND: 1 } };
+
+function localRunner() {
+  const unused = (): never => { throw new Error('本流程只操作运行变量'); };
+  return new MasterScriptRunner({ point: unused, slave: unused, write: unused }, new RuntimeNotifications());
+}
+
+it('passes parameters by value through nested functions, steps into a procedure, and restores caller locals', async () => {
+  const parameter = (id: string): ScriptBlock => ({ type: 'mb_parameter', id, fields: { PARAM: '0' } });
+  const get = (id: string): ScriptBlock => ({ type: 'mb_variable', id, fields: { VARIABLE: '温度' } });
+  const doubled: ScriptBlock = { type: 'mb_function', id: 'double', fields: { NAME: '加倍', PARAMS: '温度' }, inputs: {
+    RESULT: { block: { type: 'mb_arithmetic', id: 'times-two', fields: { B: 2, OP: 'multiply' }, inputs: { A: { block: parameter('x') } } } },
+  } };
+  const nested: ScriptBlock = { type: 'mb_function', id: 'nested', fields: { NAME: '再加一', PARAMS: '温度' }, inputs: {
+    RESULT: { block: { type: 'mb_arithmetic', id: 'plus-one', fields: { OP: 'add', B: 1 },
+      inputs: { A: { block: { type: 'mb_call_value', id: 'nested-double', fields: { FUNCTION: 'double' }, inputs: { ARG0: { block: parameter('inner') } } } } } } },
+  } };
+  const log: ScriptBlock = { id: 'inside', type: 'mb_log', fields: { TEXT: '函数结果' }, inputs: {
+    OPERAND: { block: { id: 'compute', type: 'mb_call_value', fields: { FUNCTION: 'nested' }, inputs: { ARG0: { block: parameter('v') } } } },
+  }, next: { block: { id: 'local', type: 'mb_set_var', fields: { VARIABLE: '温度', OPERAND: 99 } } } };
+  const procedure: ScriptBlock = { id: 'proc', type: 'mb_procedure', fields: { NAME: '记录', PARAMS: '温度' }, inputs: { BODY: { block: log } } };
+  const graph = graphFor({ ...setCounter, fields: { VARIABLE: '温度', OPERAND: 8 } },
+    { type: 'mb_call', id: 'invoke', fields: { FUNCTION: 'proc', ARG0: 4 } },
+    { type: 'mb_log', id: 'outside', fields: { TEXT: '主流程' }, inputs: { OPERAND: { block: get('outer') } } });
+  graph.blocks!.blocks.push(doubled, nested, procedure);
+  graph.breakpoints = ['invoke'];
+  const runner = localRunner();
+  const run = runner.start(runner.prepare(scriptDef(graph)));
+  await expect.poll(() => runner.snapshot?.state).toBe('paused');
+  expect(runner.resume(run.id, runner.snapshot!.pause!.token, 'step')).toBe(true);
+  await expect.poll(() => runner.snapshot?.current?.blockId).toBe('inside');
+  expect(runner.snapshot?.pause?.variables).toEqual([{ name: '温度', value: '4' }]);
+  const pausedScopes = runner.snapshot!.variableScopes;
+  expect(pausedScopes).toEqual([
+    { functionId: null, inCall: false, values: [{ name: '温度', value: 8 }] },
+    { functionId: 'proc', inCall: true, values: [{ name: '温度', value: 4 }] },
+  ]);
+  expect(runner.resume(run.id, runner.snapshot!.pause!.token, 'continue')).toBe(true);
+  await runner.settle();
+  expect(runner.snapshot?.state).toBe('passed');
+  expect(runner.snapshot?.entries.filter(row => row.log).map(row => row.detail)).toEqual(['函数结果 9', '主流程 8']);
+  expect(runner.snapshot?.variableScopes).toEqual([
+    pausedScopes[0], { functionId: 'proc', inCall: false, values: [{ name: '温度', value: 99 }] },
+    { functionId: 'nested', inCall: false, values: [{ name: '温度', value: 4 }] },
+    { functionId: 'double', inCall: false, values: [{ name: '温度', value: 4 }] },
+  ]);
+  expect(pausedScopes[1]!.values[0]!.value).toBe(4);
+  const restarted = runner.start(runner.prepare(scriptDef(graph)), undefined, true);
+  expect(restarted.variableScopes).toEqual([]);
+  runner.stop(restarted.id);
+  await runner.settle();
+});
+
+it('publishes confirmed zero, false and empty text as distinct typed watch values', async () => {
+  const samples = { number: 0, flag: false, text: '' } as const;
+  const unused = (): never => { throw new Error('unexpected device operation'); };
+  const runner = new MasterScriptRunner({
+    point: ref => {
+      const key = ref.pointId as keyof typeof samples;
+      return { ref, blockKey: 'data', span: { offset: 0, length: 1 }, label: key, highRisk: false,
+        type: key === 'flag' ? 'Bool' : key === 'text' ? 'String' : 'UInt16', identity: key,
+        validateWrite: unused, read: () => ({ value: samples[key], detail: String(samples[key]) }) };
+    },
+    slave: unused, write: unused,
+  }, new RuntimeNotifications());
+  const reads = Object.keys(samples).map(key => ({ ...capture, id: key,
+    fields: { VARIABLE: key, POINT: scriptPointKey({ slaveId: 's1', pointId: key }) } }));
+  runner.start(runner.prepare(scriptDef(graphFor(...reads))));
+  await runner.settle();
+  expect(runner.snapshot?.variableScopes).toEqual([{ functionId: null, inCall: false,
+    values: [{ name: 'number', value: 0 }, { name: 'flag', value: false }, { name: 'text', value: '' }] }]);
+});
+
+it('detects duplicate names, stale references, parameter misuse, recursive calls and excessive expanded work', () => {
+  const invoke = (id: string, fn: string): ScriptBlock => ({ type: 'mb_call', id, fields: { FUNCTION: fn } });
+  const graph = graphFor(invoke('entry-call', 'a'));
+  const a: ScriptBlock = { id: 'a', type: 'mb_procedure', fields: { NAME: 'A' }, inputs: { BODY: { block: invoke('a-b', 'b') } } };
+  const b: ScriptBlock = { id: 'b', type: 'mb_procedure', fields: { NAME: 'B' }, inputs: { BODY: { block: invoke('b-a', 'a') } } };
+  graph.blocks!.blocks.push(a, b);
+  expect(() => compileMasterScript(graph)).toThrow('递归调用');
+  b.fields!.NAME = 'A';
+  expect(() => compileMasterScript(graph)).toThrow('重复');
+  b.fields!.NAME = 'B'; b.fields!.PARAMS = 'x，x';
+  expect(() => compileMasterScript(graph)).toThrow('参数名');
+  b.fields!.PARAMS = '';
+  b.inputs!.BODY!.block = { id: 'loop', type: 'mb_repeat', fields: { COUNT: 100 },
+    inputs: { BODY: { block: { id: 'delay', type: 'mb_delay', fields: { MS: 0 } } } } };
+  a.inputs!.BODY!.block = { id: 'outer-loop', type: 'mb_repeat', fields: { COUNT: 20 }, inputs: { BODY: { block: invoke('inner-call', 'b') } } };
+  expect(() => compileMasterScript(graph)).toThrow('最多执行');
+  expect(() => compileMasterScript(graphFor(invoke('missing', 'b')))).toThrow('请选择存在');
+  expect(() => compileMasterScript(graphFor({ ...setCounter, inputs: { OPERAND: { block: { id: 'orphan', type: 'mb_parameter', fields: { PARAM: '0' } } } } }))).toThrow('当前函数的参数');
+});
+
+it('collects point dependencies from a calculation and wakes a wait when a new confirmed reading arrives', async () => {
+  const notifications = new RuntimeNotifications();
+  let temperature: number | undefined;
+  const runner = new MasterScriptRunner({
+    point: ref => ({ ref, blockKey: 'telemetry', span: { offset: 0, length: 1 }, label: '温度', type: 'UInt16',
+      highRisk: false, identity: 'temp', validateWrite() {}, read: () => ({ value: temperature, detail: temperature === undefined ? '等待采样' : String(temperature) }) }),
+    slave: () => ({ label: '设备', state: () => 'online' }), write: async () => { throw new Error('意外写入'); },
+  }, notifications);
+  const graph = graphFor({ id: 'wait', type: 'mb_wait', fields: { TIMEOUT: 2000 }, inputs: {
+    CONDITION: { block: { id: 'invoke', type: 'mb_call_value', fields: { FUNCTION: 'hot' } } },
+  } });
+  graph.blocks!.blocks.push({ id: 'hot', type: 'mb_function', fields: { NAME: '温度达标' }, inputs: {
+    RESULT: { block: { type: 'mb_compare', id: 'compare', fields: { POINT, OP: 'ge', VALUE: 70 } } },
+  } });
+  runner.start(runner.prepare(scriptDef(graph)));
+  expect(runner.snapshot?.state).toBe('running');
+  temperature = 69;
+  notifications.publish({ kind: 'sample', blockKey: 'telemetry', range: { offset: 0, length: 1 } });
+  expect(runner.snapshot?.judgments.compare?.matched).toBe(false);
+  temperature = 74;
+  notifications.publish({ kind: 'sample', blockKey: 'telemetry', range: { offset: 0, length: 1 } });
+  await runner.settle();
+  expect(runner.snapshot).toMatchObject({ state: 'passed', judgments: { compare: { matched: true } } });
+});
+
+it('plans only reachable high-risk device writes and confirms the bound argument before sending', async () => {
+  const sent: number[] = [];
+  const runner = new MasterScriptRunner({
+    point: ref => ({ ref, blockKey: 'control', span: { offset: 0, length: 1 }, label: '给定值', type: 'UInt16',
+      highRisk: true, identity: 'target', validateWrite() {}, read: () => ({ value: 0, detail: '0' }) }),
+    slave: () => ({ label: '设备', state: () => 'online' }),
+    write: async (_ref, fields) => { sent.push(fields.engineering!); return { phase: 'confirmed', result: 'ok', exceptionCode: null }; },
+  }, new RuntimeNotifications());
+  const graph = graphFor({ type: 'mb_call', id: 'invoke', fields: { FUNCTION: 'send', ARG0: 37 } });
+  graph.blocks!.blocks.push({ id: 'send', type: 'mb_procedure', fields: { NAME: '发送', PARAMS: '数值' }, inputs: {
+    BODY: { block: { ...write, inputs: { OPERAND: { block: { type: 'mb_parameter', id: 'input', fields: { PARAM: '0' } } } } } },
+  } }, { id: 'unused', type: 'mb_procedure', fields: { NAME: '其他写入' }, inputs: { BODY: { block: { ...write, id: 'unused-write' } } } });
+  const plan = runner.prepare(scriptDef(graph));
+  expect(plan.approval?.writes).toHaveLength(1);
+  expect(() => runner.start(plan)).toThrow('确认');
+  const view = runner.start(plan, plan.approval!.key);
+  await expect.poll(() => runner.snapshot?.pendingWrite?.value).toBe('37');
+  expect(sent).toEqual([]);
+  expect(runner.confirmWrite(view.id, runner.snapshot!.pendingWrite!.token)).toBe(true);
+  await runner.settle();
+  expect(sent).toEqual([37]);
+  expect(runner.snapshot?.state).toBe('passed');
+});
+
+it.each([['add', 8], ['subtract', 2], ['multiply', 15], ['divide', 5 / 3]] as const)(
+  'evaluates %s using a runtime variable, then compares the stored result', async (operator, expected) => {
+    const runner = localRunner();
+    const expression: ScriptBlock = { type: 'mb_arithmetic', id: 'operation', fields: { A: 5, OP: operator }, inputs: { B: { block: counterValue } } };
+    const setResult: ScriptBlock = { type: 'mb_set_var', id: 'result', fields: { VARIABLE: '结果' }, inputs: { OPERAND: { block: expression } } };
+    const check = assertCondition({ type: 'mb_compare_values', id: 'equal', fields: { OP: 'eq', B: expected },
+      inputs: { A: { block: { type: 'mb_variable', id: 'get-result', fields: { VARIABLE: '结果' } } } } });
+    runner.start(runner.prepare(scriptDef(graphFor(setCounter, setResult, changeCounter, check))));
+    await runner.settle();
+    expect(runner.snapshot).toMatchObject({ state: 'passed', judgments: { equal: { matched: true } },
+      entries: [{ detail: '变量「超限次数」 = 3' }, { detail: '变量「结果」 = ' + expected }, { detail: '变量「超限次数」 = 4' }, { result: 'ok' }] });
+    runner.start(runner.prepare(scriptDef(graphFor(changeCounter))));
+    await runner.settle();
+    expect(runner.snapshot).toMatchObject({ state: 'failed', detail: expect.stringContaining('尚未赋值') });
+  },
+);
+
+it.each([['divide', 0, '除数不能为零'], ['multiply', 1e308, '运算结果超出有限数值范围']] as const)(
+  'recovers from %s without partially changing a variable', async (operator, rhs, error) => {
+    const runner = localRunner();
+    const invalid: ScriptBlock = { type: 'mb_arithmetic', id: 'invalid', fields: { OP: operator, A: 1e308, B: rhs } };
+    const assignment = { ...setCounter, id: 'replace', inputs: { OPERAND: { block: invalid } } };
+    const handle: ScriptBlock = { type: 'mb_log', id: 'handled', fields: { TEXT: '原值' }, inputs: { OPERAND: { block: counterValue } } };
+    const attempt: ScriptBlock = { type: 'mb_try', id: 'try', inputs: { BODY: { block: assignment }, ERROR: { block: handle } } };
+    runner.start(runner.prepare(scriptDef(graphFor(setCounter, attempt))));
+    await runner.settle();
+    expect(runner.snapshot?.state).toBe('passed');
+    expect(runner.snapshot?.entries.slice(-2)).toMatchObject([{ blockId: 'replace', handled: true, detail: error }, { blockId: 'handled', detail: '原值 3' }]);
+  },
+);
+
+it('rejects ordered boolean comparisons and increments on nonnumeric variables', async () => {
+  const runner = localRunner();
+  const setFlag: ScriptBlock = { ...setCounter, inputs: { OPERAND: { block: { id: 'flag', type: 'mb_boolean', fields: { BOOL: 'TRUE' } } } } };
+  runner.start(runner.prepare(scriptDef(graphFor(setFlag, changeCounter))));
+  await runner.settle();
+  expect(runner.snapshot).toMatchObject({ state: 'failed', detail: expect.stringContaining('有限数值') });
+  const check = assertCondition({ id: 'cmp', type: 'mb_compare_values', fields: { OP: 'gt' },
+    inputs: { A: { block: counterValue }, B: { block: { id: 'false', type: 'mb_boolean', fields: { BOOL: 'FALSE' } } } } });
+  runner.start(runner.prepare(scriptDef(graphFor(setFlag, check))));
+  await runner.settle();
+  expect(runner.snapshot).toMatchObject({ state: 'failed', detail: expect.stringContaining('大小比较需要两个数值') });
+});
+
 async function setup(highRisk = false) {
   const root = createScratch('master-scripts-');
   const service = new WorkspaceService(root);

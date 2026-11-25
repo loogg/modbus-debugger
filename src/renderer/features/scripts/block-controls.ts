@@ -1,5 +1,6 @@
 import * as Blockly from 'blockly/core';
-import { fieldText, MAX_SCRIPT_BLOCKS, scriptBlocks, scriptGraphBlocks, type ScriptGraph } from '../../../domain/master-script';
+import { fieldText, isScriptCall, isScriptDefinition, MAX_SCRIPT_BLOCKS, scriptBlocks, scriptGraphBlocks, scriptNumberSlots, splitParameters, type ScriptBlock, type ScriptGraph } from '../../../domain/master-script';
+import { synchronizeScriptFunctions } from './function-blocks';
 
 export class BooleanSwitch extends Blockly.Field<string> {
   override SERIALIZABLE = true;
@@ -58,25 +59,87 @@ export class BooleanSwitch extends Blockly.Field<string> {
 }
 
 export function conditionInput(block: Blockly.Block, name: string, label?: string) {
-  const input = block.appendValueInput(name).setCheck(['Boolean', 'ScriptValue']);
+  const input = block.appendValueInput(name).setCheck(['Boolean', 'ConditionValue']);
   if (label) input.appendField(label);
   input.connection!.setShadowState({ type: scriptBlocks.boolean, fields: { BOOL: 'FALSE' } });
   return input;
 }
 
+export function numberSlot(block: Blockly.Block, name: string, numericOnly: boolean) {
+  const input = block.appendValueInput(name).setCheck(numericOnly ? 'ScriptNumber' : ['ScriptValue', 'Boolean']);
+  const initial = scriptNumberSlots[block.type as ScriptBlock['type']]![name]!;
+  input.connection!.setShadowState({ type: scriptBlocks.number, fields: { NUM: initial } });
+  return input;
+}
+
+export class LogValueControl extends Blockly.Field<string> {
+  override SERIALIZABLE = true;
+  constructor() {
+    super('OFF');
+    this.setTooltip(() => this.connected() ? '移出附加值后可收起值槽' : this.getValue() === 'ON' ? '收起空值槽' : '附加变量、点位值或计算结果');
+  }
+  private connected() { return !!this.getSourceBlock()?.getInputTargetBlock('OPERAND'); }
+  protected override getText_() { return this.getValue() === 'ON' ? (this.connected() ? '值' : '−值') : '＋值'; }
+  protected override doClassValidation_(value: string) {
+    return value === 'ON' || (value === 'OFF' && !this.connected()) ? value : null;
+  }
+  protected override doValueUpdate_(value: string) {
+    super.doValueUpdate_(value);
+    const block = this.getSourceBlock();
+    if (!block) return;
+    if (value === 'ON' && !block.getInput('OPERAND')) block.appendValueInput('OPERAND').setCheck(['ScriptValue', 'Boolean']);
+    if (value === 'OFF' && block.getInput('OPERAND')) block.removeInput('OPERAND');
+  }
+  protected override showEditor_() {
+    if (!this.connected() && !this.getSourceBlock()?.isInFlyout) this.setValue(this.getValue() === 'ON' ? 'OFF' : 'ON');
+  }
+  protected override initView() {
+    super.initView();
+    const root = this.getSvgRoot()!;
+    root.classList.add('script-log-toggle');
+    root.setAttribute('role', 'button');
+    root.setAttribute('tabindex', this.getSourceBlock()?.isInFlyout ? '-1' : '0');
+    root.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault(); event.stopPropagation();
+      if (!event.repeat) this.showEditor(event);
+    });
+  }
+  protected override render_() {
+    super.render_();
+    const root = this.getSvgRoot();
+    const on = this.getValue() === 'ON';
+    root?.setAttribute('aria-expanded', String(on));
+    root?.setAttribute('aria-disabled', String(this.connected()));
+    root?.setAttribute('aria-label', this.connected() ? '日志已连接附加值' : on ? '收起日志附加值' : '展开日志附加值');
+  }
+}
+
 export const literalShadow = 'mb_slot_literal';
-type Slot = { shadow?: { type: string; fields?: Record<string, string> }; block?: unknown };
+type Slot = { shadow?: { type: string; fields?: Record<string, string | number> }; block?: unknown };
 
 // Blockly shadows give a literal and a connected reporter the same socket.
 // The portable graph keeps literal defaults in fields, including while a reporter is connected.
 export function loadScriptGraph(graph: ScriptGraph, workspace: Blockly.Workspace) {
   const native = structuredClone(graph);
+  const functions = new Map(native.blocks?.blocks.filter(root => isScriptDefinition(root.type)).map(root => [root.id, splitParameters(fieldText(root, 'PARAMS'))]));
   for (const block of scriptGraphBlocks(native)) {
     const inputs = block.inputs ??= {};
-    const addShadow = (input: string, type: string, field: string, value: string) => {
+    const addShadow = (input: string, type: string, field: string, value: string | number) => {
       const entry: Slot = inputs[input] ??= {};
       entry.shadow = { type, fields: { [field]: value } };
     };
+    if (block.type === scriptBlocks.log && inputs.OPERAND?.block) (block.fields ??= {}).WITH_VALUE = 'ON';
+    const numbers = { ...scriptNumberSlots[block.type] };
+    if (isScriptCall(block.type)) {
+      const parameters = block.extraState?.parameters ?? functions.get(fieldText(block, 'FUNCTION')) ?? [];
+      block.extraState = { parameters };
+      parameters.forEach((_, i) => { numbers['ARG' + i] = 0; });
+    }
+    for (const [socket, initial] of Object.entries(numbers)) {
+      addShadow(socket, scriptBlocks.number, 'NUM', fieldText(block, socket) || initial);
+      delete block.fields?.[socket];
+    }
     if (block.type === scriptBlocks.write || block.type === scriptBlocks.compare) {
       addShadow('OPERAND', literalShadow, 'TEXT', fieldText(block, 'VALUE'));
       delete block.fields?.VALUE;
@@ -95,15 +158,18 @@ export function loadScriptGraph(graph: ScriptGraph, workspace: Blockly.Workspace
     }
   }
   Blockly.serialization.workspaces.load(native, workspace);
+  synchronizeScriptFunctions(workspace);
 }
 
 export function saveScriptGraph(workspace: Blockly.Workspace): ScriptGraph {
   const graph = JSON.parse(JSON.stringify(Blockly.serialization.workspaces.save(workspace))) as ScriptGraph;
   for (const block of scriptGraphBlocks(graph)) {
+    if (block.type === scriptBlocks.log && (block.fields?.WITH_VALUE === 'OFF' || block.inputs?.OPERAND?.block)) delete block.fields?.WITH_VALUE;
     for (const [name, slot] of Object.entries(block.inputs ?? {}) as [string, Slot][]) {
       const shadow = slot.shadow;
       if (!shadow) continue;
       if (shadow.type === literalShadow) (block.fields ??= {}).VALUE = shadow.fields?.TEXT ?? '0';
+      else if (shadow.type === scriptBlocks.number) (block.fields ??= {})[name] = shadow.fields?.NUM ?? 0;
       else if (shadow.type === scriptBlocks.boolean && shadow.fields?.BOOL && shadow.fields.BOOL !== 'UNSET') {
         (block.fields ??= {})['BOOL_' + name] = shadow.fields.BOOL;
       }
@@ -133,7 +199,7 @@ function applyShape(block: BranchBlock, shape: BranchShape) {
   if (!shape.hasElse && block.getInput('NO')) block.removeInput('NO');
   for (let i = block.branchShape.elseIfCount + 1; i <= count; i++) {
     conditionInput(block, 'COND' + i, '否则如果');
-    block.appendStatementInput('YES' + i).appendField('成立时');
+    block.appendStatementInput('YES' + i);
     if (block.getInput('NO')) {
       block.moveInputBefore('COND' + i, 'NO');
       block.moveInputBefore('YES' + i, 'NO');
@@ -178,5 +244,5 @@ export function initBranch(block: Blockly.Block) {
   });
   branch.setInputsInline(true);
   branch.appendDummyInput('BRANCH_OPTIONS').appendField(menu);
-  branch.appendStatementInput('YES').appendField('成立时');
+  branch.appendStatementInput('YES');
 }

@@ -4,6 +4,7 @@ import { browser, $, expect } from '@wdio/globals';
 import type { ModbusApi } from '../../src/shared/preload-api';
 import type { Command } from '../../src/shared/commands';
 import type { MasterScript, ScriptBlock } from '../../src/domain/master-script';
+import { readScriptLua } from '../support/script-lua-preview';
 
 const view = () => $('.workbench-view:not([style*="display: none"])');
 const snapshot = () => browser.execute(() => (window as unknown as { modbus: ModbusApi }).modbus.getSnapshot());
@@ -53,6 +54,14 @@ describe('Master scripts in the Blockly workspace', () => {
     await view().$('[aria-label="展开积木托盘"]').click();
     await expect(drawer).toBeDisplayed();
     await expect(view().$('[role="treeitem"][aria-selected="true"]')).toHaveText(expect.stringContaining('条件'));
+    const search = view().$('[role="searchbox"][aria-label="搜索积木"]');
+    await search.setValue('打印');
+    await expect(drawer).toHaveText(expect.stringContaining('记录日志'));
+    await search.setValue('no_such_block');
+    await expect(drawer).toHaveText(expect.stringContaining('没有匹配的积木'));
+    await search.click();
+    await browser.keys('Escape');
+    await expect(drawer).toHaveText(expect.stringContaining('状态为'));
   });
 
   it('toggles a condition by pointer and keyboard, persists it, and runs the selected branch', async () => {
@@ -127,8 +136,7 @@ describe('Master scripts in the Blockly workspace', () => {
     await browser.waitUntil(async () => (await snapshot()).scriptRun?.state === 'passed', { timeout: 15000 });
     expect((await snapshot()).points['slave-1::pt-speed']?.engNumber).toBe(1677);
     await expect(view().$('[aria-label="步骤结果"]')).toHaveText(expect.stringContaining('写入应答成功'));
-    await view().$('button=Lua 预览').click();
-    await expect(view().$('textarea[aria-label="生成的 Lua"]')).toHaveValue(expect.stringContaining('modbus.write("slave-1", "pt-speed", "1677")'));
+    expect(await readScriptLua()).toContain('modbus.write("slave-1", "pt-speed", "1677")');
     await browser.electron.execute(electron => electron.BrowserWindow.getAllWindows()[0]?.setSize(1024, 680));
     const geometry = await browser.execute(() => {
       const node = document.querySelector('.workbench-view:not([style*="display: none"]) [aria-label="Blockly 积木工作区"]');
@@ -140,7 +148,7 @@ describe('Master scripts in the Blockly workspace', () => {
     const evidenceDir = path.resolve('out/test-temp/master-scripts-evidence');
     fs.mkdirSync(evidenceDir, { recursive: true });
     await browser.saveScreenshot(path.join(evidenceDir, 'packaged-compact.png'));
-    await view().$('button=收起 Lua').click();
+    await view().$('button=收起检查器').click();
     await start('停止流程回归');
     await expect(view().$('button=停止')).toBeDisplayed();
     await view().$('button=停止').click();
@@ -185,6 +193,10 @@ describe('Master scripts in the Blockly workspace', () => {
     const child = (await browser.getWindowHandles()).find(handle => handle !== main)!;
     await browser.switchToWindow(child);
     await $('button=回入主窗口').waitForDisplayed();
+    const luaLine = $('[aria-label="生成的 Lua"] [data-block-id="set-speed"]');
+    if (!await luaLine.isDisplayed()) await $('button=Lua / 变量').click();
+    await luaLine.click();
+    await expect($('g.script-selected[data-id="set-speed"]')).toBeDisplayed();
     const field = $('g[data-id="set-speed"] .blocklyField:has(.blocklyDropdownText)');
     await field.waitForDisplayed({ timeout: 12000 });
     await field.click();
@@ -211,7 +223,78 @@ describe('Master scripts in the Blockly workspace', () => {
     await view().$('button=导入回归').waitForDisplayed();
     await view().$('button=导入回归').click();
     await ready();
-    await view().$('button=Lua 预览').click();
-    await expect(view().$('textarea[aria-label="生成的 Lua"]')).toHaveValue('modbus.delay(100)');
+    expect(await readScriptLua()).toBe('modbus.delay(100)');
+  });
+
+  it('shows the selected loop and paused child together, steps the outline, and locates an invalid draft', async () => {
+    await $('nav').waitForDisplayed({ timeout: 20000 });
+    await browser.electron.execute(electron => electron.BrowserWindow.getAllWindows()[0]?.setSize(1440, 960));
+    await $('//nav//button[normalize-space(.)="主站脚本"]').click();
+    await browser.waitUntil(async () => (await snapshot()).slaveStates?.['slave-1']?.state === 'online');
+    const branch: ScriptBlock = { type: 'mb_if', id: 'check-device', extraState: { elseIfCount: 0, hasElse: true }, inputs: {
+      CONDITION: { block: { type: 'mb_state', id: 'online', fields: { SLAVE: 'slave-1', STATE: 'online' } } },
+      YES: { block: { type: 'mb_log', id: 'sample-log', fields: { TEXT: '采样转速' }, inputs: {
+        OPERAND: { block: { type: 'mb_point_value', id: 'rpm', fields: { POINT } } } } } },
+      NO: { block: { type: 'mb_log', id: 'offline-log', fields: { TEXT: '设备离线' } } },
+    }, next: { block: { type: 'mb_delay', id: 'period', fields: { MS: 150 } } } };
+    const script = flow('linked-selection', '循环采样与反馈', [{ type: 'mb_log', id: 'begin', fields: { TEXT: '开始采样' } },
+      { type: 'mb_repeat', id: 'cycle', fields: { COUNT: 3 }, inputs: { BODY: { block: branch } } }]);
+    script.graph.breakpoints = ['sample-log'];
+    expect((await command({ type: 'script.save', script, expectedRevision: null })).ok).toBe(true);
+    await view().$(`button=${script.name}`).click();
+    await ready();
+    await readScriptLua();
+    if (await view().$('[aria-label="收起积木托盘"]').isDisplayed()) await view().$('[aria-label="收起积木托盘"]').click();
+    await view().$('[aria-label="缩小积木"]').click();
+    await expect(view().$('[aria-label="画布缩放"]')).toHaveText('83%');
+    await view().$('[aria-label="检查器宽度"]').click();
+    await browser.keys(['ArrowLeft', 'ArrowLeft', 'ArrowLeft', 'ArrowLeft']);
+    await view().$('.script-lua-line[data-block-id="cycle"]').click();
+    await view().$('button*=校验').click();
+    await expect(view().$('.script-validation')).toHaveText(expect.stringContaining('静态校验通过'));
+    await view().$('button=调试').click();
+    await expect(view().$('[aria-label="调试暂停"]')).toHaveText(expect.stringContaining('调试起点'));
+    await view().$('button=继续').waitForEnabled();
+    await view().$('button=继续').click();
+    await browser.waitUntil(async () => (await snapshot()).scriptRun?.current?.blockId === 'sample-log');
+    const current = view().$('.script-lua-line[data-block-id="sample-log"]');
+    await expect(current).toHaveAttribute('data-current', 'true');
+    await expect(view().$('g.script-selected[data-id="cycle"] > .script-block-outline')).toBeDisplayed();
+    await expect(view().$('g.script-current[data-id="sample-log"] > .script-block-outline')).toBeDisplayed();
+    await expect(view().$('.script-range-label')).toHaveText('选中第 2–9 行');
+    const evidence = path.resolve('out/test-temp/master-script-debug-evidence');
+    fs.mkdirSync(evidence, { recursive: true });
+    await browser.saveScreenshot(path.join(evidence, 'selection-and-current.png'));
+    await current.click();
+    await expect(view().$('g.script-selected.script-current[data-id="sample-log"] > .script-block-outline > .outline-core')).toBeDisplayed();
+    await view().$('button=单步').click();
+    await expect(view().$('.script-lua-line[data-block-id="period"]')).toHaveAttribute('data-current', 'true');
+    await browser.electron.execute(electron => electron.BrowserWindow.getAllWindows()[0]?.setSize(1024, 680));
+    await view().$('.script-split.is-compact').waitForDisplayed();
+    await readScriptLua();
+    const currentGeometry = () => browser.execute(() => {
+      const active = document.querySelector('.workbench-view:not([style*="display: none"]) .script-lua-line[data-current]');
+      const list = active?.closest('[role="listbox"]');
+      if (!list || !active) return null;
+      const row = active.getBoundingClientRect();
+      const bounds = list.getBoundingClientRect();
+      return { top: row.top - bounds.top, bottom: row.bottom - bounds.top, height: list.clientHeight };
+    });
+    await browser.waitUntil(async () => {
+      const row = await currentGeometry();
+      return !!row && row.top >= -1 && row.bottom <= row.height + 1;
+    }).catch(async error => {
+      await browser.saveScreenshot(path.join(evidence, 'compact-line-failure.png'));
+      throw new Error(`${error} · 当前行位置 ${JSON.stringify(await currentGeometry())}`);
+    });
+    await view().$('button=停止').click();
+    await view().$('button=运行').waitForDisplayed();
+    await view().$('[aria-label="新建脚本"]').click();
+    await ready();
+    if (!await view().$('[aria-label="脚本检查器"]').isDisplayed()) await view().$('button=Lua / 变量').click();
+    await view().$('button*=校验').click();
+    await expect(view().$('.script-validation')).toHaveText(expect.stringContaining('至少一个步骤'));
+    await view().$('button=定位积木').click();
+    await expect(view().$('g.script-selected')).toHaveText(expect.stringContaining('开始'));
   });
 });

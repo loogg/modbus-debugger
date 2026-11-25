@@ -4,6 +4,7 @@ import path from 'node:path';
 import { $, browser, expect } from '@wdio/globals';
 import type { ScriptBlock } from '../../src/domain/master-script';
 import type { ModbusApi } from '../../src/shared/preload-api';
+import { readScriptLua } from '../support/script-lua-preview';
 
 const viewSelector = '.workbench-view:not([style*="display: none"])';
 const view = () => $(viewSelector);
@@ -67,6 +68,9 @@ async function appendAction(label: string, precedingLabel: string) {
   await expect(view().$('.blocklyToolboxFlyout')).toBeDisplayed();
   const added = await blockBounds(label);
   const escaped = await browser.execute(id => CSS.escape(id), added.id);
+  // These device actions have no point yet. Follow the draft diagnostic to
+  // the actual block before editing fields in the split workspace.
+  await view().$('button=定位积木').click();
   return view().$(`g[data-id=${escaped}]`);
 }
 
@@ -83,14 +87,7 @@ describe('Author and execute a master script in the packaged editor', () => {
     await $('//nav//button[normalize-space(.)="主站脚本"]').click();
     await view().$('[aria-label="新建脚本"]').click();
     await view().$('.blocklyWorkspace').waitForDisplayed({ timeout: 15000 });
-    // The SVG image includes the entire icon sheet. Click its visible clipped icon.
-    const centerIcon = await browser.execute(selector => {
-      const icon = document.querySelector<SVGGElement>(`${selector} .blocklyZoomReset`)!;
-      const clip = icon.querySelector<SVGRectElement>('clipPath rect')!;
-      const center = new DOMPoint(clip.width.baseVal.value / 2, clip.height.baseVal.value / 2).matrixTransform(icon.getScreenCTM()!);
-      return { x: Math.round(center.x), y: Math.round(center.y) };
-    }, viewSelector);
-    await browser.action('pointer', { parameters: { pointerType: 'mouse' } }).move(centerIcon).down({ button: 0 }).up({ button: 0 }).perform();
+    await view().$('[aria-label="居中积木"]').click();
     await view().$('.blocklyCanvasTransitioning').waitForExist({ reverse: true });
 
     const capture = await appendAction('读取到变量', '开始');
@@ -150,14 +147,12 @@ describe('Author and execute a master script in the packaged editor', () => {
     expect(readStep?.next).toBeUndefined();
 
     fs.mkdirSync(evidenceDir, { recursive: true });
-    await view().$('button=Lua 预览').click();
-    const luaEditor = view().$('textarea[aria-label="生成的 Lua"]');
     const expectedLua = [
-      'modbus.read_into("起始转速", "slave-1", "pt-speed")',
+      'local value = modbus.value("slave-1", "pt-speed")',
       `modbus.write("slave-1", "pt-speed", "${targetValue}")`,
       'modbus.read("slave-1", "pt-speed", 5000)',
     ].join('\n');
-    await expect(luaEditor).toHaveValue(expectedLua);
+    expect(await readScriptLua()).toBe(expectedLua);
     await browser.saveScreenshot(path.join(evidenceDir, 'lua-preview.png'));
     expect(simulatorRegister()).toBe(before);
 
@@ -226,13 +221,16 @@ describe('Author and execute a master script in the packaged editor', () => {
       await $('//nav//button[normalize-space(.)="主站脚本"]').click();
       await view().$(`button=${name}`).click();
       await expect(view().$('g[data-id="dbg-write"] > .script-breakpoint-dot')).toBeDisplayed();
-      await view().$('button=Lua 预览').click();
-      await expect(view().$('textarea[aria-label="生成的 Lua"]')).toHaveValue(expect.stringContaining('print("反馈转速", modbus.value("slave-1", "pt-speed"))'));
+      expect(await readScriptLua()).toContain('print("反馈转速", modbus.value("slave-1", "pt-speed"))');
       await view().$('button=调试').click();
       const pause = view().$('[aria-label="调试暂停"]');
       await expect(pause).toHaveText(expect.stringContaining('调试起点'));
       await view().$('button=继续').click();
       await expect(pause).toHaveText(expect.stringContaining('命中断点'));
+      await expect(view().$('.script-lua-line[data-current][data-block-id="dbg-write"]')).toBeDisplayed();
+      await view().$('.script-lua-line[data-block-id="dbg-read"]').click();
+      await expect(view().$('g.script-selected[data-id="dbg-read"]')).toBeDisplayed();
+      await expect(view().$('g[data-id="dbg-write"] > .script-location-arrow')).toBeDisplayed();
       await expect(pause).toHaveText(expect.stringContaining(String(target)));
       const logLabel = view().$('g[data-id="dbg-log"] > .blocklyLabelField');
       await logLabel.click({ button: 'right' });
@@ -245,6 +243,11 @@ describe('Author and execute a master script in the packaged editor', () => {
       await browser.waitUntil(async () => !(await snapshot()).scriptRun!.breakpoints.includes('dbg-log'));
       await view().$('button=保存').click();
       await browser.waitUntil(async () => !(await snapshot()).workspace.masterScripts?.find(item => item.name === name)?.graph.breakpoints?.includes('dbg-log'));
+      // Re-enter after breakpoint-only saves have advanced the workspace revision.
+      await browser.refresh();
+      await $('//nav//button[normalize-space(.)="主站脚本"]').click();
+      await view().$(`button=${name}`).click();
+      await expect(view().$('.script-lua-line[data-current][data-block-id="dbg-write"]')).toBeDisplayed();
       await pause.$('summary').click();
       await expect(pause).toHaveText(expect.stringContaining('写前转速'));
       expect(simulatorRegister()).toBe(before);
@@ -256,6 +259,7 @@ describe('Author and execute a master script in the packaged editor', () => {
       await view().$('button=单步').click();
       await browser.waitUntil(async () => (await snapshot()).scriptRun?.pause?.reason === 'step');
       expect((await snapshot()).scriptRun?.current?.blockId).toBe('dbg-read');
+      await expect(view().$('.script-lua-line[data-current][data-block-id="dbg-read"]')).toBeDisplayed();
       expect(simulatorRegister()).toBe(target);
       expect(await writeFrames()).toHaveLength(1);
       await view().$('button=继续').click();
@@ -264,7 +268,8 @@ describe('Author and execute a master script in the packaged editor', () => {
       await expect(row).toHaveText(expect.stringContaining('反馈转速 ' + target));
       expect(await row.$('time').getText()).toMatch(/^\d\d:\d\d:\d\d\.\d{3}$/);
       await row.click();
-      await expect(view().$('g[data-id="dbg-log"] > .script-location-arrow')).toBeDisplayed();
+      await expect(view().$('g.script-selected[data-id="dbg-log"]')).toBeDisplayed();
+      await expect(view().$('.script-lua-line[data-selected][data-block-id="dbg-log"]')).toBeDisplayed();
       await browser.electron.execute(electron => electron.BrowserWindow.getAllWindows()[0]?.setSize(1024, 680));
       await browser.waitUntil(() => browser.execute(() => {
         const host = document.querySelector('.workbench-view:not([style*="display: none"]) .script-editor')!;
@@ -345,19 +350,17 @@ describe('Author and execute a master script in the packaged editor', () => {
     await browser.saveScreenshot(path.join(evidenceDir, 'condition-toolbox.png'));
     await view().$('[aria-label="收起积木托盘"]').click();
     await view().$('.blocklyToolboxFlyout').waitForDisplayed({ reverse: true });
-    await view().$('button=Lua 预览').click();
-    const editor = view().$('textarea[aria-label="生成的 Lua"]');
-    await expect(editor).toHaveValue(expect.stringContaining('for _step = 1, 2 do'));
-    const lua = await editor.getValue();
+    const lua = await readScriptLua();
+    expect(lua).toContain('for _step = 1, 2 do');
     const testOnline = 'function() return modbus.state("slave-rtu-1", "online") end';
     const testOffline = 'function() return modbus.state("slave-rtu-1", "offline") end';
-    const testInitial = 'function() return modbus.compare_variable("slave-rtu-1", "pt-flow-setpoint", "eq", "初值") end';
+    const testInitial = 'function() return modbus.compare("slave-rtu-1", "pt-flow-setpoint", "eq", value) end';
     const testRange = 'function() return modbus.in_range("slave-rtu-1", "pt-flow-setpoint", 25.3, 25.5) end';
     expect(lua).toContain('return modbus.all(\n');
     const normalizedLua = lua.replace(/\s+/g, ' ').replaceAll('( ', '(').replaceAll(' )', ')');
     expect(normalizedLua).toBe([
       `modbus.wait(${testOnline}, 5000)`,
-      'modbus.read_into("初值", "slave-rtu-1", "pt-flow-setpoint")',
+      'local value = modbus.value("slave-rtu-1", "pt-flow-setpoint")',
       'for _step = 1, 2 do',
       `if modbus.check(function() return modbus.all(${testOnline}, ${testInitial}) end) then`,
       'modbus.write("slave-rtu-1", "pt-flow-setpoint", "25.4")',
@@ -448,10 +451,9 @@ describe('Author and execute a master script in the packaged editor', () => {
       expect(run.entries.find(entry=>entry.blockId==='trip')).toMatchObject({result:'failed',handled:true});
       expect(run.judgments.restored).toMatchObject({matched:true,samples:[{timeMs:expect.any(Number)},{timeMs:expect.any(Number)}]});
       expect(simulatorRegister()).toBe(before);
-      await view().$('button=Lua 预览').click();
-      const lua = await view().$('textarea[aria-label="生成的 Lua"]').getValue();
+      const lua = await readScriptLua();
       expect(lua).toContain('modbus.attempt(function()');
-      expect(lua).toContain('modbus.variable("初始转速")');
+      expect(lua).toContain('modbus.write("slave-1", "pt-speed", value)');
       expect(lua).toContain('modbus.yield_io()');
       fs.mkdirSync(evidenceDir,{recursive:true});
       fs.writeFileSync(path.join(evidenceDir,'handled-restore.json'),JSON.stringify({before,after:simulatorRegister(),run,lua},null,2));

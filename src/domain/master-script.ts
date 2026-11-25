@@ -5,6 +5,16 @@ export const scriptBlocks = {
   start: 'mb_start',
   read: 'mb_read',
   readVariable: 'mb_read_var',
+  setVariable: 'mb_set_var',
+  changeVariable: 'mb_change_var',
+  number: 'mb_number',
+  arithmetic: 'mb_arithmetic',
+  compareValues: 'mb_compare_values',
+  procedure: 'mb_procedure',
+  calculation: 'mb_function',
+  call: 'mb_call',
+  callValue: 'mb_call_value',
+  parameter: 'mb_parameter',
   write: 'mb_write',
   log: 'mb_log',
   wait: 'mb_wait',
@@ -31,6 +41,7 @@ export const scriptBlocks = {
 } as const;
 
 export const scriptRelations = [['等于', 'eq'], ['不等于', 'ne'], ['大于', 'gt'], ['大于或等于', 'ge'], ['小于', 'lt'], ['小于或等于', 'le']] as const;
+export const scriptArithmetic = [['+', 'add', '+'], ['−', 'subtract', '-'], ['×', 'multiply', '*'], ['÷', 'divide', '/']] as const;
 export const scriptStates = [['在线', 'online'], ['离线', 'offline'], ['待确认', 'pending'], ['连接中', 'connecting'], ['停用', 'disabled']] as const;
 export const scriptErrors = [['等待超时', 'timeout'], ['写入未发送', 'not-sent'], ['设备拒绝写入', 'rejected'], ['写入结果未知', 'unknown'], ['判断或数据错误', 'evaluation']] as const;
 export type ScriptErrorKind = typeof scriptErrors[number][1];
@@ -39,6 +50,13 @@ export const MAX_SCRIPT_STEPS = 1000;
 export const MAX_SCRIPT_MS = 120000;
 
 type ScriptBlockKind = typeof scriptBlocks[keyof typeof scriptBlocks];
+export const scriptNumberSlots: Partial<Record<ScriptBlockKind, Record<string, number>>> = {
+  [scriptBlocks.calculation]: { RESULT: 0 },
+  [scriptBlocks.setVariable]: { OPERAND: 0 },
+  [scriptBlocks.changeVariable]: { OPERAND: 1 },
+  [scriptBlocks.arithmetic]: { A: 0, B: 1 },
+  [scriptBlocks.compareValues]: { A: 0, B: 0 },
+};
 type FieldValue = string | number | boolean;
 type Relation = typeof scriptRelations[number][1];
 const id = z.string().min(1).max(250);
@@ -47,7 +65,8 @@ const blockHeaderSchema = z.object({
   type: z.custom<ScriptBlockKind>(value => typeof value === 'string' && Object.values(scriptBlocks).some(kind => kind === value)),
   id,
   fields: z.record(field).optional(),
-  extraState: z.object({ elseIfCount: z.number().int().min(0).max(MAX_SCRIPT_BLOCKS), hasElse: z.boolean() }).strict().optional(),
+  extraState: z.object({ elseIfCount: z.number().int().min(0).max(MAX_SCRIPT_BLOCKS).optional(), hasElse: z.boolean().optional(),
+    parameters: z.array(z.string().max(120)).max(MAX_SCRIPT_BLOCKS).optional() }).strict().optional(),
   disabledReasons: z.array(z.string()).optional(),
   enabled: z.boolean().optional(),
   inputs: z.record(z.object({ block: z.unknown().optional() }).strict()).optional(),
@@ -60,7 +79,7 @@ export interface ScriptBlock {
   x?: number;
   y?: number;
   fields?: Record<string, FieldValue>;
-  extraState?: { elseIfCount: number; hasElse: boolean };
+  extraState?: { elseIfCount?: number; hasElse?: boolean; parameters?: string[] };
   enabled?: boolean;
   disabledReasons?: string[];
   inputs?: Record<string, { block?: ScriptBlock }>;
@@ -114,8 +133,12 @@ function validGraph(value: unknown): boolean {
     if (!block.success || ids.has(block.data.id) || ids.size >= MAX_SCRIPT_BLOCKS) return false;
     ids.add(block.data.id);
     if (block.data.extraState) {
-      if (block.data.type !== scriptBlocks.branch) return false;
-      branchInputs += block.data.extraState.elseIfCount;
+      const shape = block.data.extraState;
+      if (isScriptCall(block.data.type)) {
+        if (!shape.parameters || shape.elseIfCount !== undefined || shape.hasElse !== undefined) return false;
+      } else if (block.data.type === scriptBlocks.branch && shape.elseIfCount !== undefined && typeof shape.hasElse === 'boolean' && !shape.parameters) {
+        branchInputs += shape.elseIfCount;
+      } else return false;
       if (branchInputs > MAX_SCRIPT_BLOCKS) return false;
     }
     if (block.data.type === scriptBlocks.branch) {
@@ -126,7 +149,7 @@ function validGraph(value: unknown): boolean {
         if (numbered && (+numbered[1]! < 1 || +numbered[1]! > (shape?.elseIfCount ?? 0))) return false;
       }
     }
-    if ((block.data.type === scriptBlocks.stop || block.data.type === scriptBlocks.breakLoop) && block.data.next) return false;
+    if ((block.data.type === scriptBlocks.stop || block.data.type === scriptBlocks.breakLoop || isScriptDefinition(block.data.type)) && block.data.next) return false;
     if (block.data.next) pending.push(block.data.next.block);
     for (const input of Object.values(block.data.inputs ?? {})) {
       if (input.block !== undefined) pending.push(input.block);
@@ -163,8 +186,19 @@ export const scriptFileSchema = z.object({
 });
 
 export interface ScriptPointRef { slaveId: string; pointId: string }
+export interface FunctionSignature { id: string; name: string; parameters: string[]; returnsValue: boolean }
+export type ScriptFunction = FunctionSignature & ({ kind: 'procedure'; steps: ScriptStep[] } | { kind: 'calculation'; result: ScriptOperand });
+export interface ScriptProgram { steps: ScriptStep[]; functions: ScriptFunction[] }
+type FunctionTable = ReadonlyMap<string, FunctionSignature>;
+export function isScriptDefinition(type: string) { return type === scriptBlocks.procedure || type === scriptBlocks.calculation; }
+export function isScriptCall(type: string) { return type === scriptBlocks.call || type === scriptBlocks.callValue; }
+export function splitParameters(text: string): string[] { return text.trim() ? text.split(/[,，]/).map(name => name.trim()) : []; }
+
 export type ScriptOperand =
   | { kind: 'literal'; text: string }
+  | { kind: 'number'; value: number }
+  | { kind: 'callValue'; functionId: string; args: ScriptOperand[] }
+  | { kind: 'arithmetic'; operator: typeof scriptArithmetic[number][1]; left: ScriptOperand; right: ScriptOperand }
   | { kind: 'variable'; name: string }
   | { kind: 'point'; ref: ScriptPointRef }
   | { kind: 'boolean'; value: boolean }
@@ -174,6 +208,7 @@ export type ScriptCondition = { blockId: string } & (
   | { kind: 'error'; code: ScriptErrorKind }
   | { kind: 'state'; slaveId: string; state: SlaveCommunicationState }
   | { kind: 'compare'; ref: ScriptPointRef; relation: Relation; operand: ScriptOperand }
+  | { kind: 'compareValues'; relation: Relation; left: ScriptOperand; right: ScriptOperand }
   | { kind: 'and'; left: ScriptCondition; right: ScriptCondition }
   | { kind: 'or'; left: ScriptCondition; right: ScriptCondition }
   | { kind: 'not'; operand: ScriptCondition }
@@ -181,6 +216,8 @@ export type ScriptCondition = { blockId: string } & (
 export type ScriptStep = { blockId: string } & (
   | { kind: 'read'; ref: ScriptPointRef; timeoutMs: number }
   | { kind: 'capture'; ref: ScriptPointRef; variable: string }
+  | { kind: 'setVariable' | 'changeVariable'; variable: string; operand: ScriptOperand }
+  | { kind: 'call'; functionId: string; args: ScriptOperand[] }
   | { kind: 'write'; ref: ScriptPointRef; operand: ScriptOperand }
   | { kind: 'log'; message: string; operand?: ScriptOperand }
   | { kind: 'wait'; condition: ScriptCondition; timeoutMs: number }
@@ -235,12 +272,40 @@ function enabled(block: ScriptBlock): boolean {
 
 function variableName(block: ScriptBlock): string {
   const name = fieldText(block, 'VARIABLE').trim();
+  if (!name && (block.type === scriptBlocks.variable || block.type === scriptBlocks.changeVariable)) throw new ScriptBlockError('请选择运行变量', block.id);
   if (!name || name.length > 120) throw new ScriptBlockError('请输入 1–120 个字符的变量名', block.id);
   return name;
 }
 
-function reporter(block: ScriptBlock): ScriptOperand {
+interface CompileScope { functions: FunctionTable; include(id: string, caller: string): number; callCost: number; parameters: string[] }
+
+function callOperands(block: ScriptBlock, scope: CompileScope) {
+  const functionId = fieldText(block, 'FUNCTION');
+  const fn = scope.functions.get(functionId);
+  if (!fn || fn.returnsValue !== (block.type === scriptBlocks.callValue)) throw new ScriptBlockError('请选择存在且类型匹配的函数', block.id);
+  scope.callCost += scope.include(functionId, block.id);
+  const extra = [...Object.keys(block.inputs ?? {}), ...Object.keys(block.fields ?? {})]
+    .some(key => /^ARG\d+$/.test(key) && Number(key.slice(3)) >= fn.parameters.length);
+  if (extra || (block.extraState?.parameters?.length ?? 0) > fn.parameters.length)
+    throw new ScriptBlockError('函数已减少参数，请移出多余的实参或将其数值清零', block.id);
+  return { functionId, args: fn.parameters.map((_, i) => slotOperand(block, 'ARG' + i, scope)) };
+}
+
+function reporter(block: ScriptBlock, scope: CompileScope): ScriptOperand {
   if (!enabled(block)) throw new ScriptBlockError('请启用或移除停用的值积木', block.id);
+  if (block.type === scriptBlocks.callValue) return { kind: 'callValue', ...callOperands(block, scope) };
+  if (block.type === scriptBlocks.parameter) {
+    const index = fieldText(block, 'PARAM');
+    const name = /^\d+$/.test(index) ? scope.parameters[Number(index)] : undefined;
+    if (!name) throw new ScriptBlockError('请选择当前函数的参数', block.id);
+    return { kind: 'variable', name };
+  }
+  if (block.type === scriptBlocks.number) return { kind: 'number', value: fieldNumber(block, 'NUM') };
+  if (block.type === scriptBlocks.arithmetic) {
+    const operator = scriptArithmetic.find(([, key]) => key === fieldText(block, 'OP'))?.[1];
+    if (!operator) throw new ScriptBlockError('请选择四则运算符', block.id);
+    return { kind: 'arithmetic', operator, left: slotOperand(block, 'A', scope), right: slotOperand(block, 'B', scope) };
+  }
   if (block.type === scriptBlocks.variable) return { kind: 'variable', name: variableName(block) };
   if (block.type === scriptBlocks.pointValue) return { kind: 'point', ref: pointRef(block) };
   if (block.type === scriptBlocks.boolean) {
@@ -248,40 +313,54 @@ function reporter(block: ScriptBlock): ScriptOperand {
     if (value === 'TRUE' || value === 'FALSE') return { kind: 'boolean', value: value === 'TRUE' };
     throw new ScriptBlockError('请选择真或假', block.id);
   }
-  if ([scriptBlocks.compare, scriptBlocks.compareVariable, scriptBlocks.range, scriptBlocks.state, scriptBlocks.error,
+  if ([scriptBlocks.compare, scriptBlocks.compareVariable, scriptBlocks.compareValues, scriptBlocks.range, scriptBlocks.state, scriptBlocks.error,
     scriptBlocks.and, scriptBlocks.or, scriptBlocks.not].some(type => type === block.type)) {
-    return { kind: 'condition', condition: conditionBlock(block) };
+    return { kind: 'condition', condition: conditionBlock(block, scope) };
   }
   throw new ScriptBlockError('请选择点位值、运行变量或布尔值', block.id);
 }
 
-function operand(block: ScriptBlock): ScriptOperand {
+function operand(block: ScriptBlock, scope: CompileScope): ScriptOperand {
   const connected = block.inputs?.OPERAND?.block;
-  return connected ? reporter(connected) : { kind: 'literal', text: fieldText(block, 'VALUE') };
+  return connected ? reporter(connected, scope) : { kind: 'literal', text: fieldText(block, 'VALUE') };
 }
 
-function condition(parent: ScriptBlock, input = 'CONDITION'): ScriptCondition {
+function slotOperand(block: ScriptBlock, name: string, scope: CompileScope): ScriptOperand {
+  const child = block.inputs?.[name]?.block;
+  if (child) {
+    const value = reporter(child, scope);
+    if ((block.type === scriptBlocks.arithmetic || block.type === scriptBlocks.changeVariable)
+      && (value.kind === 'boolean' || value.kind === 'condition')) throw new ScriptBlockError('此处需要数值', child.id);
+    return value;
+  }
+  const value = block.fields?.[name] === undefined ? scriptNumberSlots[block.type]?.[name] ?? 0 : fieldNumber(block, name);
+  return { kind: 'number', value };
+}
+
+function condition(parent: ScriptBlock, scope: CompileScope, input = 'CONDITION'): ScriptCondition {
   const block = parent.inputs?.[input]?.block;
   if (!block) {
     const flag = fieldText(parent, 'BOOL_' + input);
     if (flag === 'TRUE' || flag === 'FALSE') return { blockId: parent.id + '/' + input, kind: 'truth', operand: { kind: 'boolean', value: flag === 'TRUE' } };
   }
   if (!block || !enabled(block)) throw new ScriptBlockError('请连接一个启用的条件积木', parent.id);
-  return conditionBlock(block);
+  return conditionBlock(block, scope);
 }
 
-function conditionBlock(block: ScriptBlock): ScriptCondition {
+function conditionBlock(block: ScriptBlock, scope: CompileScope): ScriptCondition {
   const blockId = block.id;
   switch (block.type) {
     case scriptBlocks.and:
     case scriptBlocks.or:
-      return { blockId, kind: block.type === scriptBlocks.and ? 'and' : 'or', left: condition(block, 'A'), right: condition(block, 'B') };
+      return { blockId, kind: block.type === scriptBlocks.and ? 'and' : 'or', left: condition(block, scope, 'A'), right: condition(block, scope, 'B') };
     case scriptBlocks.not:
-      return { blockId, kind: 'not', operand: condition(block) };
+      return { blockId, kind: 'not', operand: condition(block, scope) };
     case scriptBlocks.boolean:
     case scriptBlocks.pointValue:
+    case scriptBlocks.parameter:
+    case scriptBlocks.callValue:
     case scriptBlocks.variable:
-      return { blockId, kind: 'truth', operand: reporter(block) };
+      return { blockId, kind: 'truth', operand: reporter(block, scope) };
     case scriptBlocks.error: {
       const code = scriptErrors.find(([, key]) => key === fieldText(block, 'CODE'))?.[1];
       if (!code) throw new ScriptBlockError('请选择错误类型', blockId);
@@ -294,12 +373,14 @@ function conditionBlock(block: ScriptBlock): ScriptCondition {
       return { blockId, kind: 'state', slaveId, state };
     }
     case scriptBlocks.compare:
+    case scriptBlocks.compareValues:
     case scriptBlocks.compareVariable: {
       const relation = scriptRelations.find(([, value]) => value === fieldText(block, 'OP'))?.[1];
       if (!relation) throw new ScriptBlockError('请选择比较方式', block.id);
+      if (block.type === scriptBlocks.compareValues) return { blockId, kind: 'compareValues', relation, left: slotOperand(block, 'A', scope), right: slotOperand(block, 'B', scope) };
       const ref = pointRef(block);
       return { blockId, kind: 'compare', ref, relation, operand: block.type === scriptBlocks.compare
-        ? operand(block) : { kind: 'variable', name: variableName(block) } };
+        ? operand(block, scope) : { kind: 'variable', name: variableName(block) } };
     }
     case scriptBlocks.range: {
       const min = fieldNumber(block, 'MIN');
@@ -311,30 +392,38 @@ function conditionBlock(block: ScriptBlock): ScriptCondition {
   }
 }
 
-function stack(first: ScriptBlock | undefined, depth: number, inLoop = false): { steps: ScriptStep[]; count: number } {
+function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, inLoop = false): { steps: ScriptStep[]; count: number } {
   const steps: ScriptStep[] = [];
   let count = 0;
   for (let block = first; block; block = block.next?.block) {
     if (!enabled(block)) continue;
     if (depth > 8) throw new ScriptBlockError('循环和分支最多嵌套 8 层', block.id);
     const blockId = block.id;
+    const outerCallCost = scope.callCost;
+    scope.callCost = 0;
     const timeout = () => integer(block!, 'TIMEOUT', 50, MAX_SCRIPT_MS);
     count++;
     switch (block.type) {
+      case scriptBlocks.call: steps.push({ blockId, kind: 'call', ...callOperands(block, scope) }); break;
       case scriptBlocks.read: steps.push({ blockId, kind: 'read', ref: pointRef(block), timeoutMs: timeout() }); break;
       case scriptBlocks.readVariable:
         steps.push({ blockId, kind: 'capture', ref: pointRef(block), variable: variableName(block) });
         break;
-      case scriptBlocks.write: steps.push({ blockId, kind: 'write', ref: pointRef(block), operand: operand(block) }); break;
+      case scriptBlocks.setVariable:
+      case scriptBlocks.changeVariable:
+        steps.push({ blockId, kind: block.type === scriptBlocks.setVariable ? 'setVariable' : 'changeVariable',
+          variable: variableName(block), operand: slotOperand(block, 'OPERAND', scope) });
+        break;
+      case scriptBlocks.write: steps.push({ blockId, kind: 'write', ref: pointRef(block), operand: operand(block, scope) }); break;
       case scriptBlocks.log: {
         const message = fieldText(block, 'TEXT');
         const value = block.inputs?.OPERAND?.block;
         if (!message.trim() && !value) throw new ScriptBlockError('请输入日志文字或接入一个值', blockId);
-        steps.push({ blockId, kind: 'log', message, ...(value ? { operand: reporter(value) } : {}) });
+        steps.push({ blockId, kind: 'log', message, ...(value ? { operand: reporter(value, scope) } : {}) });
         break;
       }
-      case scriptBlocks.wait: steps.push({ blockId, kind: 'wait', condition: condition(block), timeoutMs: timeout() }); break;
-      case scriptBlocks.assert: steps.push({ blockId, kind: 'assert', condition: condition(block) }); break;
+      case scriptBlocks.wait: steps.push({ blockId, kind: 'wait', condition: condition(block, scope), timeoutMs: timeout() }); break;
+      case scriptBlocks.assert: steps.push({ blockId, kind: 'assert', condition: condition(block, scope) }); break;
       case scriptBlocks.delay: steps.push({ blockId, kind: 'delay', ms: integer(block, 'MS', 0, MAX_SCRIPT_MS) }); break;
       case scriptBlocks.stop: steps.push({ blockId, kind: 'stop' }); break;
       case scriptBlocks.breakLoop:
@@ -345,17 +434,17 @@ function stack(first: ScriptBlock | undefined, depth: number, inLoop = false): {
       case scriptBlocks.repeatUntil:
       case scriptBlocks.repeat: {
         const times = block.type === scriptBlocks.repeat ? integer(block, 'COUNT', 1, 100) : 1;
-        const body = stack(block.inputs?.BODY?.block, depth + 1, true);
+        const body = stack(block.inputs?.BODY?.block, scope, depth + 1, true);
         if (!body.steps.length) throw new ScriptBlockError('循环内至少需要一个步骤', blockId);
         count += times * body.count;
-        if (block.type === scriptBlocks.repeatUntil) steps.push({blockId, kind:'repeatUntil', condition:condition(block), steps:body.steps});
+        if (block.type === scriptBlocks.repeatUntil) steps.push({blockId, kind:'repeatUntil', condition:condition(block, scope), steps:body.steps});
         else if (block.type === scriptBlocks.forever) steps.push({ blockId, kind: 'forever', steps: body.steps });
         else steps.push({ blockId, kind: 'repeat', count: times, steps: body.steps });
         break;
       }
       case scriptBlocks.attempt: {
-        const body = stack(block.inputs?.BODY?.block, depth + 1, inLoop);
-        const handler = stack(block.inputs?.ERROR?.block, depth + 1, inLoop);
+        const body = stack(block.inputs?.BODY?.block, scope, depth + 1, inLoop);
+        const handler = stack(block.inputs?.ERROR?.block, scope, depth + 1, inLoop);
         if (!body.steps.length) throw new ScriptBlockError('请连接要尝试执行的步骤', blockId);
         count += body.count + handler.count;
         steps.push({ blockId, kind: 'attempt', steps: body.steps, handler: handler.steps });
@@ -364,13 +453,13 @@ function stack(first: ScriptBlock | undefined, depth: number, inLoop = false): {
       case scriptBlocks.branch: {
         const extra = block.extraState?.elseIfCount ?? 0;
         if (!Number.isInteger(extra) || extra < 0 || extra > MAX_SCRIPT_BLOCKS) throw new ScriptBlockError('分支数量无效', blockId);
-        const no = stack(block.inputs?.NO?.block, depth + 1, inLoop);
+        const no = stack(block.inputs?.NO?.block, scope, depth + 1, inLoop);
         let longest = no.count;
         const arms = [];
         for (let i = 0; i <= extra; i++) {
-          const body = stack(block.inputs?.[i ? 'YES' + i : 'YES']?.block, depth + 1, inLoop);
+          const body = stack(block.inputs?.[i ? 'YES' + i : 'YES']?.block, scope, depth + 1, inLoop);
           longest = Math.max(longest, body.count);
-          arms.push({ condition: condition(block, i ? 'COND' + i : 'CONDITION'), steps: body.steps });
+          arms.push({ condition: condition(block, scope, i ? 'COND' + i : 'CONDITION'), steps: body.steps });
         }
         if (!longest) throw new ScriptBlockError('分支内至少需要一个步骤', blockId);
         count += longest;
@@ -379,19 +468,71 @@ function stack(first: ScriptBlock | undefined, depth: number, inLoop = false): {
       }
       default: throw new ScriptBlockError('此积木不能作为执行步骤', blockId);
     }
+    count += scope.callCost;
+    scope.callCost = outerCallCost;
     if (count > MAX_SCRIPT_STEPS) throw new ScriptBlockError(`展开后最多执行 ${MAX_SCRIPT_STEPS} 个步骤`, blockId);
   }
   return { steps, count };
 }
 
-export function compileMasterScript(graph: ScriptGraph): ScriptStep[] {
+export function compileScriptProgram(graph: ScriptGraph): ScriptProgram {
   const roots = (graph.blocks?.blocks ?? []).filter(enabled);
-  const start = roots.find(block => block.type === scriptBlocks.start);
+  const stacks = roots.filter(block => !isScriptDefinition(block.type));
+  const start = stacks.find(block => block.type === scriptBlocks.start);
   if (!start) throw new ScriptBlockError('请添加一个「开始」积木');
-  if (roots.length !== 1) throw new ScriptBlockError('请将步骤接到同一个「开始」积木下', roots.find(block => block !== start)?.id);
-  const { steps } = stack(start.next?.block, 0);
+  if (stacks.length !== 1) throw new ScriptBlockError('请将步骤接到同一个「开始」积木下，函数定义可单独放置', stacks.find(block => block !== start)?.id);
+  const headers = new Map<string, FunctionSignature>();
+  const definitions = new Map<string, ScriptBlock>();
+  const names = new Set<string>();
+  for (const block of roots.filter(root => isScriptDefinition(root.type))) {
+    const name = fieldText(block, 'NAME').trim();
+    if (!name || name.length > 120) throw new ScriptBlockError('请输入 1–120 个字符的函数名', block.id);
+    if (names.has(name)) throw new ScriptBlockError(`函数名「${name}」重复`, block.id);
+    names.add(name);
+    const parameters = splitParameters(fieldText(block, 'PARAMS'));
+    if (parameters.length > MAX_SCRIPT_BLOCKS || parameters.some(p => !p || p.length > 120) || new Set(parameters).size !== parameters.length)
+      throw new ScriptBlockError('参数名须非空、互不重复，并用逗号分隔', block.id);
+    const returnsValue = block.type === scriptBlocks.calculation;
+    if (Object.keys(block.inputs ?? {}).some(key => key !== (returnsValue ? 'RESULT' : 'BODY')))
+      throw new ScriptBlockError('函数的输入与定义类型不匹配', block.id);
+    headers.set(block.id, { id: block.id, name, parameters, returnsValue });
+    definitions.set(block.id, block);
+  }
+  const compiled = new Map<string, { fn: ScriptFunction; cost: number }>();
+  const visiting = new Set<string>();
+  const scopeFor = (parameters: string[]): CompileScope => ({ functions: headers, parameters, callCost: 0, include });
+  function include(id: string, caller: string): number {
+    const cached = compiled.get(id);
+    if (cached) return cached.cost;
+    const block = definitions.get(id)!;
+    const header = headers.get(id)!;
+    if (visiting.has(id)) throw new ScriptBlockError(`函数「${header.name}」存在递归调用`, caller);
+    visiting.add(id);
+    const scope = scopeFor(header.parameters);
+    let fn: ScriptFunction;
+    let cost: number;
+    if (header.returnsValue) {
+      fn = { ...header, kind: 'calculation', result: slotOperand(block, 'RESULT', scope) };
+      cost = 1 + scope.callCost;
+    } else {
+      const body = stack(block.inputs?.BODY?.block, scope);
+      if (!body.steps.length) throw new ScriptBlockError('请在流程函数内连接执行步骤', block.id);
+      fn = { ...header, kind: 'procedure', steps: body.steps };
+      cost = body.count;
+    }
+    if (cost > MAX_SCRIPT_STEPS) throw new ScriptBlockError(`展开后最多执行 ${MAX_SCRIPT_STEPS} 个步骤`, caller);
+    visiting.delete(id);
+    compiled.set(id, { fn, cost });
+    return cost;
+  }
+  const { steps } = stack(start.next?.block, scopeFor([]));
   if (!steps.length) throw new ScriptBlockError('请在「开始」积木下连接至少一个步骤', start.id);
-  return steps;
+  const functions = [...definitions.keys()].sort().map(id => { include(id, id); return compiled.get(id)!.fn; });
+  return { steps, functions };
+}
+
+export function compileMasterScript(graph: ScriptGraph): ScriptStep[] {
+  return compileScriptProgram(graph).steps;
 }
 
 export function newScriptGraph(id: string): ScriptGraph {
@@ -408,7 +549,42 @@ export function* scriptGraphBlocks(graph: ScriptGraph): Generator<ScriptBlock> {
   }
 }
 
+export interface ScriptVariableGroup {
+  functionId: string | null;
+  label: string;
+  names: Map<string, string>;
+}
+
+const variableBlockTypes = new Set<string>([scriptBlocks.variable, scriptBlocks.setVariable, scriptBlocks.changeVariable,
+  scriptBlocks.readVariable, scriptBlocks.compareVariable]);
+export function usesScriptVariable(type: string): boolean { return variableBlockTypes.has(type); }
+
+export function scriptVariableGroups(graph: ScriptGraph): ScriptVariableGroup[] {
+  const main: ScriptVariableGroup = { functionId: null, label: '主流程', names: new Map() };
+  const groups = [main];
+  const collect = (first: ScriptBlock, group: ScriptVariableGroup) => {
+    for (let block: ScriptBlock | undefined = first; block; block = block.next?.block) {
+      if (!enabled(block)) continue;
+      const name = usesScriptVariable(block.type) ? fieldText(block, 'VARIABLE').trim() : '';
+      if (name && !group.names.has(name)) group.names.set(name, block.id);
+      for (const input of Object.values(block.inputs ?? {})) if (input.block) collect(input.block, group);
+    }
+  };
+  for (const root of graph.blocks?.blocks ?? []) {
+    if (!enabled(root)) continue;
+    if (isScriptDefinition(root.type)) {
+      const group: ScriptVariableGroup = { functionId: root.id, label: fieldText(root, 'NAME').trim() || '未命名函数', names: new Map() };
+      for (const name of splitParameters(fieldText(root, 'PARAMS'))) if (name) group.names.set(name, root.id);
+      collect(root, group);
+      groups.push(group);
+    } else collect(root, main);
+  }
+  return groups.filter(group => group.names.size);
+}
+
 const statementTypes = new Set<string>([scriptBlocks.read, scriptBlocks.readVariable, scriptBlocks.write, scriptBlocks.log,
+  scriptBlocks.setVariable, scriptBlocks.changeVariable,
+  scriptBlocks.call,
   scriptBlocks.wait, scriptBlocks.assert, scriptBlocks.delay, scriptBlocks.repeat, scriptBlocks.forever,
   scriptBlocks.repeatUntil, scriptBlocks.stop, scriptBlocks.breakLoop, scriptBlocks.attempt, scriptBlocks.branch]);
 

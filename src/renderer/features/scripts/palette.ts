@@ -1,10 +1,11 @@
 import * as Blockly from 'blockly/core';
+import { scriptToolbox, searchPalette, variableCategoryKey, variablePalette } from './block-palette';
 
 export interface PaletteState { category: number; open: boolean }
 
 /** The flyout participates in Blockly's workspace, scrollbar and drag metrics. */
 class DockedFlyout extends Blockly.VerticalFlyout {
-  override readonly CORNER_RADIUS = 2;
+  override readonly CORNER_RADIUS = 6;
   override getFlyoutScale() { return 0.95; }
   override createBlock(original: Blockly.BlockSvg): Blockly.BlockSvg {
     const copy = super.createBlock(original);
@@ -22,6 +23,10 @@ class DockedFlyout extends Blockly.VerticalFlyout {
 export class ScriptToolbox extends Blockly.Toolbox {
   private preference: PaletteState = { category: 0, open: true };
   private toggle: HTMLButtonElement | null = null;
+  private names: readonly string[] = [];
+  private query = '';
+  private restoreCollapsed = false;
+  private clearQuery?: () => void;
 
   protected override createFlyout_() {
     const options = this.workspace_.copyOptionsForFlyout();
@@ -29,13 +34,16 @@ export class ScriptToolbox extends Blockly.Toolbox {
     return new DockedFlyout(options);
   }
 
-  start(preference: PaletteState | undefined, colours: string[]) {
+  start(preference: PaletteState | undefined, clearQuery: () => void) {
     if (preference) this.preference = preference;
+    this.clearQuery = clearQuery;
+    this.workspace_.registerToolboxCategoryCallback(variableCategoryKey, () => variablePalette(this.names));
     const flyout = this.getFlyout();
     if (flyout instanceof DockedFlyout) flyout.setAutoClose(false);
     this.getToolboxItems().forEach((item, index) => {
       const row = item.getDiv() as HTMLElement | null;
-      if (row && colours[index]) row.style.setProperty('--category-colour', colours[index]);
+      const category = scriptToolbox.contents[index];
+      if (row && category) row.style.setProperty('--category-colour', category.colour);
     });
     const rail = this.HtmlDiv!;
     const toggle = rail.ownerDocument.createElement('button');
@@ -58,13 +66,58 @@ export class ScriptToolbox extends Blockly.Toolbox {
   }
 
   override setSelectedItem(item: Parameters<Blockly.Toolbox['setSelectedItem']>[0]): void {
-    if (item === this.getSelectedItem()) return;
+    const wasSearching = !!this.query;
+    if (wasSearching) {
+      this.query = '';
+      this.HtmlDiv?.classList.remove('script-searching');
+      this.clearQuery?.();
+    }
+    if (item === this.getSelectedItem()) {
+      if (wasSearching) this.refreshSelection();
+      return;
+    }
     super.setSelectedItem(item);
     this.preference.open = !!this.getSelectedItem();
     if (item) this.preference.category = this.getToolboxItems().indexOf(item);
     this.updateToggle();
+    this.revealSelectedCategory();
     this.workspace_.resize();
     this.workspace_.scroll(this.workspace_.scrollX, this.workspace_.scrollY);
+  }
+
+  updatePalette(query: string, names: readonly string[]) {
+    const namesChanged = names.length !== this.names.length || names.some((name, i) => name !== this.names[i]);
+    this.names = names;
+    const term = query.trim();
+    if (term === this.query) {
+      if (namesChanged && (term || this.getSelectedItem()?.getContents() === variableCategoryKey)) this.refreshSelection();
+      return;
+    }
+    if (term && !this.query) {
+      this.restoreCollapsed = !this.getSelectedItem();
+      if (this.restoreCollapsed) this.selectItemByPosition(this.preference.category);
+    }
+    this.query = term;
+    this.HtmlDiv?.classList.toggle('script-searching', !!term);
+    if (!term && this.restoreCollapsed) this.clearSelection();
+    else this.refreshSelection();
+    this.getFlyout()?.scrollToStart();
+    this.workspace_.resize();
+  }
+
+  override refreshSelection() {
+    if (this.query) this.getFlyout()?.show(searchPalette(this.query, this.names));
+    else super.refreshSelection();
+  }
+
+  revealSelectedCategory() {
+    const row = this.getSelectedItem()?.getDiv();
+    const group = row?.closest<HTMLElement>('.blocklyToolboxCategoryGroup');
+    if (!row || !group || !group.clientHeight) return;
+    const item = row.getBoundingClientRect();
+    const list = group.getBoundingClientRect();
+    if (item.top < list.top) group.scrollTop += item.top - list.top;
+    else if (item.bottom > list.bottom) group.scrollTop += item.bottom - list.bottom;
   }
 
   private updateToggle() {

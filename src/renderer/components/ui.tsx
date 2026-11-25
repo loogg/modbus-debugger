@@ -18,6 +18,7 @@ export type ButtonVariant = 'primary' | 'secondary' | 'quiet' | 'danger' | 'link
 export function Button(props: {
   variant?: ButtonVariant;
   size?: 'md' | 'sm';
+  'aria-expanded'?: boolean;
   disabled?: boolean;
   onClick?: (e: React.MouseEvent) => void;
   children: React.ReactNode;
@@ -39,6 +40,7 @@ export function Button(props: {
     <button
       type={props.type ?? 'button'}
       title={props.title}
+      aria-expanded={props['aria-expanded']}
       disabled={props.disabled}
       onClick={props.onClick}
       className={`${base} ${h} ${styles[variant]} ${props.disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} ${props.className ?? ''}`}

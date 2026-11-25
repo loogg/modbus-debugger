@@ -10,6 +10,7 @@ import type { Command } from '../../src/shared/commands';
 import type { BufferExportResult, DataReadResult } from '../../src/shared/point-data';
 import type { ModbusApi } from '../../src/shared/preload-api';
 import type { ScriptRunView } from '../../src/shared/script-run';
+import { readScriptLua } from '../support/script-lua-preview';
 
 const example = path.resolve('docs/examples/pressure-bench.workspace.json');
 const evidence = path.resolve('out/test-temp/pressure-bench-evidence');
@@ -267,12 +268,11 @@ describe('Pressure bench across the packaged HMI, native slave, canvas and Block
     await shot('tcp-trend');
     await rail('主站脚本');
     await expect(scope().$('[aria-label="步骤结果"]')).toHaveText(expect.stringContaining('压力达标 MPa 0.36'));
-    await scope().$('button=Lua 预览').click();
-    const lua = await scope().$('textarea[aria-label="生成的 Lua"]').getValue();
+    const lua = await readScriptLua();
     expect(lua).toContain('modbus.write("pump", "enable"');
     expect(lua).toContain('print("压力达标 MPa", modbus.value("sensor", "pv"))');
     fs.writeFileSync(path.join(evidence, 'cycle.lua'), lua);
-    await scope().$('button=收起 Lua').click();
+    await scope().$('button=收起检查器').click();
 
     const illegal = await command<{ result: string; exceptionCode: number }>({ type: 'device.temporaryRead', connectionId: master, unitId: 2, area: 3, start: 900, quantity: 1 });
     expect(illegal).toMatchObject({ result: 'exception', exceptionCode: 2 });

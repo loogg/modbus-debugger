@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { setImmediate as yieldToIO, setTimeout as delay } from 'node:timers/promises';
-import { compileMasterScript, scriptErrors, scriptPointKey, scriptRelations, scriptStates, type MasterScript, type ScriptCondition, type ScriptErrorKind, type ScriptOperand, type ScriptPointRef, type ScriptStep } from '../../domain/master-script';
+import { compileScriptProgram, scriptArithmetic, scriptErrors, scriptPointKey, scriptRelations, scriptStates, type FunctionSignature, type MasterScript, type ScriptCondition, type ScriptErrorKind, type ScriptOperand, type ScriptPointRef, type ScriptStep } from '../../domain/master-script';
 import { pointWriteFields, type PointWriteFields } from '../../domain/point-write-value';
 import type { RawType } from '../../domain/mapping';
 import type { ReadRange } from '../../domain/point-access';
@@ -11,6 +11,7 @@ import { RuntimeNotifications, type RuntimeChange } from './runtime-notification
 
 type Value = string | boolean | number;
 interface Sample { value?: Value; detail: string; sampledAtMs?: number }
+interface OperandSource { label: string; fields?: PointWriteFields; read(run: ActiveRun): Sample }
 
 export interface ScriptPointBinding {
   ref: ScriptPointRef;
@@ -33,6 +34,8 @@ interface ScriptHost {
 interface ActiveRun {
   controller: AbortController;
   variables: Map<string, Sample>;
+  scopes: Map<string | null, { variables: Map<string, Sample>; inCall: boolean }>;
+  variablesDirty: boolean;
   judgments: Map<string, ScriptJudgment>;
   judgmentsDirty: boolean;
   failure?: StepFailure;
@@ -46,7 +49,8 @@ interface ActiveRun {
 interface Outcome {
   detail: string;
   log?: boolean;
-  body?: { steps: PlannedStep[] } & ({ mode: 'sequence' } | { mode: 'loop'; count: number; until?: (run: ActiveRun) => ConditionReading } | { mode: 'attempt'; handler: PlannedStep[] });
+  body?: { steps: PlannedStep[] } & ({ mode: 'sequence' } | { mode: 'call'; functionId: string; variables: Map<string, Sample> }
+    | { mode: 'loop'; count: number; until?: (run: ActiveRun) => ConditionReading } | { mode: 'attempt'; handler: PlannedStep[] });
   control?: 'stop' | 'break';
 }
 interface PlannedStep {
@@ -61,6 +65,7 @@ interface PreparedWrite { preview: string; send(): Promise<Outcome> }
 export interface ScriptPlan {
   script: MasterScript;
   steps: PlannedStep[];
+  programHash: string;
   statementIds: string[];
   approval: ScriptApprovalView | null;
 }
@@ -71,6 +76,19 @@ export class StepFailure extends Error {
   constructor(message: string, readonly kinds: ScriptErrorKind[]) { super(message); }
 }
 class BreakLoop extends Error {}
+
+function enterFunction(run: ActiveRun, functionId: string, variables: Map<string, Sample>) {
+  const caller = run.variables;
+  const scope = { variables, inCall: true };
+  run.variables = variables;
+  run.scopes.set(functionId, scope);
+  run.variablesDirty = true;
+  return () => {
+    scope.inCall = false;
+    run.variables = caller;
+    run.variablesDirty = true;
+  };
+}
 
 function relationMatches(actual: Value, relation: Extract<ScriptCondition, { kind: 'compare' }>['relation'], wanted: Value): boolean {
   if (relation === 'eq') return actual === wanted;
@@ -102,6 +120,22 @@ function sampleTime(label: string, sample: Sample): ScriptJudgment['samples'] {
 }
 
 const valueType = (type: RawType) => type === 'Bool' ? 'boolean' : type === 'String' ? 'string' : 'number';
+
+function calculate(operator: Extract<ScriptOperand, { kind: 'arithmetic' }>['operator'], left: Value, right: Value): Sample {
+  if (typeof left !== 'number' || typeof right !== 'number' || !Number.isFinite(left) || !Number.isFinite(right)) throw new Error('运算需要两个有限数值');
+  let value: number;
+  switch (operator) {
+    case 'add': value = left + right; break;
+    case 'subtract': value = left - right; break;
+    case 'multiply': value = left * right; break;
+    case 'divide':
+      if (right === 0) throw new Error('除数不能为零');
+      value = left / right;
+      break;
+  }
+  if (!Number.isFinite(value)) throw new Error('运算结果超出有限数值范围');
+  return { value, detail: String(value) };
+}
 
 function sampleSource(point: ScriptPointBinding): RuntimeChange {
   return { kind: 'sample', blockKey: point.blockKey, range: point.span };
@@ -145,13 +179,17 @@ export class MasterScriptRunner {
   private active: ActiveRun | null = null;
   private view: ScriptRunView | null = null;
   get snapshot(): ScriptRunView | null {
-    this.flushJudgments();
+    this.flushObservations();
     return this.view;
   }
 
   constructor(private readonly host: ScriptHost, private readonly notifications: RuntimeNotifications) {}
 
   prepare(script: MasterScript): ScriptPlan {
+    const program = compileScriptProgram(script.graph);
+    const functions = new Map(program.functions.map(fn => [fn.id, fn]));
+    const calculations = new Map<string, { result: OperandSource; sources: RuntimeChange[] }>();
+    const procedures = new Map<string, PlannedStep[]>();
     const reads = new Map<string, ScriptPointBinding>();
     const highRiskWrites: ScriptApprovalView['writes'] = [];
     const approvals: string[] = [];
@@ -164,9 +202,46 @@ export class MasterScriptRunner {
       reads.set(key, point);
       return point;
     };
-    const resolveOperand = (source: ScriptOperand, type: RawType | undefined, target: string, sources?: RuntimeChange[]): {
-      label: string; fields?: PointWriteFields; read(run: ActiveRun): Sample;
-    } => {
+    const argumentsFor = (fn: FunctionSignature, args: ScriptOperand[], sources?: RuntimeChange[]) => {
+      const inputs = args.map((arg, index) => resolveOperand(arg, undefined, fn.parameters[index]!, sources));
+      return (run: ActiveRun) => new Map(fn.parameters.map((name, i) => [name, inputs[i]!.read(run)]));
+    };
+    const resolveOperand = (source: ScriptOperand, type: RawType | undefined, target: string, sources?: RuntimeChange[]): OperandSource => {
+      if (source.kind === 'callValue') {
+        const fn = functions.get(source.functionId);
+        if (fn?.kind !== 'calculation') throw new Error('找不到计算函数');
+        const frame = argumentsFor(fn, source.args, sources);
+        let plan = calculations.get(fn.id);
+        if (!plan) {
+          const dependencies: RuntimeChange[] = [];
+          plan = { result: resolveOperand(fn.result, undefined, fn.name, dependencies), sources: dependencies };
+          calculations.set(fn.id, plan);
+        }
+        sources?.push(...plan.sources);
+        const result = plan.result;
+        return { label: `${fn.name}()`, read: run => {
+          const locals = frame(run);
+          for (const [name, sample] of locals) if (sample.value === undefined) return { detail: `${fn.name} · ${name} · ${sample.detail}` };
+          const leave = enterFunction(run, fn.id, locals);
+          try {
+            const sample = result.read(run);
+            if (type && sample.value !== undefined && typeof sample.value !== valueType(type)) throw new Error(`函数「${fn.name}」返回值与${target}的类型不一致`);
+            return sample;
+          } finally { leave(); }
+        } };
+      }
+      if (source.kind === 'arithmetic') {
+        if (type && valueType(type) !== 'number') throw new Error(`${target} 与数值运算的值类型不一致`);
+        const left = resolveOperand(source.left, 'Float64', '运算左项', sources);
+        const right = resolveOperand(source.right, 'Float64', '运算右项', sources);
+        const symbol = scriptArithmetic.find(([, key]) => key === source.operator)![0];
+        return { label: `（${left.label} ${symbol} ${right.label}）`, read: run => {
+          const a = left.read(run);
+          if (a.value === undefined) return a;
+          const b = right.read(run);
+          return b.value === undefined ? b : calculate(source.operator, a.value, b.value);
+        } };
+      }
       if (source.kind === 'condition') {
         if (type && type !== 'Bool') throw new Error(`${target} 需要匹配的值类型`);
         const condition = resolveCondition(source.condition, sources);
@@ -190,8 +265,10 @@ export class MasterScriptRunner {
         sources?.push(sampleSource(point), { kind: 'slaveState', slaveId: point.ref.slaveId });
         return { label: point.label, read: () => point.read() };
       }
-      const text = source.kind === 'boolean' ? String(source.value) : source.text;
-      if (!type) return { label: text, read: () => ({ value: source.kind === 'boolean' ? source.value : text, detail: text }) };
+      const literal = source.kind === 'literal' ? source.text : source.value;
+      const text = String(literal);
+      if (!type) return { label: text, read: () => ({ value: literal, detail: text }) };
+      if (source.kind === 'number' && valueType(type) !== 'number') throw new Error(`${target} 与数值的值类型不一致`);
       if (source.kind === 'boolean' && type !== 'Bool') throw new Error(`${target} 需要匹配的值类型`);
       const fields = pointWriteFields(type, text);
       const value = fields.engineering ?? fields.boolValue ?? fields.stringValue!;
@@ -261,6 +338,21 @@ export class MasterScriptRunner {
           return { matched: state === condition.state, detail: `${device.label} 当前${stateLabel(state)}，预期${stateLabel(condition.state)}` };
         } };
       }
+      if (condition.kind === 'compareValues') {
+        const left = resolveOperand(condition.left, undefined, '比较左项', sources);
+        const right = resolveOperand(condition.right, undefined, '比较右项', sources);
+        const relation = scriptRelations.find(([, key]) => key === condition.relation)![0];
+        return { label: `${left.label} ${relation} ${right.label}`, read: run => {
+          const a = left.read(run);
+          const b = right.read(run);
+          const detail = `${a.detail} ${relation} ${b.detail}`;
+          const samples = [...sampleTime(left.label, a), ...sampleTime(right.label, b)];
+          if (a.value === undefined || b.value === undefined) return { detail, samples };
+          if (typeof a.value !== typeof b.value) throw new Error('比较两侧的值类型不一致');
+          if (condition.relation !== 'eq' && condition.relation !== 'ne' && typeof a.value !== 'number') throw new Error('大小比较需要两个数值');
+          return { matched: relationMatches(a.value, condition.relation, b.value), detail, samples };
+        } };
+      }
       const point = readPoint(condition.ref);
       sources?.push(sampleSource(point), { kind: 'slaveState', slaveId: point.ref.slaveId });
       const numeric = point.type !== 'Bool' && point.type !== 'String';
@@ -293,6 +385,19 @@ export class MasterScriptRunner {
       const blockId = step.blockId;
       statementIds.push(blockId);
       switch (step.kind) {
+        case 'call': {
+          const fn = functions.get(step.functionId);
+          if (fn?.kind !== 'procedure') throw new Error('找不到流程函数');
+          const argumentsAtCall = argumentsFor(fn, step.args);
+          let body = procedures.get(fn.id);
+          if (!body) { body = planSteps(fn.steps); procedures.set(fn.id, body); }
+          const steps = body;
+          return { blockId, label: `调用「${fn.name}」`, execute: run => {
+            const variables = argumentsAtCall(run);
+            for (const [name, sample] of variables) if (sample.value === undefined) throw new Error(`${fn.name} · ${name} · ${sample.detail}`);
+            return { detail: fn.name, body: { mode: 'call', functionId: fn.id, variables, steps } };
+          } };
+        }
         case 'read': {
           const point = readPoint(step.ref);
           return { blockId, label: `等待新采样 ${point.label}`, execute: run =>
@@ -309,7 +414,26 @@ export class MasterScriptRunner {
             const { value, detail } = sample;
             if (value === undefined) throw new Error(`${point.label} · ${detail}`);
             run.variables.set(step.variable, sample);
+            run.variablesDirty = true;
             return { detail: `变量「${step.variable}」 = ${detail}` };
+          } };
+        }
+        case 'setVariable':
+        case 'changeVariable': {
+          const increment = step.kind === 'changeVariable';
+          const label = `变量「${step.variable}」`;
+          const operand = resolveOperand(step.operand, increment ? 'Float64' : undefined, label);
+          return { blockId, label: `${increment ? '递增' : '设置'}${label}`, execute: run => {
+            let sample = operand.read(run);
+            if (sample.value === undefined) throw new Error(`${operand.label} · ${sample.detail}`);
+            if (increment) {
+              const current = run.variables.get(step.variable);
+              if (current?.value === undefined) throw new Error(`${label}尚未赋值`);
+              sample = calculate('add', current.value, sample.value);
+            }
+            run.variables.set(step.variable, sample);
+            run.variablesDirty = true;
+            return { detail: `${label} = ${sample.detail}` };
           } };
         }
         case 'log': {
@@ -421,12 +545,13 @@ export class MasterScriptRunner {
       }
     });
 
-    const steps = planSteps(compileMasterScript(script.graph));
+    const steps = planSteps(program.steps);
+    const programHash = createHash('sha256').update(JSON.stringify(program)).digest('hex');
     const approval = approvals.length ? {
       writes: highRiskWrites.filter((entry, index) => highRiskWrites.findIndex(other => other.target === entry.target && other.value === entry.value) === index),
       key: createHash('sha256').update(JSON.stringify([script.id, script.revision, approvals])).digest('hex'),
     } : null;
-    return { script, steps, statementIds, approval };
+    return { script, steps, programHash, statementIds, approval };
   }
 
   start(plan: ScriptPlan, approval?: string, debug = false): ScriptRunView {
@@ -434,13 +559,15 @@ export class MasterScriptRunner {
     if (plan.approval && plan.approval.key !== approval) throw new Error('请核对并确认高风险写入');
     const view: ScriptRunView = {
       id: randomUUID(), scriptId: plan.script.id, scriptName: plan.script.name, state: 'running',
-      scriptRevision: plan.script.revision, pendingWrite: null, judgments: {}, pause: null,
+      scriptRevision: plan.script.revision, programHash: plan.programHash, pendingWrite: null, judgments: {}, variableScopes: [], pause: null,
       statementIds: plan.statementIds, breakpoints: (plan.script.graph.breakpoints ?? []).filter(id => plan.statementIds.includes(id)),
       startedAtMs: Date.now(), finishedAtMs: null, current: null, entries: [], completed: 0, detail: null,
     };
     this.view = view;
+    const variables = new Map<string, Sample>();
     const run: ActiveRun = {
-      controller: new AbortController(), variables: new Map(), judgments: new Map(), judgmentsDirty: false,
+      controller: new AbortController(), variables, scopes: new Map([[null, { variables, inCall: false }]]), variablesDirty: false,
+      judgments: new Map(), judgmentsDirty: false,
       breakpoints: new Set(view.breakpoints), pauseNext: debug ? 'entry' : undefined,
       finished: Promise.resolve(),
     };
@@ -448,7 +575,7 @@ export class MasterScriptRunner {
     run.finished = this.executeSteps(run, plan.steps)
       .then(() => this.finish(run.controller.signal.aborted ? 'stopped' : 'passed'))
       .catch(error => this.finish(run.controller.signal.aborted ? 'stopped' : 'failed', messageOf(error)));
-    return this.view;
+    return this.snapshot!;
   }
 
   stop(id?: string): void {
@@ -506,10 +633,17 @@ export class MasterScriptRunner {
     await this.active?.finished;
   }
 
-  private flushJudgments(): void {
-    if (!this.active?.judgmentsDirty || !this.view) return;
-    this.view = { ...this.view, judgments: Object.fromEntries(this.active.judgments) };
-    this.active.judgmentsDirty = false;
+  private flushObservations(): void {
+    const run = this.active;
+    if (!run || !this.view || !(run.judgmentsDirty || run.variablesDirty)) return;
+    const next = { ...this.view };
+    if (run.judgmentsDirty) next.judgments = Object.fromEntries(run.judgments);
+    if (run.variablesDirty) next.variableScopes = Array.from(run.scopes, ([functionId, scope]) => ({
+      functionId, inCall: scope.inCall,
+      values: Array.from(scope.variables, ([name, sample]) => ({ name, value: sample.value! })),
+    }));
+    this.view = next;
+    run.judgmentsDirty = run.variablesDirty = false;
   }
 
   private approveValue(run: ActiveRun, target: string, value: string): Promise<void> {
@@ -535,7 +669,7 @@ export class MasterScriptRunner {
   }
 
   private finish(state: 'passed' | 'failed' | 'stopped', detail?: string): void {
-    this.flushJudgments();
+    this.flushObservations();
     this.view = { ...this.view!, state, detail: state === 'stopped' ? '流程已停止' : detail ?? null, current: null, pause: null, finishedAtMs: Date.now() };
     this.active = null;
   }
@@ -577,6 +711,11 @@ export class MasterScriptRunner {
 
   private async executeBody(run: ActiveRun, body: NonNullable<Outcome['body']>, owner: PlannedStep): Promise<void> {
     if (body.mode === 'sequence') return this.executeSteps(run, body.steps);
+    if (body.mode === 'call') {
+      const leave = enterFunction(run, body.functionId, body.variables);
+      try { await this.executeSteps(run, body.steps); } finally { leave(); }
+      return;
+    }
     if (body.mode === 'loop') {
       try {
         for (let i = 0; i < body.count; i++) {

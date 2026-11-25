@@ -20,12 +20,21 @@ export interface ScriptJudgment {
   samples: { label: string; timeMs: number }[];
 }
 
+export interface ScriptVariableScope {
+  functionId: string | null;
+  inCall: boolean;
+  values: { name: string; value: number | string | boolean }[];
+}
+
 export interface ScriptRunView {
   id: string;
   scriptId: string;
   scriptName: string;
   scriptRevision: number;
+  /** Identifies the compiled steps across edits to names, breakpoints and canvas positions. */
+  programHash: string;
   judgments: Record<string, ScriptJudgment>;
+  variableScopes: ScriptVariableScope[];
   pendingWrite: { token: string; target: string; value: string } | null;
   state: 'running' | 'pausing' | 'paused' | 'stopping' | 'passed' | 'failed' | 'stopped';
   breakpoints: string[];

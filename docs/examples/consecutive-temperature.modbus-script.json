@@ -1,0 +1,252 @@
+{
+  "format": "modbus-master-script",
+  "version": 1,
+  "name": "连续三次温度超限告警",
+  "graph": {
+    "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+        {
+          "type": "mb_start",
+          "id": "start",
+          "x": 24,
+          "y": 18,
+          "next": {
+            "block": {
+              "type": "mb_set_var",
+              "id": "initial-count",
+              "fields": {
+                "VARIABLE": "over_limit_count",
+                "OPERAND": 0
+              },
+              "next": {
+                "block": {
+                  "type": "mb_forever",
+                  "id": "monitor",
+                  "inputs": {
+                    "BODY": {
+                      "block": {
+                        "type": "mb_read",
+                        "id": "next-sample",
+                        "fields": {
+                          "POINT": "[\"slave-1\",\"pt-temp\"]",
+                          "TIMEOUT": 5000
+                        },
+                        "next": {
+                          "block": {
+                            "type": "mb_read_var",
+                            "id": "capture-temperature",
+                            "fields": {
+                              "POINT": "[\"slave-1\",\"pt-temp\"]",
+                              "VARIABLE": "current_temperature"
+                            },
+                            "next": {
+                              "block": {
+                                "type": "mb_if",
+                                "id": "check-temperature",
+                                "inputs": {
+                                  "CONDITION": {
+                                    "block": {
+                                      "id": "check-limit",
+                                      "type": "mb_call_value",
+                                      "fields": {
+                                        "FUNCTION": "over-limit",
+                                        "ARG1": 70
+                                      },
+                                      "inputs": {
+                                        "ARG0": {
+                                          "block": {
+                                            "type": "mb_variable",
+                                            "id": "temperature-value",
+                                            "fields": {
+                                              "VARIABLE": "current_temperature"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "YES": {
+                                    "block": {
+                                      "type": "mb_change_var",
+                                      "id": "increment",
+                                      "fields": {
+                                        "VARIABLE": "over_limit_count",
+                                        "OPERAND": 1
+                                      },
+                                      "next": {
+                                        "block": {
+                                          "type": "mb_if",
+                                          "id": "third-sample",
+                                          "inputs": {
+                                            "CONDITION": {
+                                              "block": {
+                                                "type": "mb_compare_values",
+                                                "id": "at-three",
+                                                "fields": {
+                                                  "OP": "eq",
+                                                  "B": 3
+                                                },
+                                                "inputs": {
+                                                  "A": {
+                                                    "block": {
+                                                      "type": "mb_variable",
+                                                      "id": "count-value",
+                                                      "fields": {
+                                                        "VARIABLE": "over_limit_count"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            "YES": {
+                                              "block": {
+                                                "id": "report-temperature",
+                                                "type": "mb_call",
+                                                "fields": {
+                                                  "FUNCTION": "record-alarm",
+                                                  "ARG1": 70
+                                                },
+                                                "inputs": {
+                                                  "ARG0": {
+                                                    "block": {
+                                                      "type": "mb_variable",
+                                                      "id": "temperature-at-alarm",
+                                                      "fields": {
+                                                        "VARIABLE": "current_temperature"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "NO": {
+                                    "block": {
+                                      "type": "mb_set_var",
+                                      "id": "reset-count",
+                                      "fields": {
+                                        "VARIABLE": "over_limit_count",
+                                        "OPERAND": 0
+                                      }
+                                    }
+                                  }
+                                },
+                                "extraState": {
+                                  "elseIfCount": 0,
+                                  "hasElse": true
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "mb_function",
+          "id": "over-limit",
+          "x": 650,
+          "y": 18,
+          "fields": {
+            "NAME": "exceeds_limit",
+            "PARAMS": "temperature, threshold"
+          },
+          "inputs": {
+            "RESULT": {
+              "block": {
+                "type": "mb_compare_values",
+                "id": "above-limit",
+                "fields": {
+                  "OP": "gt"
+                },
+                "inputs": {
+                  "A": {
+                    "block": {
+                      "type": "mb_parameter",
+                      "id": "test-temperature",
+                      "fields": {
+                        "PARAM": "0"
+                      }
+                    }
+                  },
+                  "B": {
+                    "block": {
+                      "type": "mb_parameter",
+                      "id": "test-limit",
+                      "fields": {
+                        "PARAM": "1"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "mb_procedure",
+          "id": "record-alarm",
+          "x": 650,
+          "y": 225,
+          "fields": {
+            "NAME": "log_overheat",
+            "PARAMS": "temperature, threshold"
+          },
+          "inputs": {
+            "BODY": {
+              "block": {
+                "type": "mb_log",
+                "id": "alarm",
+                "fields": {
+                  "TEXT": "温度连续三次超限，超出阈值（°C）"
+                },
+                "inputs": {
+                  "OPERAND": {
+                    "block": {
+                      "type": "mb_arithmetic",
+                      "id": "excess-degrees",
+                      "fields": {
+                        "OP": "subtract"
+                      },
+                      "inputs": {
+                        "A": {
+                          "block": {
+                            "type": "mb_parameter",
+                            "id": "observed-value",
+                            "fields": {
+                              "PARAM": "0"
+                            }
+                          }
+                        },
+                        "B": {
+                          "block": {
+                            "type": "mb_parameter",
+                            "id": "alarm-limit",
+                            "fields": {
+                              "PARAM": "1"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
