@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type {ModbusApi} from '../../src/shared/preload-api';
 import type {Workspace} from '../../src/domain/model';
+import {submitRealtimeValue, visibleControl} from '../support/workbench-controls';
 
 const snapshot=()=>browser.execute(()=>(window as unknown as {modbus:ModbusApi}).modbus.getSnapshot());
 const evidence=path.resolve('out/test-temp/audit-fixes-20261020/native');
@@ -18,9 +19,10 @@ async function apply(port:number){
   expect(result.ok).toBe(true);
   await browser.waitUntil(async()=>(await snapshot()).points['slave-1::pt-enable']?.boolValue===true,{timeout:15000});
 }
-async function submitOff(){
-  await $('//div[text()="使能"]/following-sibling::div[2]').doubleClick();
-  const input=await $('input.w-24');await input.setValue('OFF');await input.click();await browser.keys('Enter');
+const enableCell = () => visibleControl('//div[text()="使能"]/following-sibling::div[2]');
+async function submitEnable(value: 'ON' | 'OFF'){
+  await (await enableCell()).doubleClick();
+  await submitRealtimeValue(value);
 }
 describe('写前读取失败的实际桌面终态与恢复',()=>{
   let simulator:ChildProcess|null=null;
@@ -36,8 +38,8 @@ describe('写前读取失败的实际桌面终态与恢复',()=>{
     await apply(port);
     await $('//nav//button[normalize-space(.)="实时"]').click();
     const previousTraces=new Set((await snapshot()).transactions.map(tx=>tx.traceId));
-    await submitOff();
-    const status=await $('span[role="status"]');await status.waitForDisplayed();
+    await submitEnable('OFF');
+    const status=await (await enableCell()).$('span[role="status"]');await status.waitForDisplayed();
     expect(await status.getText()).toBe('未发送');expect(await status.getAttribute('title')).toContain(fault==='exception'?'0x02':'超时');
     expect(await $('.spin').isExisting()).toBe(false);
     const state=await snapshot();
@@ -48,13 +50,13 @@ describe('写前读取失败的实际桌面终态与恢复',()=>{
     fs.writeFileSync(path.join(evidence,`${fault}.json`),JSON.stringify({version:await browser.execute(()=>(window as unknown as {modbus:ModbusApi}).modbus.versions()),transactions:transactions.filter(tx=>tx.sourceId==='pt-enable'),point:state.points['slave-1::pt-enable']},null,2));
     await browser.saveScreenshot(path.join(evidence,`${fault}-not-sent.png`));
     // Main commands prepare the corrected fixture; the retry being verified is still submitted through UI.
-    await apply(50520);await submitOff();
+    await apply(50520);await submitEnable('OFF');
     await browser.waitUntil(async()=>(await snapshot()).points['slave-1::pt-enable']?.boolValue===false,{timeout:15000});
     await browser.waitUntil(async()=>!(await $('.spin').isExisting()));
     const recovered=await snapshot();expect(recovered.transactions.some(tx=>tx.sourceKind==='write'&&tx.sourceId==='pt-enable'&&tx.result==='ok')).toBe(true);
     await browser.saveScreenshot(path.join(evidence,`${fault}-recovered.png`));
     // Restore the shared simulator so the next failure case starts at confirmed ON.
-    await $('//div[text()="使能"]/following-sibling::div[2]').doubleClick();await $('input.w-24').setValue('ON');await browser.keys('Enter');
+    await submitEnable('ON');
     await browser.waitUntil(async()=>(await snapshot()).points['slave-1::pt-enable']?.boolValue===true);
   });
 });

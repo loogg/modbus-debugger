@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { browser, $, expect } from '@wdio/globals';
 import type { ModbusApi } from '../../src/shared/preload-api';
 import { writeAckWorkspace } from '../support/write-ack-workspace';
+import { submitRealtimeValue } from '../support/workbench-controls';
 
 const view = () => $('.workbench-view:not([style*="display: none"])');
 const snapshot = () => browser.execute(async () => (window as unknown as { modbus: ModbusApi }).modbus.getSnapshot());
@@ -77,11 +78,11 @@ describe('Write acknowledgements and write-only points in packaged Electron', ()
     await $('//nav//button[normalize-space(.)="实时"]').click();
     const command = await view().$('[title^="只写点位"]');
     await command.doubleClick();
-    const input = await view().$('input.w-24');
-    await input.setValue('99');
-    await browser.keys('Enter');
-    await browser.waitUntil(async () => /99\s*上次写入/.test(await view().$('[title^="只写点位"]').getText()));
-    expect((await snapshot()).points['device-0::command']!.hasValue).toBe(false);
+    await submitRealtimeValue('99');
+    await browser.waitUntil(async () => /^99\s*上次写入/.test(await view().$('[title^="只写点位"]').getText()));
+    expect((await snapshot()).points['device-0::command']).toMatchObject({
+      hasValue: false, lastWrite: { phase: 'confirmed', accepted: { value: 99 } },
+    });
   });
 
   it('keeps accepted command state across a native popout and return', async () => {
