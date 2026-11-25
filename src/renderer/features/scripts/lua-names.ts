@@ -48,10 +48,11 @@ export class LuaNames {
   private readonly scopes = new Map<string, Scope>();
   private readonly checked = new Set<string>();
 
-  constructor(start: Block, definitions: Block[]) {
+  constructor(start: Block | null, definitions: Block[], events?: Block[]) {
+    const reservedNames = events ? new Set([...reserved, 'rt', 'coroutine', 'on_start', 'on_run', 'on_timer', '_timer_id']) : reserved;
     this.functions = allocate(definitions.map(block => ({ key: block.id, name: field(block, 'NAME'),
-      fallback: block.type === scriptBlocks.calculation ? 'compute_value' : 'run_step' })), reserved);
-    const blocked = new Set([...reserved, ...this.functions.values()]);
+      fallback: block.type === scriptBlocks.calculation ? 'compute_value' : 'run_step' })), reservedNames);
+    const blocked = new Set([...reservedNames, ...this.functions.values()]);
     const byId = new Map(definitions.map(block => [block.id, block]));
     const visited = new Set<string>();
     const visit = (block: Block) => {
@@ -73,7 +74,10 @@ export class LuaNames {
         if (isScriptCall(block.type)) protect(byId.get(field(block, 'FUNCTION')) ?? null);
       }
     };
-    for (const root of [...definitions, start]) {
+    const mainRoots = [...(start ? [start] : []), ...events ?? []];
+    for (const roots of [...definitions.map(def => [def]), mainRoots]) {
+      const root = roots[0]!;
+      const shared = roots === mainRoots && !!events;
       const parameters = splitParameters(field(root, 'PARAMS'));
       const requests = parameters.map((name, i) => ({ key: name, name, fallback: 'arg_' + (i + 1) }));
       const seen = new Set(parameters);
@@ -82,7 +86,7 @@ export class LuaNames {
       let loopLocals = 0;
       const top = new Set<Block>();
       for (let b = root === start ? root.getNextBlock() : root.getInputTargetBlock('BODY'); b; b = b.getNextBlock()) top.add(b);
-      for (const block of activeBlocks(root)) {
+      for (const block of roots.flatMap(entry => [...activeBlocks(entry)])) {
         if (block.type === scriptBlocks.attempt || block.type === scriptBlocks.wait || block.type === scriptBlocks.write)
           for (const input of block.inputList) protect(input.connection?.targetBlock() ?? null);
         if (block.type === scriptBlocks.repeat) loopLocals += 4;
@@ -91,19 +95,20 @@ export class LuaNames {
         if (seen.has(name)) continue;
         seen.add(name);
         requests.push({ key: name, name, fallback: 'value' });
-        if (top.has(block) && (block.type === scriptBlocks.setVariable || block.type === scriptBlocks.readVariable)) declarations.add(block.id);
+        if (!shared && top.has(block) && (block.type === scriptBlocks.setVariable || block.type === scriptBlocks.readVariable)) declarations.add(block.id);
         else hoisted.push(name);
       }
       const symbols = allocate(requests, blocked);
       const pressure = seen.size + loopLocals;
-      const packed = pressure > directLocalBudget;
+      const packed = pressure + (shared ? definitions.length + 3 : 0) > directLocalBudget;
       if (root === start) this.wrapMain = definitions.length + pressure > directLocalBudget && definitions.length > 0;
       if (packed) {
         for (const [name, symbol] of symbols) symbols.set(name, '_frame.' + symbol);
         parameters.forEach((name, index) => symbols.set(name, `_frame[${index + 1}]`));
         declarations.clear();
       }
-      this.scopes.set(root.id, { symbols, hoisted: hoisted.map(name => symbols.get(name)!), declarations, packed, parameters });
+      const scope = { symbols, hoisted: hoisted.map(name => symbols.get(name)!), declarations, packed, parameters };
+      for (const entry of roots) this.scopes.set(entry.id, scope);
     }
   }
 

@@ -3,7 +3,15 @@ export interface ScriptApprovalView {
   writes: Array<{ target: string; value: string }>;
 }
 
+export type ScriptEventSource = 'on_start' | 'on_run' | `T${number}`;
+export interface ScriptEventStatus {
+  onRun: { periodMs: number; enabled: boolean; calls: number } | null;
+  timers: { channel: number; periodMs: number; remaining: number | null }[];
+}
+
 export interface ScriptRunEntry {
+  source?: ScriptEventSource;
+  sequence?: number;
   atMs: number;
   log?: boolean;
   blockId: string;
@@ -21,6 +29,7 @@ export interface ScriptJudgment {
 }
 
 export interface ScriptVariableScope {
+  source?: ScriptEventSource;
   functionId: string | null;
   inCall: boolean;
   values: { name: string; value: number | string | boolean }[];
@@ -35,8 +44,9 @@ export interface ScriptRunView {
   programHash: string;
   judgments: Record<string, ScriptJudgment>;
   variableScopes: ScriptVariableScope[];
+  events?: ScriptEventStatus;
   pendingWrite: { token: string; target: string; value: string } | null;
-  state: 'running' | 'pausing' | 'paused' | 'stopping' | 'passed' | 'failed' | 'stopped';
+  state: 'running' | 'waiting' | 'pausing' | 'paused' | 'stopping' | 'passed' | 'failed' | 'stopped';
   breakpoints: string[];
   statementIds: string[];
   pause: {
@@ -48,12 +58,13 @@ export interface ScriptRunView {
   } | null;
   startedAtMs: number;
   finishedAtMs: number | null;
-  current: { blockId: string; label: string } | null;
+  current: { blockId: string; label: string; source?: ScriptEventSource } | null;
   entries: ScriptRunEntry[];
+  eventLog?: ScriptRunEntry[];
   completed: number;
   detail: string | null;
 }
 
 export function scriptIsActive(run: ScriptRunView | null | undefined): boolean {
-  return !!run && ['running', 'pausing', 'paused', 'stopping'].includes(run.state);
+  return !!run && ['running', 'waiting', 'pausing', 'paused', 'stopping'].includes(run.state);
 }

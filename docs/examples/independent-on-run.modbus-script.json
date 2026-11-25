@@ -1,0 +1,154 @@
+{
+  "format": "modbus-master-script",
+  "version": 1,
+  "name": "启动循环与独立周期回调",
+  "graph": {
+    "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+        {
+          "id": "start",
+          "type": "mb_start",
+          "x": 30,
+          "y": 30,
+          "next": {
+            "block": {
+              "id": "init-work",
+              "type": "mb_set_var",
+              "fields": {
+                "VARIABLE": "work_count",
+                "OPERAND": 0
+              },
+              "next": {
+                "block": {
+                  "id": "init-beats",
+                  "type": "mb_set_var",
+                  "fields": {
+                    "VARIABLE": "heartbeat_count",
+                    "OPERAND": 0
+                  },
+                  "next": {
+                    "block": {
+                      "id": "period",
+                      "type": "mb_run_period",
+                      "fields": {
+                        "PERIOD": 100
+                      },
+                      "next": {
+                        "block": {
+                          "id": "work",
+                          "type": "mb_repeat_until",
+                          "inputs": {
+                            "CONDITION": {
+                              "block": {
+                                "id": "enough",
+                                "type": "mb_compare_values",
+                                "fields": {
+                                  "OP": "ge",
+                                  "B": 3
+                                },
+                                "inputs": {
+                                  "A": {
+                                    "block": {
+                                      "id": "current-beats",
+                                      "type": "mb_variable",
+                                      "fields": {
+                                        "VARIABLE": "heartbeat_count"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "BODY": {
+                              "block": {
+                                "id": "work-step",
+                                "type": "mb_change_var",
+                                "fields": {
+                                  "VARIABLE": "work_count",
+                                  "OPERAND": 1
+                                }
+                              }
+                            }
+                          },
+                          "next": {
+                            "block": {
+                              "id": "end-cycle",
+                              "type": "mb_run_control",
+                              "fields": {
+                                "MODE": "stop"
+                              },
+                              "next": {
+                                "block": {
+                                  "id": "finished",
+                                  "type": "mb_log",
+                                  "fields": {
+                                    "TEXT": "启动循环结束，心跳总数"
+                                  },
+                                  "inputs": {
+                                    "OPERAND": {
+                                      "block": {
+                                        "id": "total",
+                                        "type": "mb_variable",
+                                        "fields": {
+                                          "VARIABLE": "heartbeat_count"
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "id": "cycle",
+          "type": "mb_on_run",
+          "fields": {
+            "PERIOD": 250
+          },
+          "x": 410,
+          "y": 30,
+          "next": {
+            "block": {
+              "id": "tick",
+              "type": "mb_change_var",
+              "fields": {
+                "VARIABLE": "heartbeat_count",
+                "OPERAND": 1
+              },
+              "next": {
+                "block": {
+                  "id": "report-tick",
+                  "type": "mb_log",
+                  "fields": {
+                    "TEXT": "周期心跳"
+                  },
+                  "inputs": {
+                    "OPERAND": {
+                      "block": {
+                        "id": "reported",
+                        "type": "mb_variable",
+                        "fields": {
+                          "VARIABLE": "heartbeat_count"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -3,6 +3,14 @@ import type { SlaveCommunicationState } from '../shared/snapshot';
 
 export const scriptBlocks = {
   start: 'mb_start',
+  onRun: 'mb_on_run',
+  onTimer: 'mb_on_timer',
+  runPeriod: 'mb_run_period',
+  runControl: 'mb_run_control',
+  timerStart: 'mb_timer_start',
+  timerStop: 'mb_timer_stop',
+  timerElapsed: 'mb_timer_elapsed',
+  timerRunning: 'mb_timer_running',
   read: 'mb_read',
   readVariable: 'mb_read_var',
   setVariable: 'mb_set_var',
@@ -48,9 +56,15 @@ export type ScriptErrorKind = typeof scriptErrors[number][1];
 export const MAX_SCRIPT_BLOCKS = 200;
 export const MAX_SCRIPT_STEPS = 1000;
 export const MAX_SCRIPT_MS = 120000;
+export const DEFAULT_RUN_PERIOD = 100;
+export const MIN_EVENT_PERIOD = 10;
+export const SCRIPT_TIMER_COUNT = 8;
+export const MAX_EVENT_ITERATIONS = 1_000_000;
 
 type ScriptBlockKind = typeof scriptBlocks[keyof typeof scriptBlocks];
 export const scriptNumberSlots: Partial<Record<ScriptBlockKind, Record<string, number>>> = {
+  [scriptBlocks.runPeriod]: { PERIOD: DEFAULT_RUN_PERIOD },
+  [scriptBlocks.timerStart]: { PERIOD: 1000 },
   [scriptBlocks.calculation]: { RESULT: 0 },
   [scriptBlocks.setVariable]: { OPERAND: 0 },
   [scriptBlocks.changeVariable]: { OPERAND: 1 },
@@ -150,6 +164,8 @@ function validGraph(value: unknown): boolean {
       }
     }
     if ((block.data.type === scriptBlocks.stop || block.data.type === scriptBlocks.breakLoop || isScriptDefinition(block.data.type)) && block.data.next) return false;
+    if ([scriptBlocks.start, scriptBlocks.onRun, scriptBlocks.onTimer].some(type => type === block.data.type)
+      && Object.keys(block.data.inputs ?? {}).length) return false;
     if (block.data.next) pending.push(block.data.next.block);
     for (const input of Object.values(block.data.inputs ?? {})) {
       if (input.block !== undefined) pending.push(input.block);
@@ -188,15 +204,23 @@ export const scriptFileSchema = z.object({
 export interface ScriptPointRef { slaveId: string; pointId: string }
 export interface FunctionSignature { id: string; name: string; parameters: string[]; returnsValue: boolean }
 export type ScriptFunction = FunctionSignature & ({ kind: 'procedure'; steps: ScriptStep[] } | { kind: 'calculation'; result: ScriptOperand });
-export interface ScriptProgram { steps: ScriptStep[]; functions: ScriptFunction[] }
+export interface ScriptHandlers<T> {
+  onRun?: { blockId: string; periodMs: number; steps: T[] };
+  timers: { blockId: string; channel: number; steps: T[] }[];
+}
+export interface ScriptProgram { steps: ScriptStep[]; functions: ScriptFunction[]; handlers?: ScriptHandlers<ScriptStep> }
 type FunctionTable = ReadonlyMap<string, FunctionSignature>;
 export function isScriptDefinition(type: string) { return type === scriptBlocks.procedure || type === scriptBlocks.calculation; }
+const clockBlocks = new Set<string>([scriptBlocks.runPeriod, scriptBlocks.runControl, scriptBlocks.timerStart,
+  scriptBlocks.timerStop, scriptBlocks.timerElapsed, scriptBlocks.timerRunning]);
 export function isScriptCall(type: string) { return type === scriptBlocks.call || type === scriptBlocks.callValue; }
 export function splitParameters(text: string): string[] { return text.trim() ? text.split(/[,，]/).map(name => name.trim()) : []; }
 
 export type ScriptOperand =
   | { kind: 'literal'; text: string }
   | { kind: 'number'; value: number }
+  | { kind: 'timerElapsed'; channel: number }
+  | { kind: 'timerRunning'; channel: number }
   | { kind: 'callValue'; functionId: string; args: ScriptOperand[] }
   | { kind: 'arithmetic'; operator: typeof scriptArithmetic[number][1]; left: ScriptOperand; right: ScriptOperand }
   | { kind: 'variable'; name: string }
@@ -223,6 +247,10 @@ export type ScriptStep = { blockId: string } & (
   | { kind: 'wait'; condition: ScriptCondition; timeoutMs: number }
   | { kind: 'assert'; condition: ScriptCondition }
   | { kind: 'delay'; ms: number }
+  | { kind: 'runPeriod'; period: ScriptOperand }
+  | { kind: 'runControl'; enabled: boolean }
+  | { kind: 'timerStart'; channel: number; period: ScriptOperand; count: number }
+  | { kind: 'timerStop'; channel: number }
   | { kind: 'repeat'; count: number; steps: ScriptStep[] }
   | { kind: 'forever'; steps: ScriptStep[] }
   | { kind: 'repeatUntil'; condition: ScriptCondition; steps: ScriptStep[] }
@@ -270,6 +298,15 @@ function enabled(block: ScriptBlock): boolean {
   return block.enabled !== false && !block.disabledReasons?.length;
 }
 
+function timerChannel(block: ScriptBlock) { return block.fields?.TIMER === undefined ? 0 : integer(block, 'TIMER', 0, SCRIPT_TIMER_COUNT - 1); }
+
+function eventPeriod(block: ScriptBlock, scope: CompileScope) {
+  const value = slotOperand(block, 'PERIOD', scope);
+  if (value.kind === 'number' && (!Number.isInteger(value.value) || value.value < MIN_EVENT_PERIOD || value.value > MAX_SCRIPT_MS))
+    throw new ScriptBlockError(`周期须为 ${MIN_EVENT_PERIOD}–${MAX_SCRIPT_MS} ms 的整数`, block.id);
+  return value;
+}
+
 function variableName(block: ScriptBlock): string {
   const name = fieldText(block, 'VARIABLE').trim();
   if (!name && (block.type === scriptBlocks.variable || block.type === scriptBlocks.changeVariable)) throw new ScriptBlockError('请选择运行变量', block.id);
@@ -277,7 +314,7 @@ function variableName(block: ScriptBlock): string {
   return name;
 }
 
-interface CompileScope { functions: FunctionTable; include(id: string, caller: string): number; callCost: number; parameters: string[] }
+interface CompileScope { functions: FunctionTable; include(id: string, caller: string): number; callCost: number; parameters: string[]; cooperative: boolean }
 
 function callOperands(block: ScriptBlock, scope: CompileScope) {
   const functionId = fieldText(block, 'FUNCTION');
@@ -301,6 +338,8 @@ function reporter(block: ScriptBlock, scope: CompileScope): ScriptOperand {
     return { kind: 'variable', name };
   }
   if (block.type === scriptBlocks.number) return { kind: 'number', value: fieldNumber(block, 'NUM') };
+  if (block.type === scriptBlocks.timerElapsed || block.type === scriptBlocks.timerRunning)
+    return { kind: block.type === scriptBlocks.timerElapsed ? 'timerElapsed' : 'timerRunning', channel: timerChannel(block) };
   if (block.type === scriptBlocks.arithmetic) {
     const operator = scriptArithmetic.find(([, key]) => key === fieldText(block, 'OP'))?.[1];
     if (!operator) throw new ScriptBlockError('请选择四则运算符', block.id);
@@ -329,8 +368,8 @@ function slotOperand(block: ScriptBlock, name: string, scope: CompileScope): Scr
   const child = block.inputs?.[name]?.block;
   if (child) {
     const value = reporter(child, scope);
-    if ((block.type === scriptBlocks.arithmetic || block.type === scriptBlocks.changeVariable)
-      && (value.kind === 'boolean' || value.kind === 'condition')) throw new ScriptBlockError('此处需要数值', child.id);
+    if ((block.type === scriptBlocks.arithmetic || block.type === scriptBlocks.changeVariable || name === 'PERIOD')
+      && (value.kind === 'boolean' || value.kind === 'condition' || value.kind === 'timerRunning')) throw new ScriptBlockError('此处需要数值', child.id);
     return value;
   }
   const value = block.fields?.[name] === undefined ? scriptNumberSlots[block.type]?.[name] ?? 0 : fieldNumber(block, name);
@@ -356,6 +395,7 @@ function conditionBlock(block: ScriptBlock, scope: CompileScope): ScriptConditio
     case scriptBlocks.not:
       return { blockId, kind: 'not', operand: condition(block, scope) };
     case scriptBlocks.boolean:
+    case scriptBlocks.timerRunning:
     case scriptBlocks.pointValue:
     case scriptBlocks.parameter:
     case scriptBlocks.callValue:
@@ -404,6 +444,19 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
     const timeout = () => integer(block!, 'TIMEOUT', 50, MAX_SCRIPT_MS);
     count++;
     switch (block.type) {
+      case scriptBlocks.runPeriod: steps.push({ blockId, kind: 'runPeriod', period: eventPeriod(block, scope) }); break;
+      case scriptBlocks.runControl: {
+        const mode = block.fields?.MODE === undefined ? 'start' : fieldText(block, 'MODE');
+        if (mode !== 'start' && mode !== 'stop') throw new ScriptBlockError('请选择周期回调的启停状态', blockId);
+        steps.push({ blockId, kind: 'runControl', enabled: mode === 'start' }); break;
+      }
+      case scriptBlocks.timerStart: {
+        const mode = block.fields?.MODE === undefined ? 'once' : fieldText(block, 'MODE');
+        if (!['once', 'count', 'loop'].includes(mode)) throw new ScriptBlockError('请选择定时器次数', blockId);
+        const count = mode === 'loop' ? 0 : mode === 'once' ? 1 : block.fields?.COUNT === undefined ? 3 : integer(block, 'COUNT', 1, Number.MAX_SAFE_INTEGER);
+        steps.push({ blockId, kind: 'timerStart', channel: timerChannel(block), period: eventPeriod(block, scope), count }); break;
+      }
+      case scriptBlocks.timerStop: steps.push({ blockId, kind: 'timerStop', channel: timerChannel(block) }); break;
       case scriptBlocks.call: steps.push({ blockId, kind: 'call', ...callOperands(block, scope) }); break;
       case scriptBlocks.read: steps.push({ blockId, kind: 'read', ref: pointRef(block), timeoutMs: timeout() }); break;
       case scriptBlocks.readVariable:
@@ -433,10 +486,10 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
       case scriptBlocks.forever:
       case scriptBlocks.repeatUntil:
       case scriptBlocks.repeat: {
-        const times = block.type === scriptBlocks.repeat ? integer(block, 'COUNT', 1, 100) : 1;
+        const times = block.type === scriptBlocks.repeat ? integer(block, 'COUNT', 1, scope.cooperative ? MAX_EVENT_ITERATIONS : 100) : 1;
         const body = stack(block.inputs?.BODY?.block, scope, depth + 1, true);
         if (!body.steps.length) throw new ScriptBlockError('循环内至少需要一个步骤', blockId);
-        count += times * body.count;
+        count += (scope.cooperative ? 1 : times) * body.count;
         if (block.type === scriptBlocks.repeatUntil) steps.push({blockId, kind:'repeatUntil', condition:condition(block, scope), steps:body.steps});
         else if (block.type === scriptBlocks.forever) steps.push({ blockId, kind: 'forever', steps: body.steps });
         else steps.push({ blockId, kind: 'repeat', count: times, steps: body.steps });
@@ -479,8 +532,10 @@ export function compileScriptProgram(graph: ScriptGraph): ScriptProgram {
   const roots = (graph.blocks?.blocks ?? []).filter(enabled);
   const stacks = roots.filter(block => !isScriptDefinition(block.type));
   const start = stacks.find(block => block.type === scriptBlocks.start);
-  if (!start) throw new ScriptBlockError('请添加一个「开始」积木');
-  if (stacks.length !== 1) throw new ScriptBlockError('请将步骤接到同一个「开始」积木下，函数定义可单独放置', stacks.find(block => block !== start)?.id);
+  const events = stacks.filter(block => block.type === scriptBlocks.onRun || block.type === scriptBlocks.onTimer);
+  if (!start && !events.length) throw new ScriptBlockError('请添加一个「开始」积木或事件入口');
+  const stray = stacks.find(block => block !== start && !events.includes(block));
+  if (stray) throw new ScriptBlockError('请将步骤接到同一个「开始」积木或对应事件入口下，函数定义可单独放置', stray.id);
   const headers = new Map<string, FunctionSignature>();
   const definitions = new Map<string, ScriptBlock>();
   const names = new Set<string>();
@@ -500,7 +555,8 @@ export function compileScriptProgram(graph: ScriptGraph): ScriptProgram {
   }
   const compiled = new Map<string, { fn: ScriptFunction; cost: number }>();
   const visiting = new Set<string>();
-  const scopeFor = (parameters: string[]): CompileScope => ({ functions: headers, parameters, callCost: 0, include });
+  const cooperative = events.length > 0;
+  const scopeFor = (parameters: string[]): CompileScope => ({ functions: headers, parameters, callCost: 0, include, cooperative });
   function include(id: string, caller: string): number {
     const cached = compiled.get(id);
     if (cached) return cached.cost;
@@ -525,10 +581,27 @@ export function compileScriptProgram(graph: ScriptGraph): ScriptProgram {
     compiled.set(id, { fn, cost });
     return cost;
   }
-  const { steps } = stack(start.next?.block, scopeFor([]));
-  if (!steps.length) throw new ScriptBlockError('请在「开始」积木下连接至少一个步骤', start.id);
+  const { steps } = stack(start?.next?.block, scopeFor([]));
+  const handlers: ScriptHandlers<ScriptStep> = { timers: [] };
+  const seen = new Set<string>();
+  for (const root of events) {
+    const cycle = root.type === scriptBlocks.onRun;
+    const channel = cycle ? -1 : timerChannel(root);
+    const key = cycle ? 'on_run' : `T${channel}`;
+    if (seen.has(key)) throw new ScriptBlockError(`${key} 只能有一个启用的入口`, root.id);
+    seen.add(key);
+    const body = stack(root.next?.block, scopeFor([])).steps;
+    if (cycle) {
+      const periodMs = root.fields?.PERIOD === undefined ? DEFAULT_RUN_PERIOD : integer(root, 'PERIOD', MIN_EVENT_PERIOD, MAX_SCRIPT_MS);
+      if (body.length) handlers.onRun = { blockId: root.id, periodMs, steps: body };
+    } else if (body.length) handlers.timers.push({ blockId: root.id, channel, steps: body });
+  }
+  if (!steps.length && !handlers.onRun && !handlers.timers.length)
+    throw new ScriptBlockError('请在「开始」积木或事件入口下连接至少一个步骤', start?.id ?? events[0]?.id);
+  handlers.timers.sort((a, b) => a.channel - b.channel);
   const functions = [...definitions.keys()].sort().map(id => { include(id, id); return compiled.get(id)!.fn; });
-  return { steps, functions };
+  const usesClock = handlers.onRun || handlers.timers.length || [...scriptGraphBlocks(graph)].some(block => enabled(block) && clockBlocks.has(block.type));
+  return { steps, functions, ...(usesClock ? { handlers } : {}) };
 }
 
 export function compileMasterScript(graph: ScriptGraph): ScriptStep[] {
@@ -536,7 +609,10 @@ export function compileMasterScript(graph: ScriptGraph): ScriptStep[] {
 }
 
 export function newScriptGraph(id: string): ScriptGraph {
-  return { blocks: { languageVersion: 0, blocks: [{ type: scriptBlocks.start, id, x: 30, y: 30 }] } };
+  return { blocks: { languageVersion: 0, blocks: [
+    { type: scriptBlocks.start, id, x: 30, y: 30 },
+    { type: scriptBlocks.onRun, id: id.slice(0, 230) + '-on-run', fields: { PERIOD: DEFAULT_RUN_PERIOD }, x: 420, y: 30 },
+  ] } };
 }
 
 export function* scriptGraphBlocks(graph: ScriptGraph): Generator<ScriptBlock> {
@@ -572,6 +648,7 @@ export function scriptVariableGroups(graph: ScriptGraph): ScriptVariableGroup[] 
   };
   for (const root of graph.blocks?.blocks ?? []) {
     if (!enabled(root)) continue;
+    if (root.type === scriptBlocks.onRun || root.type === scriptBlocks.onTimer) main.label = '脚本共享';
     if (isScriptDefinition(root.type)) {
       const group: ScriptVariableGroup = { functionId: root.id, label: fieldText(root, 'NAME').trim() || '未命名函数', names: new Map() };
       for (const name of splitParameters(fieldText(root, 'PARAMS'))) if (name) group.names.set(name, root.id);
@@ -583,6 +660,7 @@ export function scriptVariableGroups(graph: ScriptGraph): ScriptVariableGroup[] 
 }
 
 const statementTypes = new Set<string>([scriptBlocks.read, scriptBlocks.readVariable, scriptBlocks.write, scriptBlocks.log,
+  scriptBlocks.runPeriod, scriptBlocks.runControl, scriptBlocks.timerStart, scriptBlocks.timerStop,
   scriptBlocks.setVariable, scriptBlocks.changeVariable,
   scriptBlocks.call,
   scriptBlocks.wait, scriptBlocks.assert, scriptBlocks.delay, scriptBlocks.repeat, scriptBlocks.forever,

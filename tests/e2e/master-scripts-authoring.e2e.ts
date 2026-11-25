@@ -136,8 +136,11 @@ describe('Author and execute a master script in the packaged editor', () => {
     await browser.waitUntil(async () => (await snapshot()).workspace.masterScripts?.some(script => script.name === name) ?? false);
     const saved = (await snapshot()).workspace.masterScripts!.find(script => script.name === name)!;
     const blocks = saved.graph.blocks?.blocks ?? [];
-    expect(blocks).toHaveLength(1);
-    const captureStep = blocks[0]?.next?.block;
+    expect(blocks.map(block => block.type).sort()).toEqual(['mb_on_run', 'mb_start']);
+    const dormantCycle = blocks.find(block => block.type === 'mb_on_run');
+    expect(dormantCycle?.fields?.PERIOD).toBe(100);
+    expect(dormantCycle?.next).toBeUndefined();
+    const captureStep = blocks.find(block => block.type === 'mb_start')?.next?.block;
     const writeStep = captureStep?.next?.block;
     const readStep = writeStep?.next?.block;
     expect(captureStep).toMatchObject({ id: captureId, type: 'mb_read_var', fields: { POINT: '["slave-1","pt-speed"]', VARIABLE: '起始转速' } });

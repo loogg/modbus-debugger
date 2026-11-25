@@ -357,6 +357,26 @@ it('removes an unsent script write from a busy connection queue when stopped', a
   } finally { await h.manager.stop(); }
 });
 
+it('disarms event callbacks when a different workspace is opened', async () => {
+  const h = await setup();
+  try {
+    const graph = graphFor({ id: 'arm', type: 'mb_timer_start', fields: { TIMER: 0, PERIOD: 30, MODE: 'loop' } });
+    graph.blocks!.blocks.push({ id: 'event', type: 'mb_on_timer', fields: { TIMER: 0 }, next: { block: write } });
+    const script = scriptDef(graph);
+    expect(await h.manager.handleCommand({ type: 'script.save', script, expectedRevision: null })).toMatchObject({ ok: true });
+    expect(await h.manager.handleCommand({ type: 'script.start', scriptId: script.id, revision: 0 })).toMatchObject({ ok: true });
+    await expect.poll(() => h.transport.sent.some(frame => frame[7] === 6)).toBe(true);
+    const target = path.join(h.root, 'new.workspace.json');
+    fs.writeFileSync(target, JSON.stringify({ ...h.service.current, name: 'next', masterScripts: [] }));
+    expect(await h.manager.handleCommand({ type: 'workspace.open', path: target })).toMatchObject({ ok: true });
+    await expect.poll(() => h.manager.buildSnapshot().scriptRun?.state).toBe('stopped');
+    const writes = h.transport.sent.filter(frame => frame[7] === 6).length;
+    await new Promise(resolve => setTimeout(resolve, 90));
+    expect(h.transport.sent.filter(frame => frame[7] === 6)).toHaveLength(writes);
+    expect(h.manager.buildSnapshot().scriptRun?.events?.timers).toEqual([]);
+  } finally { await h.manager.stop(); }
+});
+
 it('settles an already-sent write and stops before the next step', async () => {
   const h = await setup();
   try {

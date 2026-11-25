@@ -150,6 +150,10 @@
 .script-lua-divider:focus-visible::after, .script-lua-divider:hover::after { background: #1971ad; }
 .script-results { display: flex; flex-direction: column; flex: none; max-height: 150px; overflow: hidden; border-top: 1px solid #d9dee5; background: white; }
 .script-results-heading { flex: none; flex-wrap: wrap; column-gap: 12px; row-gap: 2px; }
+.script-event-status { color: #45596b; font-size: 12px; font-variant-numeric: tabular-nums; }
+.script-editor .script-event-hint { font-size: 12px; font-weight: 400; }
+.script-log-filter { margin-inline-start: auto; border-radius: 4px; padding: 2px 6px; color: #42586b; font-size: 12px; }
+.script-log-filter[aria-pressed="true"] { background: #dfebf5; color: #175b8b; }
 .script-result-rows { overflow: auto; padding: 4px 12px 7px; border-top: 1px solid #e1e5e9; }
 .script-result-rows:empty { display: none; }
 @media (max-height: 740px) {

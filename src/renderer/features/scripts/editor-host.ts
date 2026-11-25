@@ -1,7 +1,7 @@
 import * as Blockly from 'blockly/core';
 import { isScriptStatement, MAX_SCRIPT_BLOCKS, type ScriptGraph } from '../../../domain/master-script';
 import type { Workspace } from '../../../domain/model';
-import { bindings, inspectScriptDraft, graphOf, makeFieldOptions } from './blocks';
+import { bindings, inspectScriptDraft, graphOf, makeFieldOptions, updateCycleHints } from './blocks';
 import { scriptToolbox } from './block-palette';
 import type { ScriptPreview } from './lua-source';
 import { synchronizeScriptFunctions } from './function-blocks';
@@ -118,6 +118,7 @@ export const mountScriptEditor: MountScriptEditor = (element, input) => {
   try { loadScriptGraph(input().graph, workspace); }
   catch (error) { workspace.dispose(); throw error; }
   finally { Blockly.Events.enable(); }
+  updateCycleHints(workspace);
   const updateBreakpoints = () => {
     const ids = new Set(input().breakpoints);
     for (const block of workspace.getAllBlocks(false)) {
@@ -154,6 +155,7 @@ export const mountScriptEditor: MountScriptEditor = (element, input) => {
     if (block) input().onSelect?.(block.isShadow() ? block.getParent()?.id ?? null : block.id);
     else if (click?.targetType === 'workspace') input().onSelect?.(null);
     if (!event.isUiEvent && event.type !== Blockly.Events.FINISHED_LOADING) {
+      updateCycleHints(workspace);
       synchronizeScriptFunctions(workspace);
       input().onChange(graphOf(workspace));
     }

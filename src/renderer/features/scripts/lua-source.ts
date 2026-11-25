@@ -1,6 +1,7 @@
 import type { Block } from 'blockly/core';
 import { LuaGenerator } from 'blockly/lua';
 import { LuaNames } from './lua-names';
+import type { ScriptHandlers, ScriptStep } from '../../../domain/master-script';
 
 export interface LuaSource {
   text: string;
@@ -18,18 +19,43 @@ export class ScriptLuaGenerator extends LuaGenerator {
   private ids: string[] = [];
   private marker = '';
   names!: LuaNames;
+  eventDriven = false;
 
-  preview(start: Block, definitions: Block[]): LuaSource {
+  preview(start: Block | null, definitions: Block[], workspace: Block['workspace'], handlers?: ScriptHandlers<ScriptStep>): LuaSource {
     this.ids = [];
     // Numeric markers never contain user-supplied block IDs. The per-pass prefix also
     // keeps arbitrary Blockly comments distinct from the annotations.
     this.marker = '\x00' + crypto.randomUUID() + ':';
-    this.init(start.workspace);
-    this.names = new LuaNames(start, definitions);
-    const parts = this.names.definitionIds.map(id => this.blockToCode(start.workspace.getBlockById(id)) as string);
-    const main = this.names.preamble(start) + this.blockToCode(start);
-    parts.push(this.annotate(start.id, this.names.wrapMain
-      ? 'local function _run_main()\n' + this.prefixLines(main, '  ') + 'end\n_run_main()\n' : main));
+    this.init(workspace);
+    this.eventDriven = !!handlers;
+    const cycle = handlers?.onRun ? workspace.getBlockById(handlers.onRun.blockId)! : null;
+    const timers = handlers?.timers.map(handler => workspace.getBlockById(handler.blockId)!) ?? [];
+    const events = [...(cycle ? [cycle] : []), ...timers];
+    this.names = new LuaNames(start, definitions, handlers ? events : undefined);
+    const parts = this.names.definitionIds.map(id => this.blockToCode(workspace.getBlockById(id)) as string);
+    if (handlers) {
+      const declarations = this.names.preamble(start ?? events[0]!);
+      if (declarations) parts.unshift(declarations);
+      const body = (root: Block, indent: string) => this.prefixLines(String(this.blockToCode(root.getNextBlock())), indent);
+      const exports: string[] = [];
+      for (const [name, root] of [['on_start', start], ['on_run', cycle]] as const) {
+        if (!root) continue;
+        parts.push(this.annotate(root.id, `local function ${name}()\n${body(root, '  ')}end\n`));
+        exports.push(`${name} = ${name}`);
+      }
+      if (handlers.onRun) exports.push(`run_period_ms = ${handlers.onRun.periodMs}`);
+      if (timers.length) {
+        const arms = timers.map((timer, i) => this.annotate(timer.id,
+          `  ${i ? 'elseif' : 'if'} _timer_id == ${handlers.timers[i]!.channel} then\n${body(timer, '    ')}`));
+        parts.push(`local function on_timer(_timer_id)\n${arms.join('')}  end\nend\n`);
+        exports.push('on_timer = on_timer');
+      }
+      parts.push(`return { ${exports.join(', ')} }`);
+    } else if (start) {
+      const main = this.names.preamble(start) + this.blockToCode(start);
+      parts.push(this.annotate(start.id, this.names.wrapMain
+        ? 'local function _run_main()\n' + this.prefixLines(main, '  ') + 'end\n_run_main()\n' : main));
+    }
     const annotated = this.finish(parts.join('\n')).trim();
     const ranges: LuaSource['ranges'] = new Map();
     const stack: string[] = [];

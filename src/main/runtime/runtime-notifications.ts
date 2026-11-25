@@ -2,9 +2,13 @@ import type { ReadRange } from '../../domain/point-access';
 
 export type RuntimeChange =
   | { kind: 'sample'; blockKey: string; range: ReadRange }
+  | { kind: 'variable'; name: string }
+  | { kind: 'timer'; channel: number; elapsed?: boolean }
   | { kind: 'slaveState'; slaveId: string };
 
 function matches(source: RuntimeChange, change: RuntimeChange): boolean {
+  if (source.kind === 'variable') return change.kind === 'variable' && source.name === change.name;
+  if (source.kind === 'timer') return change.kind === 'timer' && source.channel === change.channel;
   if (source.kind === 'slaveState') return change.kind === 'slaveState' && change.slaveId === source.slaveId;
   return change.kind === 'sample' && source.blockKey === change.blockKey
     && source.range.offset >= change.range.offset

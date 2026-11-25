@@ -4,6 +4,7 @@ import { scriptBlocks } from '../../../domain/master-script';
 export const blockColours = {
   device: '#25709f', entry: '#885a09', control: '#a35316', condition: '#435eae',
   variable: '#aa356d', math: '#347343', log: '#19706d', function: '#7350a0',
+  timer: '#545494',
 };
 
 type Entry = [keyof typeof scriptBlocks, string];
@@ -12,8 +13,15 @@ const categories: Category[] = [
   { name: '设备操作', colour: blockColours.device, blocks: [
     ['read', '等待新采样 读取 点位'], ['write', '写入点位 写为'], ['readVariable', '读取到变量 点位 采样'],
     ['pointValue', '点位值 确认值']] },
+  { name: '事件', colour: blockColours.entry, blocks: [
+    ['start', '开始 当脚本启动 on_start 初始化'], ['onRun', '周期运行 on_run 每毫秒'],
+    ['runPeriod', '设置周期 set_run_period'], ['runControl', '启用 暂停 周期回调 start_run stop_run']] },
+  { name: '定时器', colour: blockColours.timer, blocks: [
+    ['onTimer', '定时器到期 on_timer 触发'], ['timerStart', '启动重置定时器 start_timer 一次 循环 次数'],
+    ['timerStop', '停止定时器 stop_timer'], ['timerElapsed', '已过时间 毫秒 get_timer_value'],
+    ['timerRunning', '定时器正在运行 is_timer_running']] },
   { name: '流程', colour: blockColours.control, blocks: [
-    ['start', '开始 启动 入口'], ['branch', '如果 否则 分支 判断'], ['repeat', '重复 次 计次循环'],
+    ['branch', '如果 否则 分支 判断'], ['repeat', '重复 次 计次循环'],
     ['repeatUntil', '重复直到 循环'], ['forever', '主循环 一直重复'], ['delay', '延时 等待 毫秒'],
     ['wait', '等待条件 超时'], ['assert', '断言'], ['attempt', '尝试执行 出错时 异常处理'],
     ['breakLoop', '跳出循环'], ['stop', '停止流程']] },
@@ -48,7 +56,7 @@ function namedVariables(names: readonly string[]) {
 
 export function variablePalette(names: readonly string[]): utils.toolbox.FlyoutItemInfoArray {
   return [...variableCategory.blocks.map(blockItem), ...(names.length ? [
-    { kind: 'label', text: '主流程变量', id: undefined }, ...namedVariables(names),
+    { kind: 'label', text: '脚本变量', id: undefined }, ...namedVariables(names),
   ] : [])];
 }
 

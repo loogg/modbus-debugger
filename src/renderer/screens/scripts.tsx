@@ -15,7 +15,7 @@ import { useConfirm } from '../workbench/use-confirm';
 import { useDirtyGuard, useViewDocument, useViewWindow } from '../workbench/view-context';
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
-const runLabels = { running: '运行中', pausing: '等待当前步骤完成', paused: '已暂停', stopping: '停止中', passed: '通过', failed: '失败', stopped: '已停止' } as const;
+const runLabels = { running: '运行中', waiting: '等待事件', pausing: '等待当前步骤完成', paused: '已暂停', stopping: '停止中', passed: '通过', failed: '失败', stopped: '已停止' } as const;
 const pauseLabels = { entry: '调试起点', breakpoint: '命中断点', step: '单步完成', pause: '手动暂停' } as const;
 interface PanePreferences { wide?: boolean; compact?: boolean; width?: number }
 
@@ -132,6 +132,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
   const [error, setError] = useState('');
   const [preview, setPreview] = useState<ScriptPreview | null>(null);
   const [luaTab, setLuaTab] = useState<LuaTab>('code');
+  const [logsOnly, setLogsOnly] = useState(false);
   const [selection, setSelection] = useState<ScriptSelection>({ blockId: null });
   const selected = selection.blockId;
   const inspectBlock = useCallback((blockId: string | null, reveal = false, line?: number) => {
@@ -175,7 +176,8 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
     return () => { active = false; };
   }, [program]);
   const matchesRun = savedRun || (!!fingerprint && fingerprint.program === program && fingerprint.hash === run?.programHash);
-  const logClock = run?.entries.some(entry => entry.log) ? createTimeMsFormatter() : undefined;
+  const shownEntries = run?.events && logsOnly ? run.eventLog ?? [] : run?.entries ?? [];
+  const logClock = shownEntries.some(entry => entry.log) ? createTimeMsFormatter() : undefined;
   const live = ongoing(run) ? run : null;
   // A draft can contain steps added after the current run was compiled.
   const breakpoints = live
@@ -326,7 +328,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
         <Button size="sm" variant="primary" disabled={working} onClick={() => void perform(() => debugControl('continue'))}>继续</Button>
         <Button size="sm" disabled={working} onClick={() => void perform(() => debugControl('step'))}>单步</Button>
       </>}
-      {(run?.state === 'running' || run?.state === 'pausing') && <Button size="sm" disabled={working || run.state === 'pausing'} title="完成当前积木后暂停" onClick={() => void perform(() => debugControl('pause'))}>暂停</Button>}
+      {(run?.state === 'running' || run?.state === 'waiting' || run?.state === 'pausing') && <Button size="sm" disabled={working || run.state === 'pausing'} title="暂停事件和脚本执行" onClick={() => void perform(() => debugControl('pause'))}>暂停</Button>}
       {ongoing(report) && report && <Button size="sm" disabled={report.state === 'stopping'} onClick={() => void command({ type: 'script.stop', runId: report.id })}>停止</Button>}
       <Button size="sm" aria-expanded={showLua} title="Lua 预览、变量观察与静态校验" onClick={() => setShowLua(!showLua)}>{showLua ? '收起检查器' : 'Lua / 变量'}</Button>
       <Button size="sm" disabled={working || conflict} onClick={() => void perform(exportScript)}>导出</Button>
@@ -368,7 +370,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
     </section>}
     {run?.pause && <section className="script-debug-pause" aria-label="调试暂停">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1"><strong>{pauseLabels[run.pause.reason]}</strong>
-        <span>{run.current?.label}</span>{run.pause.writePreview !== undefined && <span>待写值 <b className="mono">{run.pause.writePreview}</b></span>}
+        <span>{run.current?.source && `${run.current.source} · `}{run.current?.label}</span>{run.pause.writePreview !== undefined && <span>待写值 <b className="mono">{run.pause.writePreview}</b></span>}
         {run.pause.writeError && <span className="text-err">写值不可用 · {run.pause.writeError}</span>}</div>
       {run.pause.variables.length > 0 && <details><summary>运行变量（{run.pause.variables.length}）</summary>
         <dl>{run.pause.variables.map(variable => <div key={variable.name}><dt>{variable.name}</dt><dd>{variable.value}</dd></div>)}</dl></details>}
@@ -397,19 +399,24 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
         <h2 className="font-semibold">运行日志</h2>
         {run ? <><span>{runLabels[run.state]}</span>
         <span className="text-xs text-ink2">已结算 {run.completed} 步</span>
+        {run.events?.onRun && <span className="script-event-status">on_run · {run.events.onRun.periodMs} ms · {run.events.onRun.calls} 次{ongoing(run) && !run.events.onRun.enabled && ' · 周期已暂停'}</span>}
+        {run.events?.timers.map(timer => <span className="script-event-status" key={timer.channel}>T{timer.channel} · {timer.periodMs} ms · {timer.remaining === null ? '循环' : `剩余 ${timer.remaining} 次`}</span>)}
         {run.current && !run.pause && <span className="break-words text-xs">{run.current.label}</span>}
         {run.detail && <span className="break-words text-xs">{run.detail}</span>}
+        {run.events && <button type="button" className="script-log-filter focus-ring" aria-pressed={logsOnly}
+          onClick={() => setLogsOnly(!logsOnly)}>只看日志</button>}
         {!matchesRun && <span className="text-xs text-ink2">日志来自运行时的版本，点击可定位草稿中保留的积木。</span>}
         </> : <span className="text-xs text-ink2">暂无运行记录</span>}
       </div>
       {run && <ol className="script-result-rows space-y-1 text-xs" aria-label="步骤结果">
-        {run.entries.slice().reverse().map((entry, index) => <li key={`${run.completed - index}-${entry.blockId}`}>
+        {shownEntries.slice().reverse().map((entry, index) => <li key={`${entry.sequence ?? run.completed - index}-${entry.blockId}`}>
           <button disabled={!draftBlocks.has(entry.blockId)} title={!draftBlocks.has(entry.blockId) ? '此积木已移除' : undefined}
             className="focus-ring w-full break-words text-left enabled:hover:text-accent" onClick={() => {
             setLookup(null); setLuaTab('code'); setShowLua(true); inspectBlock(entry.blockId, true);
           }}>
             {entry.log && <time className="mono mr-2 text-ink2" dateTime={new Date(entry.atMs).toISOString()}>{logClock?.format(entry.atMs)}</time>}
             <span className={entry.log ? 'text-accent' : entry.result === 'ok' ? 'text-ok' : entry.result === 'failed' ? 'text-err' : 'text-ink2'}>{entry.log ? '日志' : entry.handled ? '已处理失败' : entry.result === 'ok' ? '通过' : entry.result === 'failed' ? '失败' : '停止'}</span>
+            {entry.source && <span className="mono"> · {entry.source}</span>}
             {!entry.log && <> · {entry.label}</>} · {entry.detail}
           </button>
         </li>)}

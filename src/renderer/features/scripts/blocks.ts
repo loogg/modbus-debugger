@@ -1,6 +1,7 @@
 import * as Blockly from 'blockly/core';
 import * as zhHans from 'blockly/msg/zh-hans';
 import { blockColours } from './block-palette';
+import { DEFAULT_RUN_PERIOD, MAX_EVENT_ITERATIONS, MIN_EVENT_PERIOD, SCRIPT_TIMER_COUNT } from '../../../domain/master-script';
 import { Order } from 'blockly/lua';
 import { compileScriptProgram, fieldText, isScriptDefinition, MAX_SCRIPT_MS, ScriptBlockError, scriptArithmetic, scriptBlocks, scriptErrors, scriptGraphBlocks, scriptPointKey, scriptRelations, scriptStates, splitParameters, type ScriptGraph } from '../../../domain/master-script';
 import type { Workspace } from '../../../domain/model';
@@ -163,9 +164,55 @@ function installBlocks() {
   } };
   Blockly.Blocks[scriptBlocks.start] = { init(this: Blockly.Block) {
     this.hat = 'cap';
-    this.appendDummyInput().appendField('开始');
+    this.appendDummyInput().appendField('开始').appendField('on_start');
     this.setNextStatement(true);
     this.setColour(blockColours.entry);
+  } };
+  const channelField = () => new Blockly.FieldDropdown(Array.from({ length: SCRIPT_TIMER_COUNT }, (_, id): Option => [`T${id}`, String(id)]));
+  Blockly.Blocks[scriptBlocks.onRun] = { init(this: Blockly.Block) {
+    this.hat = 'cap';
+    this.setNextStatement(true); this.setColour(blockColours.entry);
+    this.appendDummyInput().appendField('on_run').appendField('每')
+      .appendField(new Blockly.FieldNumber(DEFAULT_RUN_PERIOD, MIN_EVENT_PERIOD, MAX_SCRIPT_MS, 1), 'PERIOD').appendField('ms');
+    this.appendDummyInput('EMPTY_HINT').appendField(new Blockly.FieldLabel('接入步骤后启用', 'script-event-hint'));
+    this.setInputsInline(false);
+    this.setTooltip('Main 按周期调用。接入启用的步骤后生效。');
+  } };
+  Blockly.Blocks[scriptBlocks.onTimer] = { init(this: Blockly.Block) {
+    this.hat = 'cap';
+    this.setNextStatement(true); this.setColour(blockColours.timer);
+    this.appendDummyInput().appendField('on_timer').appendField(channelField(), 'TIMER').appendField('到期');
+    this.setTooltip('在此通道启动并到期时执行一次回调。');
+  } };
+  Blockly.Blocks[scriptBlocks.runPeriod] = { init(this: Blockly.Block) {
+    action(this, '设置 on_run 周期', blockColours.entry);
+    numberSlot(this, 'PERIOD', true); this.appendDummyInput().appendField('ms'); this.setInputsInline(true);
+  } };
+  Blockly.Blocks[scriptBlocks.runControl] = { init(this: Blockly.Block) {
+    action(this, 'on_run', blockColours.entry).appendField(new Blockly.FieldDropdown([['启用', 'start'], ['暂停', 'stop']]), 'MODE');
+  } };
+  Blockly.Blocks[scriptBlocks.timerStart] = { init(this: Blockly.Block) {
+    action(this, '启动', blockColours.timer).appendField(channelField(), 'TIMER');
+    numberSlot(this, 'PERIOD', true).appendField('周期');
+    const count = new Blockly.FieldNumber(3, 1, Number.MAX_SAFE_INTEGER, 1);
+    const mode = new Blockly.FieldDropdown([['一次', 'once'], ['指定次数', 'count'], ['循环', 'loop']], value => {
+      count.setVisible(value === 'count'); return value;
+    });
+    this.appendDummyInput().appendField('ms').appendField(mode, 'MODE').appendField(count, 'COUNT');
+    count.setVisible(false);
+    this.setInputsInline(true);
+    this.setTooltip('启动通道。再次启动同一通道会用新的周期和次数重新计时。');
+  } };
+  Blockly.Blocks[scriptBlocks.timerStop] = { init(this: Blockly.Block) {
+    action(this, '停止', blockColours.timer).appendField(channelField(), 'TIMER');
+  } };
+  Blockly.Blocks[scriptBlocks.timerElapsed] = { init(this: Blockly.Block) {
+    valueReporter(this, blockColours.timer);
+    this.appendDummyInput().appendField(channelField(), 'TIMER').appendField('本周期已过 ms');
+  } };
+  Blockly.Blocks[scriptBlocks.timerRunning] = { init(this: Blockly.Block) {
+    this.setOutput(true, ['Boolean', 'ScriptValue']); this.setColour(blockColours.timer);
+    this.appendDummyInput().appendField(channelField(), 'TIMER').appendField('正在运行');
   } };
   Blockly.Blocks[scriptBlocks.read] = { init(this: Blockly.Block) {
     action(this, '等待新采样').appendField(bindingField(this, 'read'), 'POINT');
@@ -216,7 +263,7 @@ function installBlocks() {
     action(this, '延时', controlColor).appendField(new Blockly.FieldNumber(500, 0, MAX_SCRIPT_MS, 1), 'MS').appendField('ms');
   } };
   Blockly.Blocks[scriptBlocks.repeat] = { init(this: Blockly.Block) {
-    action(this, '重复', controlColor).appendField(new Blockly.FieldNumber(3, 1, 100, 1), 'COUNT').appendField('次');
+    action(this, '重复', controlColor).appendField(new Blockly.FieldNumber(3, 1, MAX_EVENT_ITERATIONS, 1), 'COUNT').appendField('次');
     this.appendStatementInput('BODY');
   } };
   Blockly.Blocks[scriptBlocks.forever] = { init(this: Blockly.Block) {
@@ -391,7 +438,7 @@ function includesDeviceOperand(block: Blockly.Block | null): boolean {
 
 // A device predicate can be indeterminate until a confirmed sample arrives.
 function nativePredicate(block: Blockly.Block | null): boolean {
-  if (!block || block.type === scriptBlocks.boolean) return true;
+  if (!block || block.type === scriptBlocks.boolean || block.type === scriptBlocks.timerRunning) return true;
   if (block.type === scriptBlocks.compareValues) return !luaGenerator.names.needsHostCheck(block) && !includesDeviceOperand(block);
   if (block.type === scriptBlocks.callValue && !includesDeviceOperand(block)) {
     const fn = block.workspace.getBlockById(field(block, 'FUNCTION'))!;
@@ -425,6 +472,16 @@ function loopLuaBody(block: Blockly.Block): string {
 
 function installLua() {
   luaGenerator.forBlock[scriptBlocks.start] = () => '';
+  luaGenerator.forBlock[scriptBlocks.onRun] = luaGenerator.forBlock[scriptBlocks.onTimer] = () => '';
+  luaGenerator.forBlock[scriptBlocks.runPeriod] = block => `rt.set_run_period(${slot(block, 'PERIOD')})\n`;
+  luaGenerator.forBlock[scriptBlocks.runControl] = block => `rt.${field(block, 'MODE') === 'start' ? 'start_run' : 'stop_run'}()\n`;
+  luaGenerator.forBlock[scriptBlocks.timerStart] = block => {
+    const mode = field(block, 'MODE');
+    return `rt.start_timer(${field(block, 'TIMER')}, ${slot(block, 'PERIOD')}, ${mode === 'loop' ? 0 : mode === 'once' ? 1 : field(block, 'COUNT')})\n`;
+  };
+  luaGenerator.forBlock[scriptBlocks.timerStop] = block => `rt.stop_timer(${field(block, 'TIMER')})\n`;
+  luaGenerator.forBlock[scriptBlocks.timerElapsed] = block => [`rt.get_timer_value(${field(block, 'TIMER')})`, Order.HIGH];
+  luaGenerator.forBlock[scriptBlocks.timerRunning] = block => [`rt.is_timer_running(${field(block, 'TIMER')})`, Order.HIGH];
   luaGenerator.forBlock[literalShadow] = block => [quoteLua(field(block, 'TEXT')), Order.ATOMIC];
   luaGenerator.forBlock[scriptBlocks.read] = block => `modbus.read(${pointArgs(block)}, ${field(block, 'TIMEOUT')})\n`;
   luaGenerator.forBlock[scriptBlocks.readVariable] = block => `${luaGenerator.names.assignment(block)} = modbus.value(${pointArgs(block)})\n`;
@@ -488,9 +545,10 @@ function installLua() {
     return code + 'end\n';
   };
   luaGenerator.forBlock[scriptBlocks.delay] = block => `modbus.delay(${field(block, 'MS')})\n`;
-  luaGenerator.forBlock[scriptBlocks.repeat] = block => `for _step = 1, ${field(block, 'COUNT')} do\n${loopLuaBody(block)}end\n`;
-  luaGenerator.forBlock[scriptBlocks.forever] = block => `while true do\n${loopLuaBody(block)}  modbus.yield_io()\nend\n`;
-  luaGenerator.forBlock[scriptBlocks.repeatUntil] = block => `while not ${branchTest(block, 'CONDITION', Order.UNARY)} do\n${loopLuaBody(block)}  modbus.yield_io()\nend\n`;
+  const checkpoint = (unbounded = false) => luaGenerator.eventDriven ? '  coroutine.yield()\n' : unbounded ? '  modbus.yield_io()\n' : '';
+  luaGenerator.forBlock[scriptBlocks.repeat] = block => `for _step = 1, ${field(block, 'COUNT')} do\n${loopLuaBody(block)}${checkpoint()}end\n`;
+  luaGenerator.forBlock[scriptBlocks.forever] = block => `while true do\n${loopLuaBody(block)}${checkpoint(true)}end\n`;
+  luaGenerator.forBlock[scriptBlocks.repeatUntil] = block => `while not ${branchTest(block, 'CONDITION', Order.UNARY)} do\n${loopLuaBody(block)}${checkpoint(true)}end\n`;
   luaGenerator.forBlock[scriptBlocks.stop] = () => 'modbus.stop()\n';
   luaGenerator.forBlock[scriptBlocks.breakLoop] = () => 'modbus.break_loop()\n';
   luaGenerator.forBlock[scriptBlocks.attempt] = block => {
@@ -515,8 +573,8 @@ function installLua() {
 
 export function generateScriptLuaSource(workspace: Blockly.Workspace, graph: ScriptGraph): LuaSource {
   const program = compileScriptProgram(graph);
-  const start = workspace.getBlocksByType(scriptBlocks.start, false).find(block => block.isEnabled())!;
-  return luaGenerator.preview(start, program.functions.map(fn => workspace.getBlockById(fn.id)!));
+  const start = workspace.getBlocksByType(scriptBlocks.start, false).find(block => block.isEnabled()) ?? null;
+  return luaGenerator.preview(start, program.functions.map(fn => workspace.getBlockById(fn.id)!), workspace, program.handlers);
 }
 
 export function generateScriptLua(workspace: Blockly.Workspace, graph: ScriptGraph): string {
@@ -543,6 +601,18 @@ export function inspectScriptDraft(workspace: Blockly.Workspace, graph: ScriptGr
 
 export function graphOf(workspace: Blockly.Workspace): ScriptGraph {
   return saveScriptGraph(workspace);
+}
+
+export function updateCycleHints(workspace: Blockly.WorkspaceSvg) {
+  for (const root of workspace.getBlocksByType(scriptBlocks.onRun, false)) {
+    let next = root.getNextBlock();
+    while (next && !next.isEnabled()) next = next.getNextBlock();
+    const hint = root.getInput('EMPTY_HINT');
+    if (hint && hint.isVisible() !== !next) {
+      hint.setVisible(!next);
+      if (root instanceof Blockly.BlockSvg) root.queueRender();
+    }
+  }
 }
 
 installBlocks();

@@ -3,6 +3,8 @@ import { expect, it } from 'vitest';
 import type { ScriptBlock } from '../../src/domain/master-script';
 import { loadScriptGraph } from '../../src/renderer/features/scripts/block-controls';
 import { generateScriptLuaSource, graphOf } from '../../src/renderer/features/scripts/blocks';
+import { scriptFileSchema } from '../../src/domain/master-script';
+import eventExample from '../../docs/examples/independent-on-run.modbus-script.json';
 
 const pin = (block: ScriptBlock) => ({ block });
 const param = (id: string, index: number): ScriptBlock => ({ id, type: 'mb_parameter', fields: { PARAM: String(index) } });
@@ -92,4 +94,37 @@ it('keeps the full 200-argument graph representable within Lua 5.4 local/registe
   expect(text).toContain('local function wide(...)\n  local _frame = {...}\n  _frame.result = _frame[200]');
   expect(text).toContain('wide(table.unpack({');
   expect(text).toContain('41}, 1, 200))');
+});
+it('exports separate host callbacks with shared locals, real coroutine yields and clickable source lines', () => {
+  const graph = scriptFileSchema.parse(eventExample).graph;
+  const { text, lines, ranges } = generate(graph.blocks!.blocks);
+  expect(text).toContain('local work_count, heartbeat_count');
+  expect(text).toContain('local function on_start()');
+  expect(text).toContain('rt.set_run_period(100)');
+  expect(text).toContain('coroutine.yield()');
+  expect(text).toContain('local function on_run()');
+  expect(text).toContain('return { on_start = on_start, on_run = on_run, run_period_ms = 250 }');
+  expect(text).not.toContain('start_timer');
+  expect(lines[ranges.get('tick')!.first]).toMatchObject({ blockId: 'tick', text: '  heartbeat_count = heartbeat_count + 1' });
+  expect(lines[ranges.get('cycle')!.first]?.text).toBe('local function on_run()');
+  expect(ranges.get('cycle')!.last).toBeLessThan(lines.length - 1);
+});
+
+it('round-trips all timer operations and maps each channel body to its event hat', () => {
+  const set: ScriptBlock = { id: 'arm', type: 'mb_timer_start', fields: { TIMER: '2', PERIOD: 75, MODE: 'count', COUNT: 3 } };
+  const timer: ScriptBlock = { id: 'timer2', type: 'mb_on_timer', fields: { TIMER: '2' }, next: pin({
+    id: 'test', type: 'mb_if', inputs: { CONDITION: pin({ id: 'is-running', type: 'mb_timer_running', fields: { TIMER: '2' } }),
+      YES: pin(log('print', { id: 'elapsed', type: 'mb_timer_elapsed', fields: { TIMER: '2' } })) },
+    next: pin({ id: 'cancel', type: 'mb_timer_stop', fields: { TIMER: '2' } }),
+  }) };
+  const other: ScriptBlock = { id: 'timer1', type: 'mb_on_timer', fields: { TIMER: '1' }, next: pin({ id: 'other', type: 'mb_log', fields: { TEXT: 'T1' } }) };
+  const result = generate([start(set), timer, other]);
+  expect(result.text).toContain('rt.start_timer(2, 75, 3)');
+  expect(result.text).toContain('if _timer_id == 1 then');
+  expect(result.text).toContain('elseif _timer_id == 2 then');
+  expect(result.text).toContain('if rt.is_timer_running(2) then');
+  expect(result.text).toContain('rt.get_timer_value(2)');
+  expect(result.text).toContain('rt.stop_timer(2)');
+  expect(result.lines[result.ranges.get('timer2')!.first]!.blockId).toBe('timer2');
+  expect(result.text).not.toContain('function on_run');
 });
