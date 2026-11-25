@@ -6,6 +6,7 @@ import type { ModbusApi } from '../../src/shared/preload-api';
 import type { Workspace } from '../../src/domain/model';
 import type { DataReadResult } from '../../src/shared/point-data';
 import type { Command } from '../../src/shared/commands';
+import { activeView } from '../support/workbench-controls';
 
 const snapshot = () => browser.execute(() => (window as unknown as { modbus: ModbusApi }).modbus.getSnapshot());
 const command = (command: Command) => browser.execute(command => (window as unknown as { modbus: ModbusApi }).modbus.command(command), command);
@@ -26,11 +27,16 @@ async function apply(workspace: Workspace) {
 }
 async function selectSlave(name: string) { await rail('实时'); await (await visibleElement(`//button[.//span[normalize-space(.)="${name}"]]`)).click(); }
 async function editPoint(name: string, value: string) {
-  const search = await $('//input[@placeholder="搜索点位"]');
-  await search.setValue(name);
-  const cell = await $(`//div[normalize-space(text())="${name}"]/following-sibling::div[2]`);
+  const search = await activeView().$('input[placeholder="搜索点位"]');
+  await search.click();
+  await browser.keys(['Control', 'a']);
+  await browser.keys('Backspace');
+  await search.addValue(name);
+  await expect(search).toHaveValue(name);
+  const cell = await activeView().$(`.//div[normalize-space(text())="${name}"]/following-sibling::div[2]`);
+  await cell.waitForDisplayed();
   await cell.doubleClick();
-  const input = await $('input.w-24'); await input.click();
+  const input = await activeView().$('input.w-24'); await input.click();
   // Electron's native text input supports full Unicode and the editor's normal input events.
   await browser.electron.execute(electron => {
     const windows = electron.BrowserWindow.getAllWindows();
@@ -84,7 +90,7 @@ describe('packaged native application tests its own TCP and RTU master/slave tog
       await browser.waitUntil(async () => (await snapshot()).points[`${transport}-server-1::UTF8-holding`]?.stringValue === '闭环🙂');
       await readHoldingFeedback(transport);
       expect((await snapshot()).points[`${transport}-master-1::UTF8-holding`]?.stringValue).toBe('闭环🙂');
-      await $('//div[normalize-space(text())="UTF8"]/following-sibling::div[2]//button[normalize-space(.)="原始数据"]').click();
+      await activeView().$('.//div[normalize-space(text())="UTF8"]/following-sibling::div[2]//button[normalize-space(.)="原始数据"]').click();
       await browser.waitUntil(async () => (await $('body').getText()).includes('0x9982'));
       expect(await $('body').getText()).toContain('E9 97 AD E7 8E AF F0 9F 99 82 00 00');
       await capture(`${transport}-complete-string-raw.png`);
