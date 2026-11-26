@@ -166,11 +166,20 @@ const createAppStore = () => create<AppState>((set, get) => ({
       }
       slaveStates = Object.fromEntries(states);
     }
+    let scriptRuns = prev.scriptRuns;
+    if (d.scriptRuns) {
+      const runs = new Map(Object.entries(scriptRuns ?? {}));
+      for (const [id, run] of Object.entries(d.scriptRuns)) {
+        if (run) runs.set(id, run); else runs.delete(id);
+      }
+      scriptRuns = Object.fromEntries(runs);
+    }
     const next: AppSnapshot = {
       ...prev,
       revision: d.revision,
       update: d.update ?? prev.update,
       scriptRun: d.scriptRun === undefined ? prev.scriptRun : d.scriptRun,
+      scriptRuns,
       workspace: d.workspace ?? prev.workspace,
       workspacePath: d.workspacePath !== undefined ? d.workspacePath : prev.workspacePath,
       dirty: d.dirty !== undefined ? d.dirty : prev.dirty,

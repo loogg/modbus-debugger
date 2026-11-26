@@ -12,9 +12,11 @@ import { bufferCapacity, validateBufferBudget, withBufferConfigs } from '../../d
 import { MAX_READ_SAMPLES, MAX_READ_SAMPLE_BYTES, type ColumnDataReadResult, type DataReadResult } from '../../shared/point-data';
 import { sampleColumnBytes } from '../../shared/sample-columns';
 import { canReadPoint, canWritePoint, mappingWidth, planBlockReads } from '../../domain/point-access';
-import type { MasterScript, ScriptPointRef } from '../../domain/master-script';
+import { serializeScriptFile, type MasterScript, type ScriptPointRef } from '../../domain/master-script';
 import { preparePointWrite } from '../../domain/point-write-value';
 import { MasterScriptRunner, StepFailure, type ScriptPointBinding } from './master-script-runner';
+import { ScriptRuns } from './script-runs';
+import { loadScriptLua } from './script-lua-handle';
 import { RuntimeNotifications } from './runtime-notifications';
 import { scriptIsActive, type ScriptRunView } from '../../shared/script-run';
 import type { PointWriteReceipt } from '../../shared/contracts';
@@ -55,7 +57,7 @@ export class RuntimeManager {
   readonly diagnostics = new DiagnosticsStore();
   readonly sampleBuffers: SampleBuffers;
   private readonly notifications = new RuntimeNotifications();
-  private readonly scripts: MasterScriptRunner;
+  private readonly scripts: ScriptRuns;
   private sentScriptRun: ScriptRunView | null = null;
   private runtimes = new Map<string, ConnectionRuntime | SlaveRuntime>();
   private shutdownByConnection = new Map<string, Promise<void>>();
@@ -94,7 +96,7 @@ export class RuntimeManager {
     this.clock = opts.clock ?? systemClock;
     this.transportFactory = opts.transportFactory ?? defaultTransportFactory;
     this.sampleBuffers = new SampleBuffers(this.cache, this.clock);
-    this.scripts = new MasterScriptRunner({
+    this.scripts = new ScriptRuns(() => new MasterScriptRunner({
       point: (ref, access) => this.scriptPoint(ref, access),
       slave: id => this.scriptSlave(id),
       write: async (ref, fields, signal) => {
@@ -103,7 +105,7 @@ export class RuntimeManager {
         if (!result.ok) throw new StepFailure(result.error, ['not-sent']);
         return result.value;
       },
-    }, this.notifications);
+    }, new RuntimeNotifications(this.notifications)));
     this.cache.onConfirmed = (entry, range) => {
       this.sampleBuffers.confirmed(entry, this.workspaceService.current, range);
       this.notifications.publish({ kind: 'sample', blockKey: entry.key, range });
@@ -129,7 +131,7 @@ export class RuntimeManager {
 
   async stop(): Promise<void> {
     this.stopping = true;
-    this.scripts.stop();
+    this.scripts.stopAll();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     for (const rt of this.runtimes.values()) await rt.stop();
@@ -143,7 +145,7 @@ export class RuntimeManager {
   onDelta: ((delta: AppDelta) => void) | null = null;
 
   workspaceChanged(): void {
-    this.scripts.stop();
+    this.scripts.stopAll();
     this.workspaceMetadataOnly = false;
     this.workspaceRev++;
     this.sentCacheRev.clear();
@@ -435,7 +437,7 @@ export class RuntimeManager {
     const snapshot: AppSnapshot = {
       revision: this.revision,
       update: this.updateState,
-      scriptRun: this.scripts.snapshot,
+      scriptRun: this.scripts.lastRun, scriptRuns: this.scripts.snapshots(),
       workspace: ws,
       workspacePath: this.workspaceService.currentPath,
       dirty: this.workspaceService.isDirty(),
@@ -507,7 +509,9 @@ export class RuntimeManager {
     if (this.updateRevision !== this.sentUpdateRevision) {
       delta.update = this.updateState; this.sentUpdateRevision = this.updateRevision; changed = true;
     }
-    const scriptRun = this.scripts.snapshot;
+    const changes = this.scripts.delta();
+    if (changes) { delta.scriptRuns = changes; changed = true; }
+    const scriptRun = this.scripts.lastRun;
     if (scriptRun !== this.sentScriptRun) {
       delta.scriptRun = scriptRun;
       this.sentScriptRun = scriptRun;
@@ -639,6 +643,7 @@ export class RuntimeManager {
     if (now - this.lastWarnCheck < 5000) return;
     this.lastWarnCheck = now;
     const warnings: string[] = [];
+    if (this.workspaceService.lastPathWarning) warnings.push(this.workspaceService.lastPathWarning);
     if (this.history.overTenGb()) warnings.push(`history.db 已超过 10 GB（当前 ${(this.history.sizeBytes() / 1e9).toFixed(1)} GB），请考虑归档。`);
     const ws = this.workspaceService.current;
     for (const conn of ws.connections) {
@@ -723,47 +728,51 @@ export class RuntimeManager {
           const scriptId = cmd.type === 'script.save' ? cmd.script.id : cmd.scriptId;
           const current = scripts.find(script => script.id === scriptId);
           if ((current?.revision ?? null) !== cmd.expectedRevision) return { ok: false, error: '流程已在其他页面修改，请重新打开后编辑' };
-          if (cmd.type === 'script.delete' && this.scripts.snapshot?.scriptId === scriptId
-            && scriptIsActive(this.scripts.snapshot)) return { ok: false, error: '请先停止正在运行的流程' };
+          if (cmd.type === 'script.delete' && scriptIsActive(this.scripts.forScript(scriptId)?.snapshot))
+            return { ok: false, error: '请先停止该流程再删除' };
           let saved: MasterScript | null = null;
           let next = scripts.filter(script => script.id !== scriptId);
           if (cmd.type === 'script.save') {
-            saved = { ...cmd.script, revision: current ? current.revision + 1 : 0 };
+            saved = { ...current, ...cmd.script, revision: current ? current.revision + 1 : 0 };
             next = current ? scripts.map(script => script.id === scriptId ? saved! : script) : [...scripts, saved];
           }
-          wsSvc.set(workspaceSchema.parse({ ...wsSvc.current, schemaVersion: 2, masterScripts: next }));
-          const result = wsSvc.saveManaged();
+          const result = wsSvc.saveManaged({ ...wsSvc.current, schemaVersion: 2, masterScripts: next });
+          if (!result.ok) return { ok: false, error: result.error ?? '保存流程失败' };
+          if (cmd.type === 'script.delete') this.scripts.remove(scriptId);
           this.publishWorkspaceMetadata();
-          return result.ok ? { ok: true, value: saved } : { ok: false, error: result.error ?? '保存流程失败' };
+          return { ok: true, value: saved ? wsSvc.current.masterScripts!.find(item => item.id === scriptId)! : null };
         } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
       }
       case 'script.plan':
       case 'script.start': {
+        const epoch = this.scripts.epoch;
+        if (cmd.type === 'script.start') {
+          try { await loadScriptLua(); } catch (error) { return { ok: false, error: `Lua 初始化失败 · ${String(error)}` }; }
+          if (this.stopping || epoch !== this.scripts.epoch) return { ok: false, error: '工作区已切换或正在停止' };
+        }
         const script = wsSvc.current.masterScripts?.find(item => item.id === cmd.scriptId);
         if (!script || script.revision !== cmd.revision) return { ok: false, error: '流程已变更，请重新保存后运行' };
         try {
-          const plan = this.scripts.prepare(script);
-          if (cmd.type === 'script.plan') return { ok: true, value: plan.approval };
-          return { ok: true, value: this.scripts.start(plan, cmd.approval, cmd.debug) };
+          if (cmd.type === 'script.plan') return { ok: true, value: this.scripts.plan(script) };
+          return { ok: true, value: this.scripts.start(script, cmd.approval, cmd.debug) };
         } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
       }
       case 'script.pause':
-        return this.scripts.pause(cmd.runId) ? { ok: true, value: null } : { ok: false, error: '流程当前无法暂停' };
+        return this.scripts.forRun(cmd.runId)?.pause(cmd.runId) ? { ok: true, value: null } : { ok: false, error: '流程当前无法暂停' };
       case 'script.resume':
-        return this.scripts.resume(cmd.runId, cmd.token, cmd.mode) ? { ok: true, value: null } : { ok: false, error: '本次暂停已结束' };
+        return this.scripts.forRun(cmd.runId)?.resume(cmd.runId, cmd.token, cmd.mode) ? { ok: true, value: null } : { ok: false, error: '本次暂停已结束' };
       case 'script.breakpoint':
-        return this.scripts.setBreakpoint(cmd.runId, cmd.blockId, cmd.enabled) ? { ok: true, value: null } : { ok: false, error: '此步骤不在当前运行的流程中' };
+        return this.scripts.forRun(cmd.runId)?.setBreakpoint(cmd.runId, cmd.blockId, cmd.enabled) ? { ok: true, value: null } : { ok: false, error: '此步骤不在当前运行的流程中' };
       case 'script.stop':
-        this.scripts.stop(cmd.runId);
+        this.scripts.forRun(cmd.runId)?.stop(cmd.runId);
         return { ok: true, value: null };
       case 'script.confirmWrite':
-        return this.scripts.confirmWrite(cmd.runId, cmd.token)
+        return this.scripts.forRun(cmd.runId)?.confirmWrite(cmd.runId, cmd.token)
           ? { ok: true, value: null } : { ok: false, error: '本次写入确认已失效' };
       case 'script.exportFile': {
         const script = wsSvc.current.masterScripts?.find(item => item.id === cmd.scriptId);
         if (!script) return { ok: false, error: '流程已不存在' };
-        const text = JSON.stringify({ format: 'modbus-master-script', version: 1, name: script.name, graph: script.graph }, null, 2);
-        const result = exportTextToFile(cmd.path, text);
+        const result = exportTextToFile(cmd.path, serializeScriptFile(script));
         return result.ok ? { ok: true, value: result.path } : { ok: false, error: result.error ?? '导出流程失败' };
       }
       case 'canvas.create':
@@ -839,6 +848,7 @@ export class RuntimeManager {
         return { ok: true, value: null };
       }
       case 'workspace.new':
+        this.scripts.clear();
         this.sampleBuffers.reset();
         wsSvc.newWorkspace();
         this.workspaceChanged();
@@ -846,7 +856,7 @@ export class RuntimeManager {
       case 'workspace.open': {
         const res = wsSvc.loadFrom(cmd.path);
         if (!res.ok) return { ok: false, error: res.error ?? 'open failed' };
-        this.scripts.stop();
+        this.scripts.clear();
         this.sampleBuffers.reset();
         this.workspaceRev++;
         this.rebuildRuntimes();
@@ -871,12 +881,14 @@ export class RuntimeManager {
         const res = wsSvc.importFromBuffer(cmd.text);
         if (!res.ok || !res.workspace) return { ok: false, error: res.error ?? 'import failed' };
         wsSvc.adopt(res.workspace, null);
+        this.scripts.clear();
         this.sampleBuffers.reset();
         this.workspaceChanged();
         return { ok: true, value: null };
       }
       case 'workspace.apply':
         wsSvc.set(cmd.workspace);
+        this.scripts.clear();
         this.sampleBuffers.reset();
         this.workspaceChanged();
         return { ok: true, value: null };

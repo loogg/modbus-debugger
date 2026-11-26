@@ -40,10 +40,10 @@ it('imports and runs the consecutive temperature alarm against independent FC04 
     await scope().$('button=连续三次温度超限告警').click();
     await scope().$('.blocklyWorkspace').waitForDisplayed();
     const lua = await readScriptLua();
-    expect(lua).toContain('over_limit_count = over_limit_count + 1');
-    expect(lua).toContain('local function exceeds_limit(temperature, threshold)\n  return temperature > threshold\nend');
-    expect(lua).toContain('if exceeds_limit(current_temperature, 70) then');
-    expect(lua).toContain('log_overheat(current_temperature, 70)');
+    expect(lua).toContain('over_limit_count = _ops.add(_ops.read(over_limit_count, "over_limit_count"), 1)');
+    expect(lua).toMatch(/local function exceeds_limit\(temperature, threshold\)\s+return _ops\.gt\(_ops\.read\(temperature, "temperature"\), _ops\.read\(threshold, "threshold"\)\)\s+end/);
+    expect(lua).toContain('if exceeds_limit(_ops.read(current_temperature, "current_temperature"), 70) then');
+    expect(lua).toContain('log_overheat(_ops.read(current_temperature, "current_temperature"), 70)');
     const watch = scope().$('[role="tab"]*=变量');
     const watchEvidence = path.resolve('out/test-temp/script-variables-review');
     fs.mkdirSync(watchEvidence, { recursive: true });

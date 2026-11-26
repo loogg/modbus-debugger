@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Add20Regular, ArrowImport16Regular, Dismiss16Regular, Search16Regular } from '@fluentui/react-icons';
-import { compileScriptProgram, fieldText, isScriptCall, isScriptStatement, newScriptGraph, scriptBlocks, scriptFileSchema, scriptGraphBlocks, scriptVariableGroups, ScriptBlockError, withScriptBreakpoints, type MasterScript, type ScriptGraph } from '../../domain/master-script';
+import { CALLBACK_TIMEOUT_MS, MAX_SCRIPT_FILE_BYTES, callbackTimeoutSchema, checkCallbackContexts, compileScriptProgram, fieldText, isScriptCall, isScriptStatement, newScriptGraph, scriptBlocks, scriptFileSchema, scriptGraphBlocks, scriptVariableGroups, serializeScriptFile, ScriptBlockError, withScriptBreakpoints, type MasterScript } from '../../domain/master-script';
 import type { Workspace } from '../../domain/model';
-import { scriptIsActive as ongoing, type ScriptApprovalView } from '../../shared/script-run';
+import { compileScriptLua } from '../../domain/script-lua-program';
+import { scriptIsActive as ongoing, scriptRunFor, type ScriptApprovalView } from '../../shared/script-run';
 import { Button, EmptyState, TextInput } from '../components/ui';
 import { ScriptEditor, type ScriptEditorApi } from '../features/scripts/editor';
 import { LuaDivider, LuaPane, type LuaTab, type ScriptSelection } from '../features/scripts/lua-pane';
@@ -17,7 +18,25 @@ import { useDirtyGuard, useViewDocument, useViewWindow } from '../workbench/view
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 const runLabels = { running: '运行中', waiting: '等待事件', pausing: '等待当前步骤完成', paused: '已暂停', stopping: '停止中', passed: '通过', failed: '失败', stopped: '已停止' } as const;
 const pauseLabels = { entry: '调试起点', breakpoint: '命中断点', step: '单步完成', pause: '手动暂停' } as const;
+const callbackTimeoutHelp = `每次 on_run、on_timer 回调的累计执行时限，范围 ${CALLBACK_TIMEOUT_MS.min}–${CALLBACK_TIMEOUT_MS.max} ms。设备等待和调试暂停不计时，保存后在下次运行生效。`;
 interface PanePreferences { wide?: boolean; compact?: boolean; width?: number }
+
+const tabStatus = { running: '运行中', waiting: '运行中', pausing: '暂停中', paused: '已暂停', stopping: '停止中', failed: '失败',
+  passed: undefined, stopped: undefined } as const;
+
+function ScriptFileTab({ script, selected, choose }: { script: MasterScript; selected: boolean; choose(id: string): Promise<void> }) {
+  const button = useRef<HTMLButtonElement>(null);
+  const status = useApp(state => {
+    const report = scriptRunFor(state.snapshot, script.id);
+    return report?.pendingWrite ? '待确认' : report && tabStatus[report.state];
+  });
+  useLayoutEffect(() => { if (selected) button.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }, [selected]);
+  return <button ref={button} title={status ? `${script.name} · ${status}` : script.name}
+    aria-label={script.name} aria-description={status ?? undefined} aria-current={selected}
+    className="focus-ring script-file" onClick={() => void choose(script.id)}>
+    <span className="script-file-name">{script.name}</span>{status && <span className="script-file-status" data-status={status}>{status}</span>}
+  </button>;
+}
 
 export function ScriptsScreen() {
   const palette = useRef<PaletteState>({ category: 0, open: true });
@@ -35,8 +54,6 @@ export function ScriptsScreen() {
   const [focus, setFocus] = useState<{ scriptId: string; blockId: string } | null>(null);
   useDirtyGuard(dirty);
   const current = scripts.find(script => script.id === selectedId) ?? scripts[0];
-  const activeScriptTab = useRef<HTMLButtonElement>(null);
-  useLayoutEffect(() => { activeScriptTab.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }, [current?.id]);
 
   const allowSwitch = () => dirty ? confirm('当前流程有未保存的修改。', '丢弃并继续') : Promise.resolve(true);
   const choose = async (id: string) => {
@@ -45,10 +62,11 @@ export function ScriptsScreen() {
     setFocus(null);
     select({ scriptId: id });
   };
-  const add = async (file?: { name: string; graph: ScriptGraph }) => {
+  const add = async (file?: Pick<MasterScript, 'name' | 'graph' | 'callbackTimeoutMs'>) => {
     setSaving(true);
     try {
-      const script = { id: uid('script'), name: file?.name ?? `流程 ${scripts.length + 1}`, graph: file?.graph ?? newScriptGraph(uid('start')) };
+      const script = { id: uid('script'), name: file?.name ?? `流程 ${scripts.length + 1}`, graph: file?.graph ?? newScriptGraph(uid('start')),
+        callbackTimeoutMs: file?.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default };
       const result = await command<MasterScript>({ type: 'script.save', script, expectedRevision: null });
       if (result.ok) { setDirty(false); select({ scriptId: script.id }); setError(''); }
       else setError(result.error);
@@ -56,7 +74,7 @@ export function ScriptsScreen() {
   };
   const importScript = async (file: File) => {
     try {
-      if (file.size > 1000000) throw new Error('流程文件过大');
+      if (file.size > MAX_SCRIPT_FILE_BYTES) throw new Error('流程文件超过支持的容量');
       const parsed = scriptFileSchema.safeParse(JSON.parse((await file.text()).replace(/^\uFEFF/, '')));
       if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? '流程文件格式无效');
       await add(parsed.data);
@@ -67,8 +85,7 @@ export function ScriptsScreen() {
     <aside className="script-list" aria-label="脚本列表">
       <h1>主站脚本</h1>
       <div className="script-files">
-        {scripts.map(script => <button key={script.id} ref={current?.id === script.id ? activeScriptTab : undefined} title={script.name}
-          aria-current={current?.id === script.id} className="focus-ring script-file" onClick={() => void choose(script.id)}>{script.name}</button>)}
+        {scripts.map(script => <ScriptFileTab key={script.id} script={script} selected={current?.id === script.id} choose={choose} />)}
       </div>
       <button className="workbench-tool" aria-label="新建脚本" title="新建脚本" disabled={saving} onClick={async () => { if (await allowSwitch()) await add(); }}><Add20Regular /></button>
       <button className="focus-ring script-import" disabled={saving} onClick={async () => { if (await allowSwitch()) importInput.current?.click(); }}><ArrowImport16Regular />导入脚本</button>
@@ -96,7 +113,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
 }) {
   const command = useApp(state => state.command);
   const toast = useApp(state => state.toast);
-  const report = useApp(state => state.snapshot?.scriptRun);
+  const run = useApp(state => scriptRunFor(state.snapshot, source.id));
   const confirm = useConfirm();
   const viewDocument = useViewDocument();
   const viewWindow = useViewWindow();
@@ -122,6 +139,9 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
   const [base, setBase] = useState(source);
   const [name, setName] = useState(source.name);
   const [graph, setGraph] = useState(source.graph);
+  const [timeoutText, setTimeoutText] = useState(String(source.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default));
+  const timeout = useMemo(() => callbackTimeoutSchema.safeParse(Number(timeoutText)), [timeoutText]);
+  const timeoutHelpId = React.useId();
   const groups = useMemo(() => scriptVariableGroups(graph), [graph]);
   const mainNames = useMemo(() => [...(groups.find(group => group.functionId === null)?.names.keys() ?? [])], [groups]);
   const [search, setSearch] = useState('');
@@ -155,15 +175,15 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
       return point && slave ? `${point.name} · ${slave.name}` : lookup;
     } catch { return lookup; }
   }, [equipment, lookup]);
-  const dirty = name.trim() !== base.name || JSON.stringify(graph) !== JSON.stringify(base.graph);
+  const dirty = !timeout.success || timeout.data !== (base.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default)
+    || name.trim() !== base.name || JSON.stringify(graph) !== JSON.stringify(base.graph);
   const conflict = source.revision !== base.revision;
-  const run = report?.scriptId === source.id ? report : null;
   const runId = run?.id;
   const savedRun = !!run && run.scriptRevision === base.revision && graph === base.graph;
   const compareDraft = !!run && !savedRun;
   const program = useMemo(() => {
     if (!compareDraft) return null;
-    try { return JSON.stringify(compileScriptProgram(graph)); } catch { return null; }
+    try { return compileScriptLua(graph).identity; } catch { return null; }
   }, [graph, compareDraft]);
   const [fingerprint, setFingerprint] = useState<{ program: string; hash: string } | null>(null);
   useEffect(() => {
@@ -209,11 +229,12 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
   const findPoint = (key: string) => { setLookup(key); setAccess('write'); };
 
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
-  useEffect(() => {
-    if (conflict && !dirty && !working) {
-      setBase(source); setName(source.name); setGraph(source.graph); setEditorKey(key => key + 1);
-    }
-  }, [conflict, dirty, source, working]);
+  const reload = useCallback(() => {
+    setBase(source); setName(source.name); setGraph(source.graph);
+    setTimeoutText(String(source.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default));
+    setError(''); setEditorKey(key => key + 1);
+  }, [source]);
+  useEffect(() => { if (conflict && !dirty && !working) reload(); }, [conflict, dirty, reload, working]);
   const executing = matchesRun ? run?.current?.blockId ?? null : null;
   const pauseToken = run?.pause?.token;
   useEffect(() => { editor.current?.markExecution(executing, !!pauseToken); }, [executing, pauseToken, editorReady]);
@@ -232,10 +253,12 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
 
   const save = async (): Promise<MasterScript> => {
     if (conflict) throw new Error('流程已在其他页面修改，请重新载入后再保存');
+    if (!timeout.success) throw new Error(timeout.error.issues[0]!.message);
     if (!dirty) return base;
     const nameToSave = name.trim();
     if (!nameToSave) throw new Error('请输入流程名称');
-    const result = await command<MasterScript>({ type: 'script.save', expectedRevision: base.revision, script: { id: source.id, name: nameToSave, graph } });
+    const result = await command<MasterScript>({ type: 'script.save', expectedRevision: base.revision,
+      script: { id: source.id, name: nameToSave, graph, callbackTimeoutMs: timeout.data } });
     if (!result.ok) throw new Error(result.error);
     setBase(result.value);
     return result.value;
@@ -268,7 +291,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
     if (result && !result.ok) throw new Error(result.error);
   };
   const start = async (debug = false) => {
-    compileScriptProgram(graph);
+    checkCallbackContexts(compileScriptProgram(graph));
     const saved = await save();
     const request = { scriptId: saved.id, revision: saved.revision };
     const plan = await command<ScriptApprovalView | null>({ type: 'script.plan', ...request });
@@ -300,7 +323,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
       const result = await command({ type: 'script.exportFile', scriptId: saved.id, path: dest.value });
       if (!result.ok) throw new Error(result.error);
     } else {
-      const file = JSON.stringify({ format: 'modbus-master-script', version: 1, name: saved.name, graph: saved.graph }, null, 2);
+      const file = serializeScriptFile(saved);
       const url = URL.createObjectURL(new Blob([file], { type: 'application/json' }));
       const link = viewDocument.createElement('a');
       link.href = url; link.download = defaultName; viewDocument.body.appendChild(link);
@@ -318,31 +341,44 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
           onKeyDown={event => { if (event.key === 'Escape' && search) { event.preventDefault(); event.stopPropagation(); setSearch(''); } }} />
         {search && <button type="button" className="focus-ring" aria-label="清除积木搜索" onClick={() => { setSearch(''); searchInput.current?.focus(); }}><Dismiss16Regular /></button>}
       </div>
-      <div className="w-44"><TextInput aria-label="流程名称" value={name} maxLength={120} onChange={event => setName(event.target.value)} /></div>
-      <Button size="sm" disabled={!dirty || working || conflict} onClick={() => void perform(async () => { await save(); toast({ kind: 'success', title: '流程已保存' }); })}>保存</Button>
-      {!ongoing(report) && <>
-        <Button size="sm" variant="primary" disabled={working || conflict} onClick={() => void perform(() => start())}>运行</Button>
-        <Button size="sm" title="在第一步执行前暂停。右键积木可设置断点" disabled={working || conflict} onClick={() => void perform(() => start(true))}>调试</Button>
+      <div className="script-draft-name">
+        <TextInput aria-label="流程名称" className={dirty ? 'pr-14' : undefined} value={name} maxLength={120} onChange={event => setName(event.target.value)} />
+        {dirty && <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-xs text-ink2">未保存</span>}
+      </div>
+      <Button size="sm" disabled={!dirty || !timeout.success || working || conflict} onClick={() => void perform(async () => { await save(); toast({ kind: 'success', title: '流程已保存' }); })}>保存</Button>
+      {live ? <>
+        <Button size="sm" className="min-w-14" variant={live.state === 'paused' ? 'primary' : 'secondary'}
+          disabled={working || live.state === 'pausing' || live.state === 'stopping'}
+          title={live.state === 'paused' ? '继续执行此流程' : '暂停事件和脚本执行'}
+          onClick={() => void perform(() => debugControl(live.state === 'paused' ? 'continue' : 'pause'))}>{live.state === 'paused' ? '继续' : '暂停'}</Button>
+        <Button size="sm" disabled={live.state === 'stopping'} onClick={() => void command({ type: 'script.stop', runId: live.id })}>停止</Button>
+        <Button size="sm" disabled={working || live.state !== 'paused'} title="暂停后执行下一步" onClick={() => void perform(() => debugControl('step'))}>单步</Button>
+      </> : <>
+        <Button size="sm" variant="primary" disabled={working || conflict || !timeout.success} onClick={() => void perform(() => start())}>运行</Button>
+        <Button size="sm" title="在第一步执行前暂停。右键积木可设置断点" disabled={working || conflict || !timeout.success} onClick={() => void perform(() => start(true))}>调试</Button>
       </>}
-      {run?.state === 'paused' && <>
-        <Button size="sm" variant="primary" disabled={working} onClick={() => void perform(() => debugControl('continue'))}>继续</Button>
-        <Button size="sm" disabled={working} onClick={() => void perform(() => debugControl('step'))}>单步</Button>
-      </>}
-      {(run?.state === 'running' || run?.state === 'waiting' || run?.state === 'pausing') && <Button size="sm" disabled={working || run.state === 'pausing'} title="暂停事件和脚本执行" onClick={() => void perform(() => debugControl('pause'))}>暂停</Button>}
-      {ongoing(report) && report && <Button size="sm" disabled={report.state === 'stopping'} onClick={() => void command({ type: 'script.stop', runId: report.id })}>停止</Button>}
+      <label className="script-callback-timeout" title={callbackTimeoutHelp}>
+        主回调超时
+        <input className="focus-ring" type="number" required aria-label="主回调超时（毫秒）" aria-invalid={!timeout.success}
+          aria-describedby={timeout.success ? timeoutHelpId : `${timeoutHelpId} ${timeoutHelpId}-error`}
+          min={CALLBACK_TIMEOUT_MS.min} max={CALLBACK_TIMEOUT_MS.max} step={1}
+          value={timeoutText} onChange={event => setTimeoutText(event.target.value)} />
+        ms
+      </label>
+      <span id={timeoutHelpId} className="sr-only">{callbackTimeoutHelp}</span>
       <Button size="sm" aria-expanded={showLua} title="Lua 预览、变量观察与静态校验" onClick={() => setShowLua(!showLua)}>{showLua ? '收起检查器' : 'Lua / 变量'}</Button>
-      <Button size="sm" disabled={working || conflict} onClick={() => void perform(exportScript)}>导出</Button>
+      <Button size="sm" disabled={working || conflict || !timeout.success} onClick={() => void perform(exportScript)}>导出</Button>
       <Button size="sm" variant="quiet" disabled={working || ongoing(run) || conflict} onClick={() => void perform(remove)}>删除</Button>
-      {dirty && <span className="text-xs text-ink2">未保存</span>}
-      {ongoing(report) && !run && <span className="text-xs text-ink2">{report?.scriptName} · {report && runLabels[report.state]}</span>}
     </header>
     {conflict && <div className="flex items-center gap-3 bg-accentsoft px-3 py-2 text-xs" role="status">此流程已在其他页面修改
       <button className="focus-ring text-accent" onClick={async () => {
         if (dirty && !await confirm('当前修改会被丢弃。')) return;
-        setBase(source); setName(source.name); setGraph(source.graph); setError(''); setEditorKey(key => key + 1);
+        reload();
       }}>重新载入</button>
     </div>}
-    {error && <p className="shrink-0 break-words px-3 py-2 text-sm text-err" role="alert">{error}</p>}
+    {(!timeout.success || error) && <p id={timeoutHelpId + '-error'} className="shrink-0 break-words px-3 py-2 text-sm text-err" role="alert">
+      {timeout.success ? error : timeout.error.issues[0]!.message}
+    </p>}
     <div ref={split} className={`script-split ${wide ? 'is-wide' : 'is-compact'}`} style={{ '--lua-width': luaWidth + 'px' } as React.CSSProperties}>
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <ScriptEditor ref={editor} key={editorKey} graph={graph} equipment={equipment} palette={palette} breakpoints={breakpoints}
@@ -399,6 +435,8 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
         <h2 className="font-semibold">运行日志</h2>
         {run ? <><span>{runLabels[run.state]}</span>
         <span className="text-xs text-ink2">已结算 {run.completed} 步</span>
+        {live && run.callbackTimeoutMs !== undefined && (!timeout.success || timeout.data !== run.callbackTimeoutMs)
+          && <span className="script-event-status">本次主回调超时 {run.callbackTimeoutMs} ms</span>}
         {run.events?.onRun && <span className="script-event-status">on_run · {run.events.onRun.periodMs} ms · {run.events.onRun.calls} 次{ongoing(run) && !run.events.onRun.enabled && ' · 周期已暂停'}</span>}
         {run.events?.timers.map(timer => <span className="script-event-status" key={timer.channel}>T{timer.channel} · {timer.periodMs} ms · {timer.remaining === null ? '循环' : `剩余 ${timer.remaining} 次`}</span>)}
         {run.current && !run.pause && <span className="break-words text-xs">{run.current.label}</span>}

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { compileLuaKernel, lowerLuaExpression, luaNumericLiteral, type LuaHelper, type LuaOperator, type ScriptLuaKernel } from './script-lua-operators';
+import { compileLuaControl } from './script-lua-control';
 import type { SlaveCommunicationState } from '../shared/snapshot';
 
 export const scriptBlocks = {
@@ -56,8 +58,21 @@ export type ScriptErrorKind = typeof scriptErrors[number][1];
 export const MAX_SCRIPT_BLOCKS = 200;
 export const MAX_SCRIPT_STEPS = 1000;
 export const MAX_SCRIPT_MS = 120000;
+export const DEFAULT_DELAY_MS = 500;
+export const DEFAULT_WAIT_MS = 5000;
+export const DEFAULT_REPEAT_COUNT = 3;
+// A previous writer used two-space indentation at every nesting level.
+// Cover its maximum structural depth as well as escaped UTF-8 text.
+const MAX_GRAPH_NODES = 8000;
+const MAX_GRAPH_CHARS = 240000;
+const MAX_GRAPH_DEPTH = MAX_SCRIPT_BLOCKS * 3 + 10;
+export const MAX_SCRIPT_FILE_BYTES = MAX_GRAPH_NODES * (4 * MAX_GRAPH_DEPTH + 16) + 12 * MAX_GRAPH_CHARS + 4096;
 export const DEFAULT_RUN_PERIOD = 100;
 export const MIN_EVENT_PERIOD = 10;
+export const CALLBACK_TIMEOUT_MS = { min: 10, max: 10_000, default: 1000 } as const;
+const timeoutMessage = `主回调超时须为 ${CALLBACK_TIMEOUT_MS.min}–${CALLBACK_TIMEOUT_MS.max} ms 的整数`;
+export const callbackTimeoutSchema = z.number({ invalid_type_error: timeoutMessage })
+  .int(timeoutMessage).min(CALLBACK_TIMEOUT_MS.min, timeoutMessage).max(CALLBACK_TIMEOUT_MS.max, timeoutMessage);
 export const SCRIPT_TIMER_COUNT = 8;
 export const MAX_EVENT_ITERATIONS = 1_000_000;
 
@@ -110,21 +125,25 @@ function isBoundedJson(root: unknown): boolean {
   const pending = [{ value: root, depth: 0 }];
   let nodes = 0;
   let characters = 0;
+  let keyCharacters = 0;
   while (pending.length) {
     const { value, depth } = pending.pop()!;
-    if (++nodes > 8000 || depth > MAX_SCRIPT_BLOCKS * 3 + 10) return false;
+    if (++nodes > MAX_GRAPH_NODES || depth > MAX_GRAPH_DEPTH) return false;
     if (value === null || typeof value === 'boolean') continue;
     if (typeof value === 'string') {
       characters += value.length;
-      if (characters > 240000) return false;
+      if (characters > MAX_GRAPH_CHARS) return false;
       continue;
     }
     if (typeof value === 'number' && Number.isFinite(value)) continue;
     if (typeof value !== 'object') return false;
     const children = Object.entries(value);
-    if (nodes + pending.length + children.length > 8000) return false;
+    if (nodes + pending.length + children.length > MAX_GRAPH_NODES) return false;
     for (const [key, child] of children) {
       if (['__proto__', 'prototype', 'constructor'].includes(key)) return false;
+      keyCharacters += key.length;
+      if (keyCharacters > MAX_GRAPH_CHARS) return false;
+      if (child === undefined && !Array.isArray(value)) continue;
       pending.push({ value: child, depth: depth + 1 });
     }
   }
@@ -174,10 +193,58 @@ function validGraph(value: unknown): boolean {
   return true;
 }
 
-const scriptGraphSchema = z.custom<ScriptGraph>(validGraph, '积木数据无效、包含未知类型或超出容量').transform(graph => {
-  // Older editors saved TIMEOUT on blocks that now read the current state immediately.
+const timerBlockTypes = new Set<string>([scriptBlocks.onTimer, scriptBlocks.timerStart, scriptBlocks.timerStop,
+  scriptBlocks.timerElapsed, scriptBlocks.timerRunning]);
+function normalizeInteger(block: ScriptBlock, field: string, initial: number, min: number, max: number) {
+  const fields = block.fields ??= {};
+  fields[field] ??= initial;
+  fields[field] = integer(block, field, min, max);
+}
+
+const fixedFields: Partial<Record<ScriptBlockKind, Record<string, FieldValue>>> = {
+  [scriptBlocks.number]: { NUM: 0 },
+  [scriptBlocks.setVariable]: { VARIABLE: 'count' },
+  [scriptBlocks.readVariable]: { VARIABLE: 'initial_value' },
+  [scriptBlocks.compareVariable]: { VARIABLE: 'initial_value' },
+  [scriptBlocks.calculation]: { NAME: 'compute_value' },
+  [scriptBlocks.procedure]: { NAME: 'run_step' },
+  [scriptBlocks.range]: { MIN: 0, MAX: 100 },
+};
+function normalizeChoice(block: ScriptBlock, name: string, choices: readonly string[]) {
+  const fields = block.fields ??= {};
+  const value = String(fields[name] ?? choices[0]);
+  if (!choices.includes(value)) throw new ScriptBlockError(`无效的 ${name} 选项「${value}」`, block.id);
+  fields[name] = value;
+}
+
+export function normalizeScriptGraph(graph: ScriptGraph): ScriptGraph {
   const current = structuredClone(graph);
   for (const block of scriptGraphBlocks(current)) {
+    for (const [name, initial] of Object.entries(fixedFields[block.type] ?? {})) (block.fields ??= {})[name] ??= initial;
+    if (block.type === scriptBlocks.log) (block.fields ??= {}).TEXT ??= block.inputs?.OPERAND?.block ? '' : '调试信息';
+    if (timerBlockTypes.has(block.type)) {
+      (block.fields ??= {}).TIMER = String(timerChannel(block));
+    }
+    if (block.type === scriptBlocks.parameter && block.fields?.PARAM !== undefined) {
+      const param = String(block.fields.PARAM);
+      block.fields.PARAM = /^\d+$/.test(param) ? String(Number(param)) : param;
+    }
+    if (block.type === scriptBlocks.timerStart) {
+      normalizeChoice(block, 'MODE', ['once', 'count', 'loop']);
+      if (block.fields!.MODE === 'count') normalizeInteger(block, 'COUNT', 3, 1, Number.MAX_SAFE_INTEGER);
+    }
+    if (block.type === scriptBlocks.runControl) normalizeChoice(block, 'MODE', ['start', 'stop']);
+    if (block.type === scriptBlocks.arithmetic) normalizeChoice(block, 'OP', scriptArithmetic.map(([, key]) => key));
+    if ([scriptBlocks.compare, scriptBlocks.compareValues, scriptBlocks.compareVariable].some(t => t === block.type))
+      normalizeChoice(block, 'OP', scriptRelations.map(([, key]) => key));
+    if (block.type === scriptBlocks.state) normalizeChoice(block, 'STATE', scriptStates.map(([, key]) => key));
+    if (block.type === scriptBlocks.error) normalizeChoice(block, 'CODE', scriptErrors.map(([, key]) => key));
+    if (block.type === scriptBlocks.boolean) normalizeChoice(block, 'BOOL', ['FALSE', 'TRUE', 'UNSET']);
+    if (block.type === scriptBlocks.number) fieldNumber(block, 'NUM');
+    if (block.type === scriptBlocks.delay) normalizeInteger(block, 'MS', DEFAULT_DELAY_MS, 0, MAX_SCRIPT_MS);
+    if (block.type === scriptBlocks.wait || block.type === scriptBlocks.read) normalizeInteger(block, 'TIMEOUT', DEFAULT_WAIT_MS, 50, MAX_SCRIPT_MS);
+    if (block.type === scriptBlocks.repeat) normalizeInteger(block, 'COUNT', DEFAULT_REPEAT_COUNT, 1, MAX_EVENT_ITERATIONS);
+    if (block.type === scriptBlocks.onRun) normalizeInteger(block, 'PERIOD', DEFAULT_RUN_PERIOD, MIN_EVENT_PERIOD, MAX_SCRIPT_MS);
     if (block.type === scriptBlocks.branch && block.inputs?.NO && !block.extraState) {
       block.extraState = { elseIfCount: 0, hasElse: true };
     }
@@ -186,20 +253,32 @@ const scriptGraphSchema = z.custom<ScriptGraph>(validGraph, '积木数据无效�
     }
   }
   return withScriptBreakpoints(current, current.breakpoints ?? []);
+}
+
+const scriptGraphSchema = z.custom<ScriptGraph>(validGraph, `积木图无效或超出容量，每张流程最多 ${MAX_SCRIPT_BLOCKS} 个积木`).transform((graph, ctx) => {
+  try { return normalizeScriptGraph(graph); }
+  catch (reason) {
+    ctx.addIssue({ code: 'custom', message: reason instanceof Error ? reason.message : String(reason),
+      path: reason instanceof ScriptBlockError && reason.blockId ? [reason.blockId] : [] });
+    return z.NEVER;
+  }
 });
 export const masterScriptSchema = z.object({
   id,
   name: z.string().trim().min(1).max(120),
   revision: z.number().int().nonnegative(),
+  callbackTimeoutMs: callbackTimeoutSchema.optional(),
   graph: scriptGraphSchema,
 });
 export type MasterScript = z.infer<typeof masterScriptSchema>;
-export const scriptFileSchema = z.object({
+export const scriptFileSchema = masterScriptSchema.pick({ name: true, graph: true, callbackTimeoutMs: true }).extend({
   format: z.literal('modbus-master-script'),
   version: z.literal(1),
-  name: masterScriptSchema.shape.name,
-  graph: scriptGraphSchema,
 });
+
+export function serializeScriptFile({ name, graph, callbackTimeoutMs = CALLBACK_TIMEOUT_MS.default }: MasterScript): string {
+  return JSON.stringify({ format: 'modbus-master-script', version: 1, name, callbackTimeoutMs, graph });
+}
 
 export interface ScriptPointRef { slaveId: string; pointId: string }
 export interface FunctionSignature { id: string; name: string; parameters: string[]; returnsValue: boolean }
@@ -208,7 +287,26 @@ export interface ScriptHandlers<T> {
   onRun?: { blockId: string; periodMs: number; steps: T[] };
   timers: { blockId: string; channel: number; steps: T[] }[];
 }
-export interface ScriptProgram { steps: ScriptStep[]; functions: ScriptFunction[]; handlers?: ScriptHandlers<ScriptStep> }
+export interface ScriptProgram { steps: ScriptStep[]; functions: ScriptFunction[]; lua: ScriptLuaKernel; handlers?: ScriptHandlers<ScriptStep> }
+
+export function checkCallbackContexts(program: ScriptProgram): void {
+  const procedures = new Map(program.functions.filter(fn => fn.kind === 'procedure').map(fn => [fn.id, fn]));
+  const visited = new Set<string>();
+  const check = (steps: ScriptStep[]) => {
+    for (const step of steps) {
+      if (step.kind === 'delay') throw new ScriptBlockError('sleep_ms 仅允许在 on_start 协程中调用', step.blockId);
+      if (step.kind === 'call' && !visited.has(step.functionId)) {
+        visited.add(step.functionId);
+        check(procedures.get(step.functionId)!.steps);
+      }
+      if ('steps' in step) check(step.steps);
+      if (step.kind === 'attempt') check(step.handler);
+      if (step.kind === 'branch') { for (const arm of step.arms) check(arm.steps); check(step.no); }
+    }
+  };
+  if (program.handlers?.onRun) check(program.handlers.onRun.steps);
+  for (const timer of program.handlers?.timers ?? []) check(timer.steps);
+}
 type FunctionTable = ReadonlyMap<string, FunctionSignature>;
 export function isScriptDefinition(type: string) { return type === scriptBlocks.procedure || type === scriptBlocks.calculation; }
 const clockBlocks = new Set<string>([scriptBlocks.runPeriod, scriptBlocks.runControl, scriptBlocks.timerStart,
@@ -216,17 +314,17 @@ const clockBlocks = new Set<string>([scriptBlocks.runPeriod, scriptBlocks.runCon
 export function isScriptCall(type: string) { return type === scriptBlocks.call || type === scriptBlocks.callValue; }
 export function splitParameters(text: string): string[] { return text.trim() ? text.split(/[,，]/).map(name => name.trim()) : []; }
 
-export type ScriptOperand =
+export type ScriptOperand = { blockId?: string } & (
   | { kind: 'literal'; text: string }
-  | { kind: 'number'; value: number }
+  | { kind: 'number'; value: number; integerText?: string }
   | { kind: 'timerElapsed'; channel: number }
   | { kind: 'timerRunning'; channel: number }
   | { kind: 'callValue'; functionId: string; args: ScriptOperand[] }
-  | { kind: 'arithmetic'; operator: typeof scriptArithmetic[number][1]; left: ScriptOperand; right: ScriptOperand }
+  | { kind: 'arithmetic'; operator: typeof scriptArithmetic[number][1]; left: ScriptOperand; right: ScriptOperand; expression: number }
   | { kind: 'variable'; name: string }
   | { kind: 'point'; ref: ScriptPointRef }
   | { kind: 'boolean'; value: boolean }
-  | { kind: 'condition'; condition: ScriptCondition };
+  | { kind: 'condition'; condition: ScriptCondition });
 export type ScriptCondition = { blockId: string } & (
   | { kind: 'truth'; operand: ScriptOperand }
   | { kind: 'error'; code: ScriptErrorKind }
@@ -288,6 +386,14 @@ function fieldNumber(block: ScriptBlock, name: string): number {
   return value;
 }
 
+function numericOperand(block: ScriptBlock, name: string): Extract<ScriptOperand, {kind: 'number'}> {
+  const text = fieldText(block, name).trim();
+  const value = fieldNumber(block, name);
+  const scalar = luaNumericLiteral(text);
+  return typeof scalar === 'bigint' && !Number.isSafeInteger(value)
+    ? { kind: 'number', value, integerText: scalar.toString() } : { kind: 'number', value };
+}
+
 function integer(block: ScriptBlock, name: string, min: number, max: number): number {
   const value = fieldNumber(block, name);
   if (!Number.isInteger(value) || value < min || value > max) throw new ScriptBlockError(`请输入 ${min}–${max} 之间的整数`, block.id);
@@ -314,7 +420,8 @@ function variableName(block: ScriptBlock): string {
   return name;
 }
 
-interface CompileScope { functions: FunctionTable; include(id: string, caller: string): number; callCost: number; parameters: string[]; cooperative: boolean }
+interface CompileScope { functions: FunctionTable; include(id: string, caller: string): number; callCost: number; parameters: string[];
+  operators: Set<LuaOperator>; expressions: string[]; helpers: Set<LuaHelper> }
 
 function callOperands(block: ScriptBlock, scope: CompileScope) {
   const functionId = fieldText(block, 'FUNCTION');
@@ -329,7 +436,12 @@ function callOperands(block: ScriptBlock, scope: CompileScope) {
 }
 
 function reporter(block: ScriptBlock, scope: CompileScope): ScriptOperand {
+  return { ...compileReporter(block, scope), blockId: block.id };
+}
+
+function compileReporter(block: ScriptBlock, scope: CompileScope): ScriptOperand {
   if (!enabled(block)) throw new ScriptBlockError('请启用或移除停用的值积木', block.id);
+  if (block.type === scriptBlocks.variable || block.type === scriptBlocks.parameter) scope.helpers.add('read');
   if (block.type === scriptBlocks.callValue) return { kind: 'callValue', ...callOperands(block, scope) };
   if (block.type === scriptBlocks.parameter) {
     const index = fieldText(block, 'PARAM');
@@ -337,13 +449,18 @@ function reporter(block: ScriptBlock, scope: CompileScope): ScriptOperand {
     if (!name) throw new ScriptBlockError('请选择当前函数的参数', block.id);
     return { kind: 'variable', name };
   }
-  if (block.type === scriptBlocks.number) return { kind: 'number', value: fieldNumber(block, 'NUM') };
+  if (block.type === scriptBlocks.number) return numericOperand(block, 'NUM');
   if (block.type === scriptBlocks.timerElapsed || block.type === scriptBlocks.timerRunning)
     return { kind: block.type === scriptBlocks.timerElapsed ? 'timerElapsed' : 'timerRunning', channel: timerChannel(block) };
   if (block.type === scriptBlocks.arithmetic) {
     const operator = scriptArithmetic.find(([, key]) => key === fieldText(block, 'OP'))?.[1];
     if (!operator) throw new ScriptBlockError('请选择四则运算符', block.id);
-    return { kind: 'arithmetic', operator, left: slotOperand(block, 'A', scope), right: slotOperand(block, 'B', scope) };
+    scope.operators.add(operator);
+    const left = slotOperand(block, 'A', scope), right = slotOperand(block, 'B', scope);
+    const node = { kind: 'arithmetic' as const, operator, left, right, expression: scope.expressions.length };
+    let inputs = 0;
+    scope.expressions.push(lowerLuaExpression(node, () => `input(${++inputs})`));
+    return node;
   }
   if (block.type === scriptBlocks.variable) return { kind: 'variable', name: variableName(block) };
   if (block.type === scriptBlocks.pointValue) return { kind: 'point', ref: pointRef(block) };
@@ -372,8 +489,7 @@ function slotOperand(block: ScriptBlock, name: string, scope: CompileScope): Scr
       && (value.kind === 'boolean' || value.kind === 'condition' || value.kind === 'timerRunning')) throw new ScriptBlockError('此处需要数值', child.id);
     return value;
   }
-  const value = block.fields?.[name] === undefined ? scriptNumberSlots[block.type]?.[name] ?? 0 : fieldNumber(block, name);
-  return { kind: 'number', value };
+  return block.fields?.[name] === undefined ? { kind: 'number', value: scriptNumberSlots[block.type]?.[name] ?? 0 } : numericOperand(block, name);
 }
 
 function condition(parent: ScriptBlock, scope: CompileScope, input = 'CONDITION'): ScriptCondition {
@@ -400,8 +516,10 @@ function conditionBlock(block: ScriptBlock, scope: CompileScope): ScriptConditio
     case scriptBlocks.parameter:
     case scriptBlocks.callValue:
     case scriptBlocks.variable:
+      if (block.type !== scriptBlocks.boolean && block.type !== scriptBlocks.timerRunning) scope.helpers.add('truth');
       return { blockId, kind: 'truth', operand: reporter(block, scope) };
     case scriptBlocks.error: {
+      scope.helpers.add('protected');
       const code = scriptErrors.find(([, key]) => key === fieldText(block, 'CODE'))?.[1];
       if (!code) throw new ScriptBlockError('请选择错误类型', blockId);
       return { blockId, kind: 'error', code };
@@ -417,6 +535,8 @@ function conditionBlock(block: ScriptBlock, scope: CompileScope): ScriptConditio
     case scriptBlocks.compareVariable: {
       const relation = scriptRelations.find(([, value]) => value === fieldText(block, 'OP'))?.[1];
       if (!relation) throw new ScriptBlockError('请选择比较方式', block.id);
+      scope.operators.add(relation);
+      if (block.type === scriptBlocks.compareVariable) scope.helpers.add('read');
       if (block.type === scriptBlocks.compareValues) return { blockId, kind: 'compareValues', relation, left: slotOperand(block, 'A', scope), right: slotOperand(block, 'B', scope) };
       const ref = pointRef(block);
       return { blockId, kind: 'compare', ref, relation, operand: block.type === scriptBlocks.compare
@@ -464,6 +584,7 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
         break;
       case scriptBlocks.setVariable:
       case scriptBlocks.changeVariable:
+        if (block.type === scriptBlocks.changeVariable) { scope.operators.add('add'); scope.helpers.add('read'); }
         steps.push({ blockId, kind: block.type === scriptBlocks.setVariable ? 'setVariable' : 'changeVariable',
           variable: variableName(block), operand: slotOperand(block, 'OPERAND', scope) });
         break;
@@ -471,6 +592,7 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
       case scriptBlocks.log: {
         const message = fieldText(block, 'TEXT');
         const value = block.inputs?.OPERAND?.block;
+        if (value) scope.helpers.add('observe');
         if (!message.trim() && !value) throw new ScriptBlockError('请输入日志文字或接入一个值', blockId);
         steps.push({ blockId, kind: 'log', message, ...(value ? { operand: reporter(value, scope) } : {}) });
         break;
@@ -486,16 +608,17 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
       case scriptBlocks.forever:
       case scriptBlocks.repeatUntil:
       case scriptBlocks.repeat: {
-        const times = block.type === scriptBlocks.repeat ? integer(block, 'COUNT', 1, scope.cooperative ? MAX_EVENT_ITERATIONS : 100) : 1;
+        const times = block.type === scriptBlocks.repeat ? integer(block, 'COUNT', 1, MAX_EVENT_ITERATIONS) : 1;
         const body = stack(block.inputs?.BODY?.block, scope, depth + 1, true);
         if (!body.steps.length) throw new ScriptBlockError('循环内至少需要一个步骤', blockId);
-        count += (scope.cooperative ? 1 : times) * body.count;
+        count += body.count;
         if (block.type === scriptBlocks.repeatUntil) steps.push({blockId, kind:'repeatUntil', condition:condition(block, scope), steps:body.steps});
         else if (block.type === scriptBlocks.forever) steps.push({ blockId, kind: 'forever', steps: body.steps });
         else steps.push({ blockId, kind: 'repeat', count: times, steps: body.steps });
         break;
       }
       case scriptBlocks.attempt: {
+        scope.helpers.add('protected');
         const body = stack(block.inputs?.BODY?.block, scope, depth + 1, inLoop);
         const handler = stack(block.inputs?.ERROR?.block, scope, depth + 1, inLoop);
         if (!body.steps.length) throw new ScriptBlockError('请连接要尝试执行的步骤', blockId);
@@ -528,7 +651,13 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
   return { steps, count };
 }
 
-export function compileScriptProgram(graph: ScriptGraph): ScriptProgram {
+export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; program: ScriptProgram } {
+  const parsed = scriptGraphSchema.safeParse(input);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]!;
+    throw new ScriptBlockError(issue.message, issue.path.length ? String(issue.path[0]) : undefined);
+  }
+  const graph = parsed.data;
   const roots = (graph.blocks?.blocks ?? []).filter(enabled);
   const stacks = roots.filter(block => !isScriptDefinition(block.type));
   const start = stacks.find(block => block.type === scriptBlocks.start);
@@ -555,8 +684,10 @@ export function compileScriptProgram(graph: ScriptGraph): ScriptProgram {
   }
   const compiled = new Map<string, { fn: ScriptFunction; cost: number }>();
   const visiting = new Set<string>();
-  const cooperative = events.length > 0;
-  const scopeFor = (parameters: string[]): CompileScope => ({ functions: headers, parameters, callCost: 0, include, cooperative });
+  const operators = new Set<LuaOperator>();
+  const expressions: string[] = [];
+  const helpers = new Set<LuaHelper>();
+  const scopeFor = (parameters: string[]): CompileScope => ({ functions: headers, parameters, callCost: 0, include, operators, expressions, helpers });
   function include(id: string, caller: string): number {
     const cached = compiled.get(id);
     if (cached) return cached.cost;
@@ -601,8 +732,11 @@ export function compileScriptProgram(graph: ScriptGraph): ScriptProgram {
   handlers.timers.sort((a, b) => a.channel - b.channel);
   const functions = [...definitions.keys()].sort().map(id => { include(id, id); return compiled.get(id)!.fn; });
   const usesClock = handlers.onRun || handlers.timers.length || [...scriptGraphBlocks(graph)].some(block => enabled(block) && clockBlocks.has(block.type));
-  return { steps, functions, ...(usesClock ? { handlers } : {}) };
+  const control = compileLuaControl(steps, functions, usesClock ? handlers : undefined);
+  return { graph, program: { steps, functions, lua: compileLuaKernel(operators, expressions, helpers, control), ...(usesClock ? { handlers } : {}) } };
 }
+
+export function compileScriptProgram(input: ScriptGraph): ScriptProgram { return compileScriptModel(input).program; }
 
 export function compileMasterScript(graph: ScriptGraph): ScriptStep[] {
   return compileScriptProgram(graph).steps;

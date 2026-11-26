@@ -14,17 +14,20 @@ export function VariableWatch({ groups, run, onSelect }: {
   return <div className="script-watch">{groups.flatMap(group => {
     const scopes = run?.variableScopes.filter(item => item.functionId === group.functionId) ?? [];
     return (scopes.length ? scopes : [undefined]).map(scope => {
-      const values = new Map(scope?.values.map(({ name, value }) => [name, value]));
+      const values = new Map(scope?.values.map(row => [row.name, row]));
       const status = group.functionId === null ? (run ? runStatus[run.state] : '未运行')
         : scope ? (scope.inCall ? '本次调用' : '上次调用') : '未调用';
       return <section key={JSON.stringify([group.functionId, scope?.source])} aria-label={group.label}>
         <header><strong title={group.label}>{group.label}{group.functionId !== null && '()'}</strong>
           <span data-active={scope?.inCall || undefined}>{scope?.source && `${scope.source} · `}{status}</span></header>
         <dl>{Array.from(group.names, ([name, blockId]) => {
-          const value = values.get(name);
+          const row = values.get(name);
+          const value = row?.value;
           return <div key={name} data-variable={name}><dt><button type="button" className="focus-ring"
             title={'定位积木 · ' + name} onClick={() => onSelect(blockId)}>{name}</button></dt>
-            <dd data-assigned={value !== undefined || undefined}>{value === undefined ? '未赋值' : typeof value === 'string' ? JSON.stringify(value) : String(value)}</dd>
+            <dd data-assigned={value !== undefined || undefined} title={row?.kind === 'integer64' ? 'Lua 64 位整数' : undefined}>
+              {value === undefined ? '未赋值' : typeof value === 'string' && row?.kind !== 'integer64' ? JSON.stringify(value) : String(value)}
+            </dd>
           </div>;
         })}</dl>
       </section>;

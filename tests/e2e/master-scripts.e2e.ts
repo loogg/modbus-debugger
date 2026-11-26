@@ -243,7 +243,11 @@ describe('Master scripts in the Blockly workspace', () => {
     expect((await command({ type: 'script.save', script, expectedRevision: null })).ok).toBe(true);
     await view().$(`button=${script.name}`).click();
     await ready();
-    await readScriptLua();
+    const lines = (await readScriptLua()).split('\n');
+    const loopStart = lines.findIndex(l => l.trim() === 'for _step = 1, 3 do') + 1;
+    const loopEnd = lines.findIndex(l => l.trim() === 'modbus.delay(150)') + 2;
+    expect(loopStart).toBeGreaterThan(0);
+    expect(lines[loopEnd - 1]?.trim()).toBe('end');
     if (await view().$('[aria-label="收起积木托盘"]').isDisplayed()) await view().$('[aria-label="收起积木托盘"]').click();
     await view().$('[aria-label="缩小积木"]').click();
     await expect(view().$('[aria-label="画布缩放"]')).toHaveText('83%');
@@ -261,7 +265,7 @@ describe('Master scripts in the Blockly workspace', () => {
     await expect(current).toHaveAttribute('data-current', 'true');
     await expect(view().$('g.script-selected[data-id="cycle"] > .script-block-outline')).toBeDisplayed();
     await expect(view().$('g.script-current[data-id="sample-log"] > .script-block-outline')).toBeDisplayed();
-    await expect(view().$('.script-range-label')).toHaveText('选中第 2–9 行');
+    await expect(view().$('.script-range-label')).toHaveText(`选中第 ${loopStart}–${loopEnd} 行`);
     const evidence = path.resolve('out/test-temp/master-script-debug-evidence');
     fs.mkdirSync(evidence, { recursive: true });
     await browser.saveScreenshot(path.join(evidence, 'selection-and-current.png'));

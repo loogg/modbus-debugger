@@ -26,6 +26,7 @@ export class WorkspaceService {
   private rev = 0;
   /** Bumped on every prefs write so the runtime can stream prefs changes to the renderer. */
   private prefsRev = 0;
+  lastPathWarning: string | null = null;
 
   constructor(private readonly userDataDir: string) {
     this.prefsPath = path.join(userDataDir, 'prefs.json');
@@ -56,8 +57,10 @@ export class WorkspaceService {
   }
 
   updatePrefs(patch: Partial<Prefs>): Prefs {
-    this.prefs = { ...this.prefs, ...patch, window: { ...this.prefs.window, ...(patch.window ?? {}) } };
-    fs.writeFileSync(this.prefsPath, JSON.stringify(this.prefs, null, 2), 'utf-8');
+    const next = { ...this.prefs, ...patch, window: { ...this.prefs.window, ...(patch.window ?? {}) } };
+    const result = exportTextToFile(this.prefsPath, JSON.stringify(next, null, 2));
+    if (!result.ok) throw new Error(result.error);
+    this.prefs = next;
     this.prefsRev += 1;
     return this.prefs;
   }
@@ -91,6 +94,7 @@ export class WorkspaceService {
   }
 
   newWorkspace(): void {
+    this.lastPathWarning = null;
     this.workspace = emptyWorkspace();
     this.filePath = null;
     this.dirty = true;
@@ -104,7 +108,7 @@ export class WorkspaceService {
       const raw = JSON.parse(fs.readFileSync(target, 'utf-8')) as unknown;
       this.workspace = migrateWorkspace(raw);
       this.filePath = target;
-      this.prefs = this.updatePrefs({ lastWorkspacePath: target });
+      this.rememberPath(target);
       this.dirty = false;
       this.rev += 1;
       return { ok: true };
@@ -125,6 +129,7 @@ export class WorkspaceService {
   adopt(workspace: Workspace, filePath: string | null): void {
     this.workspace = workspaceSchema.parse(workspace);
     this.filePath = filePath;
+    this.lastPathWarning = null;
     this.dirty = true;
     this.rev += 1;
   }
@@ -145,18 +150,25 @@ export class WorkspaceService {
   saveTo(target?: string): { ok: boolean; error?: string; path?: string } {
     const dest = target ?? this.filePath;
     if (!dest) return { ok: false, error: 'no workspace path; use save-as first' };
-    try {
-      const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(tmp, JSON.stringify(this.workspace, null, 2), 'utf-8');
-      fs.renameSync(tmp, dest);
-      this.filePath = dest;
-      this.dirty = false;
-      this.prefs = this.updatePrefs({ lastWorkspacePath: dest });
-      return { ok: true, path: dest };
-    } catch (err) {
-      return { ok: false, error: String(err) };
-    }
+    return this.persist(dest, this.workspace);
+  }
+
+  private persist(dest: string, next: Workspace): { ok: boolean; error?: string; path?: string } {
+    const saved = exportTextToFile(dest, JSON.stringify(next, null, 2));
+    if (!saved.ok) return saved;
+    if (next !== this.workspace) { this.workspace = next; this.rev++; }
+    this.filePath = dest;
+    this.dirty = false;
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
+    this.rememberPath(dest);
+    return saved;
+  }
+
+  private rememberPath(dest: string) {
+    this.lastPathWarning = null;
+    if (this.prefs.lastWorkspacePath === dest) return;
+    try { this.updatePrefs({ lastWorkspacePath: dest }); }
+    catch (err) { this.lastPathWarning = `记录工作区最近打开路径失败：${String(err)}`; }
   }
 
   scheduleAutosave(): void {
@@ -168,8 +180,9 @@ export class WorkspaceService {
   }
 
   /** Persist editing operations without exporting or asking for a workspace filename. */
-  saveManaged(): { ok: boolean; error?: string; path?: string } {
-    return this.saveTo(this.filePath ?? path.join(this.userDataDir, 'workspaces', `workspace-${randomUUID()}.workspace.json`));
+  saveManaged(candidate?: Workspace): { ok: boolean; error?: string; path?: string } {
+    const dest = this.filePath ?? path.join(this.userDataDir, 'workspaces', `workspace-${randomUUID()}.workspace.json`);
+    return this.persist(dest, candidate ? workspaceSchema.parse(candidate) : this.workspace);
   }
 
   flushAutosave(): void {

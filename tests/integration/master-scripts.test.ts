@@ -1,20 +1,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { expect, it, vi } from 'vitest';
-import { compileMasterScript, scriptBlocks, scriptFileSchema, scriptPointKey, type MasterScript, type ScriptBlock, type ScriptGraph } from '../../src/domain/master-script';
+import { beforeAll, expect, it, vi } from 'vitest';
+import { loadScriptLua } from '../../src/main/runtime/script-lua-handle';
+import { compileMasterScript, masterScriptSchema, scriptBlocks, scriptFileSchema, scriptPointKey, serializeScriptFile, type MasterScript, type ScriptBlock, type ScriptGraph } from '../../src/domain/master-script';
 import { workspaceSchema } from '../../src/domain/model';
 import { buildTcpAdu, encodeResponsePdu } from '../../src/domain/protocol';
 import { RuntimeManager } from '../../src/main/runtime/manager';
 import { MasterScriptRunner } from '../../src/main/runtime/master-script-runner';
+import { ScriptRuns } from '../../src/main/runtime/script-runs';
 import { RuntimeNotifications } from '../../src/main/runtime/runtime-notifications';
 import { HistoryStore } from '../../src/main/services/history';
 import { WorkspaceService } from '../../src/main/services/workspace';
 import type { ScriptApprovalView } from '../../src/shared/script-run';
+import type { AppDelta } from '../../src/shared/snapshot';
 import { createScratch } from '../../tools/test-paths.mjs';
 import { FakeTransport } from '../support/fake';
 import { templateWorkspace } from '../support/template-workspace';
 
 const reference = { slaveId: 's1', pointId: 'Keep' };
+beforeAll(loadScriptLua);
 const POINT = scriptPointKey(reference);
 const read: ScriptBlock = { type: scriptBlocks.read, id: 'read', fields: { POINT, TIMEOUT: 800 } };
 const write: ScriptBlock = { type: scriptBlocks.write, id: 'write', fields: { POINT, VALUE: '44' } };
@@ -41,6 +45,18 @@ function localRunner() {
   const unused = (): never => { throw new Error('本流程只操作运行变量'); };
   return new MasterScriptRunner({ point: unused, slave: unused, write: unused }, new RuntimeNotifications());
 }
+
+it('clears a run seen by a newly opened window before the first delta tick', async () => {
+  const registry = new ScriptRuns(localRunner);
+  const script = scriptDef(graphFor(setCounter));
+  const run = registry.start(script);
+  expect(registry.snapshots()[script.id]?.id).toBe(run.id);
+  registry.clear();
+  expect(registry.delta()).toEqual({ [script.id]: null });
+  expect(registry.delta()).toBeUndefined();
+  expect(registry.forRun(run.id)).toBeUndefined();
+  await registry.settle();
+});
 
 it('passes parameters by value through nested functions, steps into a procedure, and restores caller locals', async () => {
   const parameter = (id: string): ScriptBlock => ({ type: 'mb_parameter', id, fields: { PARAM: '0' } });
@@ -123,6 +139,13 @@ it('detects duplicate names, stale references, parameter misuse, recursive calls
   b.inputs!.BODY!.block = { id: 'loop', type: 'mb_repeat', fields: { COUNT: 100 },
     inputs: { BODY: { block: { id: 'delay', type: 'mb_delay', fields: { MS: 0 } } } } };
   a.inputs!.BODY!.block = { id: 'outer-loop', type: 'mb_repeat', fields: { COUNT: 20 }, inputs: { BODY: { block: invoke('inner-call', 'b') } } };
+  expect(compileMasterScript(graph)).toHaveLength(1);
+  // Loops retain a cursor, but the statically expanded procedure call tree is still bounded.
+  for (let i = 0; i < 11; i++) {
+    const callee = i === 0 ? 'a' : 'fan-' + (i - 1);
+    graph.blocks!.blocks.push({ id: 'fan-' + i, type: 'mb_procedure', fields: { NAME: 'fan_' + i },
+      inputs: { BODY: { block: { ...invoke('left-' + i, callee), next: { block: invoke('right-' + i, callee) } } } } });
+  }
   expect(() => compileMasterScript(graph)).toThrow('最多执行');
   expect(() => compileMasterScript(graphFor(invoke('missing', 'b')))).toThrow('请选择存在');
   expect(() => compileMasterScript(graphFor({ ...setCounter, inputs: { OPERAND: { block: { id: 'orphan', type: 'mb_parameter', fields: { PARAM: '0' } } } } }))).toThrow('当前函数的参数');
@@ -278,6 +301,121 @@ it('saves, exports, approves, and runs the configured device steps over the exis
   } finally { await h.manager.stop(); }
 });
 
+it('validates the integer watchdog range on workspaces and portable scripts, including legacy files', () => {
+  const script = scriptDef(graphFor(setCounter));
+  const legacy = { format: 'modbus-master-script', version: 1, name: script.name, graph: script.graph };
+  expect(scriptFileSchema.safeParse(legacy).success).toBe(true);
+  expect(scriptFileSchema.parse(JSON.parse(serializeScriptFile(script))).callbackTimeoutMs).toBe(1000);
+  for (const value of [10, 100, 1000, 10_000]) {
+    expect(masterScriptSchema.parse({ ...script, callbackTimeoutMs: value }).callbackTimeoutMs).toBe(value);
+    expect(scriptFileSchema.parse({ ...legacy, callbackTimeoutMs: value }).callbackTimeoutMs).toBe(value);
+  }
+  for (const value of [0, 9, 10_001, 100.5, '200', null, NaN, Infinity]) {
+    expect(masterScriptSchema.safeParse({ ...script, callbackTimeoutMs: value }).success).toBe(false);
+    expect(scriptFileSchema.safeParse({ ...legacy, callbackTimeoutMs: value }).success).toBe(false);
+  }
+});
+
+it('keeps a live handle’s timeout when saving a new limit and carries it through workspace and export reloads', async () => {
+  const { manager, service, root } = await setup();
+  const script = scriptDef(graphFor(setCounter));
+  const report = () => manager.buildSnapshot().scriptRuns![script.id]!;
+  try {
+    expect(await manager.handleCommand({ type: 'script.save', script, expectedRevision: null })).toMatchObject({ ok: true });
+    await manager.handleCommand({ type: 'script.start', scriptId: script.id, revision: 0, debug: true });
+    expect(report()).toMatchObject({ state: 'paused', callbackTimeoutMs: 1000 });
+    expect(await manager.handleCommand({ type: 'script.save', script: { ...script, callbackTimeoutMs: 2500 }, expectedRevision: 0 })).toMatchObject({ ok: true });
+    expect(await manager.handleCommand({ type: 'script.save', script: { ...script, callbackTimeoutMs: 0 }, expectedRevision: 1 })).toMatchObject({ ok: false });
+    expect(await manager.handleCommand({ type: 'script.save', script, expectedRevision: 1 })).toMatchObject({ ok: true, value: { callbackTimeoutMs: 2500 } });
+    expect(report()).toMatchObject({ state: 'paused', callbackTimeoutMs: 1000 });
+    const file = path.join(root, 'callback-timeout.modbus-script.json');
+    expect(await manager.handleCommand({ type: 'script.exportFile', scriptId: script.id, path: file })).toMatchObject({ ok: true });
+    expect(scriptFileSchema.parse(JSON.parse(fs.readFileSync(file, 'utf8'))).callbackTimeoutMs).toBe(2500);
+    const workspacePath = service.currentPath!;
+    expect(await manager.handleCommand({ type: 'workspace.open', path: workspacePath })).toMatchObject({ ok: true });
+    expect(await manager.handleCommand({ type: 'script.start', scriptId: script.id, revision: 2 })).toMatchObject({ ok: true, value: { callbackTimeoutMs: 2500 } });
+    await expect.poll(() => report().state).toBe('passed');
+  } finally { await manager.stop(); }
+});
+
+it('routes independent T0, cycles, debugging and workspace removal by script and run ID', async () => {
+  const { manager } = await setup();
+  const changes: AppDelta[] = [];
+  manager.onDelta = d => changes.push(d);
+  const runs = () => manager.buildSnapshot().scriptRuns!;
+  const start = (scriptId: string) => manager.handleCommand({ type: 'script.start', scriptId, revision: 0 });
+  try {
+    for (const [id, seed, period] of [['a', 100, 20], ['b', 900, 50]] as const) {
+      const graph = graphFor({ ...setCounter, fields: { VARIABLE: counter, OPERAND: seed } },
+        { id: 'arm', type: 'mb_timer_start', fields: { TIMER: 0, PERIOD: period, MODE: 'loop' } });
+      graph.blocks!.blocks.push({ id: 'timer', type: 'mb_on_timer', fields: { TIMER: 0 }, next: { block: changeCounter } },
+        { id: 'cycle', type: 'mb_on_run', fields: { PERIOD: period + 10 }, next: { block: { id: 'log', type: 'mb_log', fields: { TEXT: id } } } });
+      if (id === 'a') graph.breakpoints = ['change'];
+      expect(await manager.handleCommand({ type: 'script.save', script: { id, name: id, graph }, expectedRevision: null })).toMatchObject({ ok: true });
+    }
+    const [a, b] = await Promise.all([start('a'), start('b')]);
+    expect([a.ok, b.ok]).toEqual([true, true]);
+    await expect.poll(() => runs().a?.state).toBe('paused');
+    const paused = runs().a!;
+    expect(paused.current).toMatchObject({ blockId: 'change', source: 'T0' });
+    expect(paused.pause?.variables).toContainEqual({ name: counter, value: '100' });
+    await expect.poll(() => runs().b?.events?.onRun?.calls).toBeGreaterThan(1);
+    const peer = runs().b!;
+    expect(peer.variableScopes[0]?.values[0]?.value).toBeGreaterThan(900);
+    expect(peer.events?.timers[0]).toMatchObject({ channel: 0, periodMs: 50 });
+    expect(runs().a!.events?.timers[0]).toMatchObject({ channel: 0, periodMs: 20 });
+    expect(await start('a')).toMatchObject({ ok: false, error: expect.stringContaining('已经在运行') });
+    expect(await manager.handleCommand({ type: 'script.resume', runId: peer.id, token: paused.pause!.token, mode: 'continue' })).toMatchObject({ ok: false });
+    expect(await manager.handleCommand({ type: 'script.resume', runId: paused.id, token: paused.pause!.token, mode: 'step' })).toMatchObject({ ok: true });
+    await expect.poll(() => runs().a?.pause?.reason).toBe('step');
+    expect(runs().a?.variableScopes[0]?.values[0]?.value).toBe(101);
+    expect(await manager.handleCommand({ type: 'script.delete', scriptId: 'b', expectedRevision: 0 })).toMatchObject({ ok: false });
+    await manager.handleCommand({ type: 'script.stop', runId: paused.id });
+    await expect.poll(() => runs().a?.state).toBe('stopped');
+    const before = runs().b!.completed;
+    await expect.poll(() => runs().b!.completed).toBeGreaterThan(before);
+    expect(await start('a')).toMatchObject({ ok: true });
+    const replacement = runs().a!.id;
+    expect(replacement).not.toBe(paused.id);
+    await manager.handleCommand({ type: 'script.stop', runId: paused.id });
+    await expect.poll(() => runs().a?.state).toBe('paused');
+    await manager.handleCommand({ type: 'script.stop', runId: replacement });
+    expect(await manager.handleCommand({ type: 'script.delete', scriptId: 'a', expectedRevision: 0 })).toMatchObject({ ok: true });
+    expect(Object.keys(runs())).toEqual(['b']);
+    expect(changes.some(d => d.scriptRuns?.a === null)).toBe(true);
+    expect(changes.some(d => d.scriptRuns?.b?.id === peer.id)).toBe(true);
+    await manager.handleCommand({ type: 'workspace.new' });
+    expect(runs()).toEqual({});
+    expect(changes.some(d => d.scriptRuns?.b === null)).toBe(true);
+    expect(await manager.handleCommand({ type: 'script.pause', runId: peer.id })).toMatchObject({ ok: false });
+  } finally { await manager.stop(); }
+});
+
+it('confirms simultaneous high-risk writes independently on a shared device connection', async () => {
+  const { manager, transport } = await setup(true);
+  const runs = () => manager.buildSnapshot().scriptRuns!;
+  try {
+    for (const [id, value] of [['a', 12], ['b', 34]] as const) {
+      const graph = graphFor({ ...setCounter, fields: { VARIABLE: counter, OPERAND: value } },
+        { ...write, inputs: { OPERAND: { block: counterValue } } });
+      expect(await manager.handleCommand({ type: 'script.save', script: { id, name: id, graph }, expectedRevision: null })).toMatchObject({ ok: true });
+      const params = { scriptId: id, revision: 0 };
+      const plan = await manager.handleCommand({ type: 'script.plan', ...params });
+      if (!plan.ok) throw Error(plan.error);
+      expect(await manager.handleCommand({ type: 'script.start', ...params, approval: (plan.value as ScriptApprovalView).key })).toMatchObject({ ok: true });
+    }
+    await expect.poll(() => [runs().a?.pendingWrite?.value, runs().b?.pendingWrite?.value]).toEqual(['12', '34']);
+    const { a, b } = runs();
+    expect(await manager.handleCommand({ type: 'script.confirmWrite', runId: a!.id, token: b!.pendingWrite!.token })).toMatchObject({ ok: false });
+    expect(await manager.handleCommand({ type: 'script.confirmWrite', runId: b!.id, token: b!.pendingWrite!.token })).toMatchObject({ ok: true });
+    await expect.poll(() => runs().b?.state).toBe('passed');
+    expect(runs().a?.pendingWrite?.value).toBe('12');
+    expect(await manager.handleCommand({ type: 'script.confirmWrite', runId: a!.id, token: a!.pendingWrite!.token })).toMatchObject({ ok: true });
+    await expect.poll(() => runs().a?.state).toBe('passed');
+    expect(transport.sent.filter(frame => frame[7] === 6).map(frame => frame[11])).toEqual([34, 12]);
+  } finally { await manager.stop(); }
+});
+
 it('stores confirmed values by name, compares after an explicit new sample, and clears variables for each run', async () => {
   const h = await setup();
   try {
@@ -369,11 +507,11 @@ it('disarms event callbacks when a different workspace is opened', async () => {
     const target = path.join(h.root, 'new.workspace.json');
     fs.writeFileSync(target, JSON.stringify({ ...h.service.current, name: 'next', masterScripts: [] }));
     expect(await h.manager.handleCommand({ type: 'workspace.open', path: target })).toMatchObject({ ok: true });
-    await expect.poll(() => h.manager.buildSnapshot().scriptRun?.state).toBe('stopped');
+    expect(h.manager.buildSnapshot().scriptRun).toBeNull();
     const writes = h.transport.sent.filter(frame => frame[7] === 6).length;
     await new Promise(resolve => setTimeout(resolve, 90));
     expect(h.transport.sent.filter(frame => frame[7] === 6)).toHaveLength(writes);
-    expect(h.manager.buildSnapshot().scriptRun?.events?.timers).toEqual([]);
+    expect(h.manager.buildSnapshot().scriptRuns).toEqual({});
   } finally { await h.manager.stop(); }
 });
 
@@ -559,7 +697,8 @@ it('rejects unsupported, disconnected and over-expanded flows', () => {
   expect(() => compileMasterScript({ blocks: { languageVersion: 0, blocks: [...graphFor(write).blocks!.blocks, read] } })).toThrow('同一个');
   const delay: ScriptBlock = { type: scriptBlocks.delay, id: 'pause', fields: { MS: 1 } };
   const loop: ScriptBlock = { type: scriptBlocks.repeat, id: 'inner', fields: { COUNT: 100 }, inputs: { BODY: { block: delay } } };
-  expect(() => compileMasterScript(graphFor({ ...loop, id: 'outer', inputs: { BODY: { block: loop } } }))).toThrow('1000');
+  expect(compileMasterScript(graphFor({ ...loop, id: 'outer', inputs: { BODY: { block: loop } } }))).toHaveLength(1);
+  expect(() => compileMasterScript(graphFor({ ...loop, fields: { COUNT: 1_000_001 } }))).toThrow('1000000');
   expect(scriptFileSchema.safeParse({ format: 'modbus-master-script', version: 1, name: 'bad', graph: { blocks: { languageVersion: 0, blocks: [{ type: 'other', id: 'x' }] } } }).success).toBe(false);
   expect(compileMasterScript(graphFor({ ...write, enabled: false }, read))).toEqual([{ kind: 'read', blockId: 'read', ref: reference, timeoutMs: 800 }]);
   expect(() => compileMasterScript(graphFor({ ...capture, fields: { ...capture.fields, VARIABLE: '  ' } }))).toThrow('变量名');

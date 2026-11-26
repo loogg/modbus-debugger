@@ -31,7 +31,7 @@ const config: ForgeConfig = {
       // external in vite.main.config.ts) has to be copied into the package explicitly.
       const src = path.resolve(__dirname, 'node_modules');
       const dest = path.join(buildPath, 'node_modules');
-      const dirs = ['sql.js', 'serialport', '@serialport', 'debug', 'ms', 'node-gyp-build', 'node-addon-api'];
+      const dirs = ['sql.js', 'wasmoon', 'serialport', '@serialport', 'debug', 'ms', 'node-gyp-build', 'node-addon-api'];
       for (const d of dirs) {
         const from = path.join(src, d);
         if (fs.existsSync(from)) fs.cpSync(from, path.join(dest, d), { recursive: true });

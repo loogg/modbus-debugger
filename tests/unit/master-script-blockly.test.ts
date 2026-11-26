@@ -47,7 +47,7 @@ it('preserves function identity across renames and retains meaningful surplus ar
     expect(call.getField('FUNCTION')!.getText()).toBe('取首个值');
     expect(param.getField('PARAM')!.getText()).toBe('读数');
     const legacyLua = generateScriptLua(ws, graphOf(ws));
-    expect(legacyLua).toContain('local function compute_value(arg_1, arg_2)\n  return arg_1\nend');
+    expect(legacyLua).toMatch(/local function compute_value\(arg_1, arg_2\)\s+return _ops\.read\(arg_1, "读数"\)\s+end/);
     expect(legacyLua).toContain('local count = compute_value(0, 17)');
     fn.setFieldValue('读数', 'PARAMS'); synchronizeScriptFunctions(ws);
     expect(call.getFieldValue('ARG_LABEL1')).toContain('多余');
@@ -72,11 +72,11 @@ it('round-trips the temperature alarm with editable numeric sockets, source rang
     expect(compileScriptProgram(saved)).toEqual(compileScriptProgram(graph));
     expect(withScriptBreakpoints(saved, ['initial-count', 'increment', 'excess-degrees']).breakpoints).toEqual(['initial-count', 'increment']);
     const source = generateScriptLuaSource(ws, saved);
-    expect(source.text).toContain('over_limit_count = over_limit_count + 1');
-    expect(source.text).toContain('local function exceeds_limit(temperature, threshold)\n  return temperature > threshold\nend');
-    expect(source.text).toContain('print("温度连续三次超限，超出阈值（°C）", temperature - threshold)');
-    expect(source.text).toContain('if exceeds_limit(current_temperature, 70) then');
-    expect(source.text).toContain('log_overheat(current_temperature, 70)');
+    expect(source.text).toContain('over_limit_count = _ops.add(_ops.read(over_limit_count, "over_limit_count"), 1)');
+    expect(source.text).toMatch(/local function exceeds_limit\(temperature, threshold\)\s+return _ops\.gt\(_ops\.read\(temperature, "temperature"\), _ops\.read\(threshold, "threshold"\)\)\s+end/);
+    expect(source.text).toContain('print("温度连续三次超限，超出阈值（°C）", _ops.observe(function() return _ops.subtract(_ops.read(temperature, "temperature"), _ops.read(threshold, "threshold")) end))');
+    expect(source.text).toContain('if exceeds_limit(_ops.read(current_temperature, "current_temperature"), 70) then');
+    expect(source.text).toContain('log_overheat(_ops.read(current_temperature, "current_temperature"), 70)');
     expect(source.ranges.get('over-limit')!.last).toBeLessThan(source.ranges.get('start')!.first);
     expect(source.ranges.get('excess-degrees')).toEqual(source.ranges.get('alarm'));
     const math = ws.getBlockById('at-three')!;
@@ -85,9 +85,9 @@ it('round-trips the temperature alarm with editable numeric sockets, source rang
     const a = ws.newBlock('mb_arithmetic', 'nested');
     a.setFieldValue('divide', 'OP');
     socket.connect(a.outputConnection!);
-    expect(generateScriptLua(ws, graphOf(ws))).toContain('over_limit_count == 0 / 1');
+    expect(generateScriptLua(ws, graphOf(ws))).toContain('_ops.eq(_ops.read(over_limit_count, "over_limit_count"), _ops.divide(0, 1))');
     a.unplug(); a.dispose();
-    expect(socket.targetBlock()?.getFieldValue('NUM')).toBe(12.5);
+    expect(Number(socket.targetBlock()?.getFieldValue('NUM'))).toBe(12.5);
   } finally { ws.dispose(); }
 });
 
@@ -194,9 +194,9 @@ it('preserves log operands and executable breakpoints through Blockly editing an
     expect(portable.graph.breakpoints).toEqual(['intro']);
     expect(compileMasterScript(portable.graph)).toEqual([
       { blockId: 'intro', kind: 'log', message: '开始 "恢复"' },
-      { blockId: 'readout', kind: 'log', message: '确认值', operand: { kind: 'point', ref: { slaveId: 's1', pointId: 'Keep' } } },
+      { blockId: 'readout', kind: 'log', message: '确认值', operand: { blockId: 'ref', kind: 'point', ref: { slaveId: 's1', pointId: 'Keep' } } },
     ]);
-    expect(generateScriptLua(workspace, saved)).toBe('print("开始 \\"恢复\\"")\nprint("确认值", modbus.value("s1", "Keep"))');
+    expect(generateScriptLua(workspace, saved)).toContain('print("开始 \\"恢复\\"")\n  print("确认值", _ops.observe(function() return modbus.value("s1", "Keep") end))');
     workspace.getBlockById('intro')!.setFieldValue('', 'TEXT');
     expect(() => compileMasterScript(graphOf(workspace))).toThrow('请输入日志文字或接入一个值');
   } finally { bindings.delete(workspace); workspace.dispose(); }

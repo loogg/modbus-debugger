@@ -75,6 +75,7 @@ export interface SlaveStateView {
 }
 
 export interface AppSnapshot {
+  scriptRuns?: Record<string, ScriptRunView>;
   update?: UpdateState;
   scriptRun?: ScriptRunView | null;
   revision: number;
@@ -99,6 +100,7 @@ export interface AppSnapshot {
 export interface SnapshotOptions { includeDiagnostics?: boolean }
 
 export interface AppDelta {
+  scriptRuns?: Record<string, ScriptRunView | null>;
   pointWrites?: Record<string, PointWriteReceipt>;
   scriptRun?: ScriptRunView | null;
   /** Layout/canvas metadata did not replace or invalidate the runtime bindings. */

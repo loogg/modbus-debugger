@@ -2,7 +2,8 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
+import { WebSocket, WebSocketServer } from 'ws';
 import type { AppBackendService } from './backend-service';
 import type { BridgeClientMessage, BridgeServerMessage } from '../../shared/preload-api';
 import type { AppDelta } from '../../shared/snapshot';
@@ -10,8 +11,7 @@ import { validateBridgeCommand } from './dev-bridge-access';
 import { encodeDataReadFrame } from '../../shared/data-read-frame';
 import type { ColumnDataReadResult } from '../../shared/point-data';
 
-const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-const MAX_FRAME_BYTES = 4 * 1024 * 1024;
+const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 
 export interface DevBridgeOptions {
   port?: number;
@@ -22,7 +22,8 @@ export interface DevBridgeOptions {
 
 export class DevBridgeServer {
   private server: http.Server | null = null;
-  private clients = new Set<Socket>();
+  private readonly websocket = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES,
+    handleProtocols: protocols => protocols.has(this.sessionProtocol) ? this.sessionProtocol : false });
   private unsubscribeDelta: (() => void) | null = null;
   readonly host: string;
   readonly port: number;
@@ -64,8 +65,8 @@ export class DevBridgeServer {
         res.end(JSON.stringify({status:'ok',bridge:'Modbus Debugger Dev Bridge'}));
       });
 
-      server.on('upgrade', (req, socket: Socket) => {
-        this.handleUpgrade(req, socket);
+      server.on('upgrade', (req, socket, head) => {
+        this.handleUpgrade(req, socket, head);
       });
 
       server.on('error', (err) => {
@@ -90,15 +91,7 @@ export class DevBridgeServer {
       this.unsubscribeDelta();
       this.unsubscribeDelta = null;
     }
-    for (const socket of this.clients) {
-      try {
-        this.sendFrame(socket, 0x8, Buffer.alloc(0)); // close frame
-        socket.destroy();
-      } catch {
-        // ignore error on close
-      }
-    }
-    this.clients.clear();
+    for (const socket of this.websocket.clients) socket.terminate();
 
     return new Promise((resolve) => {
       if (this.server) {
@@ -113,10 +106,10 @@ export class DevBridgeServer {
   }
 
   get clientCount(): number {
-    return this.clients.size;
+    return this.websocket.clients.size;
   }
 
-  private handleUpgrade(req: http.IncomingMessage, socket: Socket): void {
+  private handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
     socket.on('error', () => socket.destroy());
     const origin = req.headers.origin;
     const protocols = req.headers['sec-websocket-protocol']?.split(',').map(value=>value.trim()) ?? [];
@@ -127,118 +120,16 @@ export class DevBridgeServer {
       socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return;
     }
-    const key = req.headers['sec-websocket-key'];
-    if (!key || typeof key !== 'string') {
-      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
-    const headers = [
-      'HTTP/1.1 101 Switching Protocols',
-      'Upgrade: websocket',
-      'Connection: Upgrade',
-      `Sec-WebSocket-Accept: ${accept}`,
-      `Sec-WebSocket-Protocol: ${this.sessionProtocol}`,
-      '',
-      '',
-    ].join('\r\n');
-
-    socket.write(headers);
-    this.clients.add(socket);
-
-    // Send initial greeting with versions
-    const helloMsg: BridgeServerMessage = {
-      type: 'hello',
-      versions: this.backend.getVersions(),
-    };
-    this.sendJson(socket, helloMsg);
-
-    let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-
-    socket.on('data', (chunk: Buffer) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      buffer = this.processFrames(socket, buffer);
+    this.websocket.handleUpgrade(req, socket, head, client => {
+      client.on('error', () => client.terminate());
+      client.on('message', (data, binary) => {
+        if (!binary) void this.handleClientText(client, data.toString());
+      });
+      this.sendJson(client, { type: 'hello', versions: this.backend.getVersions() });
     });
-
-    const cleanup = () => {
-      this.clients.delete(socket);
-    };
-
-    socket.on('close', cleanup);
-    socket.on('error', cleanup);
-    socket.on('end', cleanup);
   }
 
-  private processFrames(socket: Socket, buffer: Buffer<ArrayBufferLike>): Buffer<ArrayBufferLike> {
-    while (buffer.length >= 2) {
-      const firstByte = buffer[0]!;
-      const secondByte = buffer[1]!;
-
-      const opcode = firstByte & 0x0f;
-      const isMasked = (secondByte & 0x80) !== 0;
-      if (!isMasked || !(firstByte & 0x80) || (firstByte & 0x70)) { socket.destroy();return Buffer.alloc(0); }
-      let payloadLen = secondByte & 0x7f;
-      let offset = 2;
-
-      if (payloadLen === 126) {
-        if (buffer.length < 4) return buffer;
-        payloadLen = buffer.readUInt16BE(2);
-        offset = 4;
-      } else if (payloadLen === 127) {
-        if (buffer.length < 10) return buffer;
-        // Read 64-bit integer
-        const bigLen = buffer.readBigUInt64BE(2);
-        if (bigLen > BigInt(MAX_FRAME_BYTES)) {
-          socket.destroy();
-          return Buffer.alloc(0);
-        }
-        payloadLen = Number(bigLen);
-        offset = 10;
-      }
-
-      if (payloadLen > MAX_FRAME_BYTES) { socket.destroy();return Buffer.alloc(0); }
-
-      const maskLen = isMasked ? 4 : 0;
-      const totalLen = offset + maskLen + payloadLen;
-
-      if (buffer.length < totalLen) {
-        return buffer; // Wait for full frame
-      }
-
-      let payload = buffer.subarray(offset + maskLen, totalLen);
-
-      if (isMasked) {
-        const mask = buffer.subarray(offset, offset + 4);
-        const unmasked = Buffer.alloc(payloadLen);
-        for (let i = 0; i < payloadLen; i++) {
-          unmasked[i] = payload[i]! ^ mask[i % 4]!;
-        }
-        payload = unmasked;
-      }
-
-      // Handle Opcode
-      if (opcode === 0x1) {
-        // Text frame
-        const text = payload.toString('utf8');
-        void this.handleClientText(socket, text);
-      } else if (opcode === 0x8) {
-        // Connection close
-        this.sendFrame(socket, 0x8, Buffer.alloc(0));
-        socket.destroy();
-        return Buffer.alloc(0);
-      } else if (opcode === 0x9) {
-        // Ping -> reply Pong
-        this.sendFrame(socket, 0xa, payload);
-      }
-
-      buffer = buffer.subarray(totalLen);
-    }
-    return buffer;
-  }
-
-  private async handleClientText(socket: Socket, text: string): Promise<void> {
+  private async handleClientText(socket: WebSocket, text: string): Promise<void> {
     let msg: BridgeClientMessage;
     try {
       msg = JSON.parse(text) as BridgeClientMessage;
@@ -284,7 +175,7 @@ export class DevBridgeServer {
         const result = await this.backend.handleCommand(command);
         if (result.ok) {
           if (command.type === 'data.read' && command.format === 'columns-v1') {
-            if (!socket.destroyed && socket.writable) this.sendFrame(socket, 0x2, Buffer.from(encodeDataReadFrame(msg.id, result.value as ColumnDataReadResult)));
+            if (socket.readyState === WebSocket.OPEN) socket.send(encodeDataReadFrame(msg.id, result.value as ColumnDataReadResult));
           } else this.sendJson(socket, {
             type: 'response',
             id: msg.id,
@@ -326,40 +217,12 @@ export class DevBridgeServer {
       delta,
     };
     const json = JSON.stringify(msg);
-    const payload = Buffer.from(json, 'utf8');
-    for (const client of this.clients) {
-      if (!client.destroyed && client.writable) {
-        this.sendFrame(client, 0x1, payload);
-      }
+    for (const client of this.websocket.clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(json);
     }
   }
 
-  private sendJson(socket: Socket, obj: BridgeServerMessage): void {
-    if (socket.destroyed || !socket.writable) return;
-    const json = JSON.stringify(obj);
-    this.sendFrame(socket, 0x1, Buffer.from(json, 'utf8'));
-  }
-
-  private sendFrame(socket: Socket, opcode: number, payload: Buffer): void {
-    const len = payload.length;
-    let header: Buffer;
-
-    if (len <= 125) {
-      header = Buffer.alloc(2);
-      header[0] = 0x80 | (opcode & 0x0f); // FIN + opcode
-      header[1] = len; // unmasked
-    } else if (len <= 65535) {
-      header = Buffer.alloc(4);
-      header[0] = 0x80 | (opcode & 0x0f);
-      header[1] = 126;
-      header.writeUInt16BE(len, 2);
-    } else {
-      header = Buffer.alloc(10);
-      header[0] = 0x80 | (opcode & 0x0f);
-      header[1] = 127;
-      header.writeBigUInt64BE(BigInt(len), 2);
-    }
-
-    socket.write(Buffer.concat([header, payload]));
+  private sendJson(socket: WebSocket, obj: BridgeServerMessage): void {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
   }
 }

@@ -2,7 +2,7 @@ import React, { useCallback, useId, useLayoutEffect, useMemo, useRef, useState }
 import { CheckmarkCircle16Regular, Code16Regular, Copy16Regular, ErrorCircle16Regular, Eye16Regular } from '@fluentui/react-icons';
 import * as Tabs from '@radix-ui/react-tabs';
 import type { ScriptPreview } from './lua-source';
-import { luaKeywords } from './lua-names';
+import { luaKeywords } from '../../../domain/script-lua-names';
 import { VariableWatch } from './variable-watch';
 import type { ScriptVariableGroup } from '../../../domain/master-script';
 import type { ScriptRunView } from '../../../shared/script-run';

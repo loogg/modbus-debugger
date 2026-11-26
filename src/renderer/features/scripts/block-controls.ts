@@ -1,5 +1,6 @@
 import * as Blockly from 'blockly/core';
-import { fieldText, isScriptCall, isScriptDefinition, MAX_SCRIPT_BLOCKS, scriptBlocks, scriptGraphBlocks, scriptNumberSlots, splitParameters, type ScriptBlock, type ScriptGraph } from '../../../domain/master-script';
+import { displayLuaScalar, luaNumericLiteral } from '../../../domain/script-lua-operators';
+import { fieldText, isScriptCall, isScriptDefinition, MAX_SCRIPT_BLOCKS, normalizeScriptGraph, scriptBlocks, scriptGraphBlocks, scriptNumberSlots, splitParameters, type ScriptBlock, type ScriptGraph } from '../../../domain/master-script';
 import { synchronizeScriptFunctions } from './function-blocks';
 
 export class BooleanSwitch extends Blockly.Field<string> {
@@ -121,7 +122,7 @@ type Slot = { shadow?: { type: string; fields?: Record<string, string | number> 
 // Blockly shadows give a literal and a connected reporter the same socket.
 // The portable graph keeps literal defaults in fields, including while a reporter is connected.
 export function loadScriptGraph(graph: ScriptGraph, workspace: Blockly.Workspace) {
-  const native = structuredClone(graph);
+  const native = normalizeScriptGraph(graph);
   const functions = new Map(native.blocks?.blocks.filter(root => isScriptDefinition(root.type)).map(root => [root.id, splitParameters(fieldText(root, 'PARAMS'))]));
   for (const block of scriptGraphBlocks(native)) {
     const inputs = block.inputs ??= {};
@@ -159,17 +160,40 @@ export function loadScriptGraph(graph: ScriptGraph, workspace: Blockly.Workspace
   }
   Blockly.serialization.workspaces.load(native, workspace);
   synchronizeScriptFunctions(workspace);
+  if (workspace instanceof Blockly.WorkspaceSvg) {
+    const roots = native.blocks?.blocks ?? [];
+    if (roots.every(root => Number.isFinite(root.x) && Number.isFinite(root.y))) return;
+    Blockly.renderManagement.triggerQueuedRenders(workspace);
+    const positioned = roots.filter(root => Number.isFinite(root.x) && Number.isFinite(root.y));
+    const occupied = positioned.map(root => workspace.getBlockById(root.id)!.getBoundingRectangle());
+    for (const root of roots) {
+      if (Number.isFinite(root.x) && Number.isFinite(root.y)) continue;
+      const block = workspace.getBlockById(root.id)!;
+      const rect = block.getBoundingRectangle();
+      const x = root.x ?? 30;
+      let y = root.y ?? 30;
+      const width = rect.right - rect.left, height = rect.bottom - rect.top;
+      for (const other of occupied.sort((a, b) => a.top - b.top)) {
+        if (x < other.right + 28 && x + width + 28 > other.left && y < other.bottom + 28 && y + height + 28 > other.top) y = other.bottom + 28;
+      }
+      block.moveBy(x - rect.left, y - rect.top);
+      occupied.push(block.getBoundingRectangle());
+    }
+  }
 }
 
 export function saveScriptGraph(workspace: Blockly.Workspace): ScriptGraph {
   const graph = JSON.parse(JSON.stringify(Blockly.serialization.workspaces.save(workspace))) as ScriptGraph;
   for (const block of scriptGraphBlocks(graph)) {
+    if (block.type === scriptBlocks.number && block.fields?.NUM !== undefined) {
+      block.fields.NUM = displayLuaScalar(luaNumericLiteral(String(block.fields.NUM)));
+    }
     if (block.type === scriptBlocks.log && (block.fields?.WITH_VALUE === 'OFF' || block.inputs?.OPERAND?.block)) delete block.fields?.WITH_VALUE;
     for (const [name, slot] of Object.entries(block.inputs ?? {}) as [string, Slot][]) {
       const shadow = slot.shadow;
       if (!shadow) continue;
       if (shadow.type === literalShadow) (block.fields ??= {}).VALUE = shadow.fields?.TEXT ?? '0';
-      else if (shadow.type === scriptBlocks.number) (block.fields ??= {})[name] = shadow.fields?.NUM ?? 0;
+      else if (shadow.type === scriptBlocks.number) (block.fields ??= {})[name] = displayLuaScalar(luaNumericLiteral(String(shadow.fields?.NUM ?? 0)));
       else if (shadow.type === scriptBlocks.boolean && shadow.fields?.BOOL && shadow.fields.BOOL !== 'UNSET') {
         (block.fields ??= {})['BOOL_' + name] = shadow.fields.BOOL;
       }

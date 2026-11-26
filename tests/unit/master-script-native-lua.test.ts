@@ -28,13 +28,15 @@ it('declares each callee before its caller, with independent parameter scopes an
   } };
   const main = start({ id: 'invoke', type: 'mb_call', fields: { FUNCTION: 'a', ARG0: 41 } });
   const output = generate([caller, main, callee]);
-  expect(output.text).toBe([
-    'local function increment(value)', '  return value + 1', 'end', '',
-    'local function report(increment_2)', '  print("反馈", increment(increment_2))', 'end', '', 'report(41)',
-  ].join('\n'));
-  expect(output.ranges.get('z')).toEqual({ first: 0, last: 2 });
-  expect(output.ranges.get('nested')).toEqual({ first: 5, last: 5 });
-  expect(output.lines[5]?.blockId).toBe('inside');
+  const definition = output.ranges.get('z')!;
+  expect(output.lines.slice(definition.first, definition.last + 1).map(l => l.text.trim())).toEqual([
+    'local function increment(value)', 'return _ops.add(_ops.read(value, "value"), 1)', 'end',
+  ]);
+  const inner = output.ranges.get('nested')!;
+  expect(output.lines[inner.first]).toMatchObject({ blockId: 'inside' });
+  expect(output.lines[inner.first]!.text.trim()).toBe('print("反馈", _ops.observe(function() return increment(_ops.read(increment_2, "increment")) end))');
+  expect(definition.last).toBeLessThan(output.ranges.get('a')!.first);
+  expect(output.text).toContain('report(41)');
   expect(generate([callee, main, caller]).text).toBe(output.text);
 });
 
@@ -43,8 +45,8 @@ it('protects Lua keywords, host globals and existing ASCII names when making leg
     inputs: { RESULT: pin(param('result', 3)) } };
   const main = start(log('log', { id: 'call', type: 'mb_call_value', fields: { FUNCTION: 'lookup', ARG3: 17 } }));
   const { text } = generate([main, fn]);
-  expect(text).toContain('local function print_(end_, distance_mm_2, distance_mm, arg_4_2, arg_4)\n  return arg_4_2');
-  expect(text).toContain('print("反馈", print_(0, 0, 0, 17, 0))');
+  expect(text).toMatch(/local function print_\(end_, distance_mm_2, distance_mm, arg_4_2, arg_4\)\s+return _ops\.read\(arg_4_2, "采样"\)/);
+  expect(text).toContain('print("反馈", _ops.observe(function() return print_(0, 0, 0, 17, 0) end))');
 });
 
 it('hoists branch-created and self-referenced variables, but declares direct first assignments in place', () => {
@@ -53,10 +55,14 @@ it('hoists branch-created and self-referenced variables, but declares direct fir
     next: pin(log('observe', variable('read', 'speed'))) };
   const init: ScriptBlock = { type: 'mb_set_var', id: 'init', fields: { VARIABLE: 'limit', OPERAND: 70 }, next: pin(branch) };
   const result = generate([start(init)]);
-  expect(result.text).toBe('local speed\nlocal limit = 70\nif true then\n  speed = 17\nend\nprint("反馈", speed)');
-  expect(result.lines[0]?.blockId).toBe('entry');
+  const entry = result.ranges.get('entry')!;
+  expect(result.lines.slice(entry.first, entry.last + 1).map(l => l.text.trim())).toEqual([
+    'local speed', 'local limit = 70', 'if true then', 'speed = 17', 'end',
+    'print("反馈", _ops.observe(function() return _ops.read(speed, "speed") end))',
+  ]);
+  expect(result.lines[entry.first]?.blockId).toBe('entry');
   const self: ScriptBlock = { type: 'mb_set_var', id: 'self', fields: { VARIABLE: 'speed' }, inputs: { OPERAND: pin(variable('rhs', 'speed')) } };
-  expect(generate([start(self)]).text).toBe('local speed\nspeed = speed');
+  expect(generate([start(self)]).text).toContain('local speed\n  speed = _ops.read(speed, "speed")');
 });
 
 it('keeps expression grouping and boolean precedence when emitting infix Lua', () => {
@@ -66,7 +72,7 @@ it('keeps expression grouping and boolean precedence when emitting infix Lua', (
   } };
   const cmp: ScriptBlock = { id: 'cmp', type: 'mb_compare_values', fields: { OP: 'ge', B: 4 }, inputs: { A: pin(expression) } };
   const predicate: ScriptBlock = { id: 'not', type: 'mb_not', inputs: { CONDITION: pin(cmp) } };
-  expect(generate([start(log('check', predicate))]).text).toBe('print("反馈", not ((8 + 4) / (5 - 2) >= 4))');
+  expect(generate([start(log('check', predicate))]).text).toContain('print("反馈", _ops.observe(function() return not _ops.ge(_ops.divide(_ops.add(8, 4), _ops.subtract(5, 2)), 4) end))');
 });
 
 it('keeps checked evaluation through a direct user function call inside an error handler', () => {
@@ -79,9 +85,9 @@ it('keeps checked evaluation through a direct user function call inside an error
     } }), ERROR: pin({ type: 'mb_log', id: 'failure', fields: { TEXT: '计算失败' } }),
   } };
   const { text } = generate([start(attempt), ratio]);
-  expect(text).toContain('local function ratio(a, b)\n  return modbus.arithmetic(a, "/", b)\nend');
+  expect(text).toMatch(/local function ratio\(a, b\)\s+return _ops\.divide\(_ops\.read\(a, "a"\), _ops\.read\(b, "b"\)\)\s+end/);
   expect(text).toContain('output = ratio(2, 0)');
-  expect(text).toContain('modbus.attempt(function()');
+  expect(text).toContain('_ops.attempt(function()');
 });
 
 it('keeps the full 200-argument graph representable within Lua 5.4 local/register limits', () => {
@@ -91,7 +97,7 @@ it('keeps the full 200-argument graph representable within Lua 5.4 local/registe
       next: pin(log('report', variable('result-value', 'result'))) }),
   } };
   const { text } = generate([start({ id: 'invoke', type: 'mb_call', fields: { FUNCTION: 'wide', ARG199: 41 } }), fn]);
-  expect(text).toContain('local function wide(...)\n  local _frame = {...}\n  _frame.result = _frame[200]');
+  expect(text).toMatch(/local function wide\(\.\.\.\)\s+local _frame = \{\.\.\.\}\s+_frame.result = _ops\.read\(_frame\[200\], "p199"\)/);
   expect(text).toContain('wide(table.unpack({');
   expect(text).toContain('41}, 1, 200))');
 });
@@ -105,8 +111,8 @@ it('exports separate host callbacks with shared locals, real coroutine yields an
   expect(text).toContain('local function on_run()');
   expect(text).toContain('return { on_start = on_start, on_run = on_run, run_period_ms = 250 }');
   expect(text).not.toContain('start_timer');
-  expect(lines[ranges.get('tick')!.first]).toMatchObject({ blockId: 'tick', text: '  heartbeat_count = heartbeat_count + 1' });
-  expect(lines[ranges.get('cycle')!.first]?.text).toBe('local function on_run()');
+  expect(lines[ranges.get('tick')!.first]).toMatchObject({ blockId: 'tick', text: expect.stringContaining('heartbeat_count = _ops.add(_ops.read(heartbeat_count, "heartbeat_count"), 1)') });
+  expect(lines[ranges.get('cycle')!.first]?.text.trim()).toBe('local function on_run()');
   expect(ranges.get('cycle')!.last).toBeLessThan(lines.length - 1);
 });
 
@@ -127,4 +133,17 @@ it('round-trips all timer operations and maps each channel body to its event hat
   expect(result.text).toContain('rt.stop_timer(2)');
   expect(result.lines[result.ranges.get('timer2')!.first]!.blockId).toBe('timer2');
   expect(result.text).not.toContain('function on_run');
+});
+
+it('exports yieldable startup loops and plain main-state callbacks', () => {
+  const loop = (id: string, body: ScriptBlock): ScriptBlock => ({ id, type: 'mb_repeat', fields: { COUNT: 3 }, inputs: { BODY: pin(body) } });
+  const print = (id: string): ScriptBlock => ({ id, type: 'mb_log', fields: { TEXT: id } });
+  const wait: ScriptBlock = { id: 'sleep', type: 'mb_delay', fields: { MS: 35 } };
+  const result = generate([start({ id: 'init', type: 'mb_set_var', fields: { VARIABLE: 'sleep_ms', OPERAND: 3 }, next: pin(loop('startup-loop', wait)) }),
+    { id: 'cycle', type: 'mb_on_run', fields: { PERIOD: 50 }, next: pin(loop('main-loop', print('tick'))) },
+    { id: 'timer', type: 'mb_on_timer', fields: { TIMER: '0' }, next: pin(loop('timer-loop', print('alarm'))) }]);
+  expect(result.text).toContain('sleep_ms(35)');
+  expect(result.text).toMatch(/sleep_ms_\d+ = 3/);
+  expect(result.text.match(/coroutine\.yield\(\)/g)).toHaveLength(1);
+  expect(result.text.slice(result.text.indexOf('local function on_run'))).not.toContain('yield');
 });

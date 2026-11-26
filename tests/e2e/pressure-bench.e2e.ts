@@ -270,7 +270,7 @@ describe('Pressure bench across the packaged HMI, native slave, canvas and Block
     await expect(scope().$('[aria-label="步骤结果"]')).toHaveText(expect.stringContaining('压力达标 MPa 0.36'));
     const lua = await readScriptLua();
     expect(lua).toContain('modbus.write("pump", "enable"');
-    expect(lua).toContain('print("压力达标 MPa", modbus.value("sensor", "pv"))');
+    expect(lua).toContain('print("压力达标 MPa", _ops.observe(function() return modbus.value("sensor", "pv") end))');
     fs.writeFileSync(path.join(evidence, 'cycle.lua'), lua);
     await scope().$('button=收起检查器').click();
 

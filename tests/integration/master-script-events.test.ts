@@ -1,8 +1,9 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { expect, it } from 'vitest';
+import { beforeAll, expect, it, vi } from 'vitest';
+import { loadScriptLua } from '../../src/main/runtime/script-lua-handle';
 import { compileScriptProgram, newScriptGraph, type ScriptBlock, type ScriptGraph } from '../../src/domain/master-script';
 import { MasterScriptRunner } from '../../src/main/runtime/master-script-runner';
-import { RuntimeNotifications } from '../../src/main/runtime/runtime-notifications';
+import { RuntimeNotifications, type RuntimeChange } from '../../src/main/runtime/runtime-notifications';
 import { ScriptEventClock } from '../../src/main/runtime/script-event-clock';
 import type { PointWriteResult } from '../../src/shared/contracts';
 
@@ -19,11 +20,19 @@ const init = (name: string): ScriptBlock => ({ id: 'init-' + name, type: 'mb_set
 const add = (name: string): ScriptBlock => ({ id: 'inc-' + name, type: 'mb_change_var', fields: { VARIABLE: name, OPERAND: 1 } });
 const stop: ScriptBlock = { id: 'stop', type: 'mb_stop' };
 const pause = (id: string, ms: number): ScriptBlock => ({ id, type: 'mb_delay', fields: { MS: ms } });
+beforeAll(loadScriptLua);
 
-function local() {
+const asyncWrite = (id: string): ScriptBlock => ({ id, type: 'mb_write', fields: { POINT: '["s","p"]', VALUE: '1' } });
+function local(writeLatencyMs?: number) {
   const unused = (): never => { throw new Error('unexpected device access'); };
-  const runner = new MasterScriptRunner({ point: unused, slave: unused, write: unused }, new RuntimeNotifications());
-  const run = (g: ScriptGraph) => runner.start(runner.prepare({ id: 'test', name: 'events', revision: 0, graph: g }));
+  const runner = new MasterScriptRunner({ point: writeLatencyMs === undefined ? unused : ref => ({
+    ref, blockKey: 'device', span: { offset: 0, length: 1 }, label: 'output', type: 'UInt16', highRisk: false,
+    identity: 'output', read: unused, validateWrite() {},
+  }), slave: unused, write: writeLatencyMs === undefined ? unused : async () => {
+    await delay(writeLatencyMs); return { phase: 'confirmed', result: 'ok', exceptionCode: null };
+  } }, new RuntimeNotifications());
+  const run = (g: ScriptGraph, callbackTimeoutMs?: number) =>
+    runner.start(runner.prepare({ id: 'test', name: 'events', revision: 0, graph: g, callbackTimeoutMs }));
   return { runner, run };
 }
 
@@ -48,19 +57,98 @@ it.each(['mb_forever', 'mb_repeat'] as const)('dispatches on_run from Main durin
 });
 
 it('executes exactly three slow timer callbacks without reentry, and joins the final task before finishing', async () => {
-  const { runner, run } = local();
-  run(graph(chain(start, startTimer(10, 3)), chain(timer, log('open'), pause('slow', 35), log('close'))));
+  const { runner, run } = local(135);
+  run(graph(chain(start, startTimer(10, 3)), chain(timer, log('open'), asyncWrite('slow'), log('close'))), 50);
   await runner.settle();
   expect(runner.snapshot?.state).toBe('passed');
   expect(runner.snapshot!.entries.filter(e => e.log).map(e => [e.source, e.detail]))
     .toEqual(Array.from({ length: 3 }).flatMap(() => [['T0', 'open'], ['T0', 'close']]));
 });
 
-it('shares root variables across callbacks and isolates simultaneous invocations of the same procedure', async () => {
+it('sleeps only the startup coroutine while a timer completes on the same handle', async () => {
   const { runner, run } = local();
+  run(graph(chain(start, startTimer(15, 1), pause('sleep', 120), log('awake')), chain(timer, log('tick'))));
+  await runner.settle();
+  expect(runner.snapshot?.state).toBe('passed');
+  expect(runner.snapshot?.entries.filter(e => e.log).map(e => [e.source, e.detail]))
+    .toEqual([['T0', 'tick'], ['on_start', 'awake']]);
+});
+
+it('wakes both handles for confirmed device samples and only the owning handle for variable and timer changes', () => {
+  const equipment = new RuntimeNotifications();
+  const a = new RuntimeNotifications(equipment), b = new RuntimeNotifications(equipment);
+  const variable: RuntimeChange = { kind: 'variable', name: 'ticks' };
+  const timer: RuntimeChange = { kind: 'timer', channel: 0 };
+  const sample: RuntimeChange = { kind: 'sample', blockKey: 'input', range: { offset: 1, length: 1 } };
+  const receivedA: RuntimeChange[] = [], receivedB: RuntimeChange[] = [];
+  const detachA = a.subscribe([variable, timer, sample], event => receivedA.push(event));
+  const detachB = b.subscribe([variable, timer, sample], event => receivedB.push(event));
+  a.publish(variable); b.publish(timer); equipment.publish(sample);
+  expect(receivedA).toEqual([variable, sample]); expect(receivedB).toEqual([timer, sample]);
+  detachA(); equipment.publish(sample); a.publish(variable);
+  expect(receivedA).toHaveLength(2); expect(receivedB).toHaveLength(3);
+  detachB();
+});
+
+it.each(['on_run', 'T0'] as const)('stops the handle on illegal sleep through a function and error handler in %s', async source => {
+  const { runner, run } = local();
+  const caller = source === 'on_run' ? { ...cycle, fields: { PERIOD: 10 } } : timer;
+  const fn: ScriptBlock = { id: 'fn', type: 'mb_procedure', fields: { NAME: 'nap' }, inputs: { BODY: { block: pause('illegal', 1) } } };
+  const attempt: ScriptBlock = { id: 'try', type: 'mb_try', inputs: { BODY: { block: { id: 'call', type: 'mb_call', fields: { FUNCTION: 'fn' } } },
+    ERROR: { block: log('recovered') } } };
+  run(graph(chain(start, startTimer(10, 1), pause('sleeping', 3000), log('awake')), chain(caller, attempt, log('continued')), fn));
+  await runner.settle();
+  expect(runner.snapshot).toMatchObject({ state: 'failed', detail: expect.stringContaining('sleep_ms'), events: { timers: [] } });
+  expect(runner.snapshot!.eventLog).toContainEqual(expect.objectContaining({ blockId: 'illegal', source, result: 'failed' }));
+  expect(runner.snapshot!.entries.filter(entry => entry.log)).toHaveLength(0);
+});
+
+it('raises a fatal Lua watchdog error for CPU-bound main callbacks while another handle keeps its own timer', async () => {
+  const busy = local(), healthy = local();
+  const loop: ScriptBlock = { id: 'spin', type: 'mb_forever', inputs: { BODY: { block: add('n') } } };
+  healthy.run(graph(chain(start, { id: 'arm', type: 'mb_timer_start', fields: { TIMER: 0, PERIOD: 15, MODE: 'loop' } }), chain(timer, log('healthy'))));
+  try {
+    busy.run(graph(chain(start, init('n')), chain({ ...cycle, fields: { PERIOD: 10 } },
+      { id: 'try', type: 'mb_try', inputs: { BODY: { block: loop }, ERROR: { block: log('recovered') } } })), 75);
+    await busy.runner.settle();
+    expect(busy.runner.snapshot).toMatchObject({ state: 'failed', callbackTimeoutMs: 75, detail: expect.stringContaining('75 ms') });
+    expect(busy.runner.snapshot?.entries.some(e => e.blockId === 'recovered')).toBe(false);
+    const before = healthy.runner.snapshot!.completed;
+    await expect.poll(() => healthy.runner.snapshot!.completed).toBeGreaterThan(before);
+  } finally { busy.runner.stop(); healthy.runner.stop(); await Promise.all([busy.runner.settle(), healthy.runner.settle()]); }
+});
+
+it('charges the same workload against each handle’s configured limit and resets the budget for every timer call', async () => {
+  const now = performance.now.bind(performance);
+  let workMs = 0;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now() + workMs);
+  const runner = () => new MasterScriptRunner({
+    point: ref => ({ ref, identity: 'input', blockKey: 'device', span: { offset: 0, length: 1 }, label: 'input', type: 'UInt16', highRisk: false,
+      read: () => { workMs += 65; return { value: 1, detail: '1' }; }, validateWrite() {} }),
+    slave: () => { throw new Error('unexpected slave access'); }, write: () => { throw new Error('unexpected write'); },
+  }, new RuntimeNotifications());
+  const short = runner(), long = runner();
+  const read = (id: string): ScriptBlock => ({ ...log(id), inputs: { OPERAND: {
+    block: { type: 'mb_point_value', id: 'value-' + id, fields: { POINT: '["s","p"]' } },
+  } } });
+  try {
+    const onRun = graph(chain({ ...cycle, fields: { PERIOD: 10 } }, read('first'), read('second'), log('done')));
+    const onTimer = graph(chain(start, startTimer(10, 2)), chain(timer, read('first'), read('second'), log('done')));
+    short.start(short.prepare({ id: 'a', name: 'A', revision: 0, graph: onRun, callbackTimeoutMs: 110 }));
+    long.start(long.prepare({ id: 'b', name: 'B', revision: 0, graph: onTimer, callbackTimeoutMs: 220 }));
+    await Promise.all([short.settle(), long.settle()]);
+    expect(short.snapshot).toMatchObject({ state: 'failed', detail: expect.stringContaining('110 ms') });
+    expect(short.snapshot?.entries.at(-1)).toMatchObject({ blockId: 'second', result: 'failed', source: 'on_run' });
+    expect(long.snapshot).toMatchObject({ state: 'passed', callbackTimeoutMs: 220 });
+    expect(long.snapshot?.entries.filter(e => e.blockId === 'done' && e.source === 'T0')).toHaveLength(2);
+  } finally { short.stop(); long.stop(); await Promise.all([short.settle(), long.settle()]); clock.mockRestore(); }
+});
+
+it('shares root variables across callbacks and isolates simultaneous invocations of the same procedure', async () => {
+  const { runner, run } = local(85);
   const call = (id: string, value: number): ScriptBlock => ({ type: 'mb_call', id, fields: { FUNCTION: 'fn', ARG0: value } });
   const fn: ScriptBlock = { id: 'fn', type: 'mb_procedure', fields: { NAME: 'sample', PARAMS: 'value' }, inputs: {
-    BODY: { block: chain(pause('wait', 85), { ...log('reading'), inputs: { OPERAND: { block: { type: 'mb_parameter', id: 'arg', fields: { PARAM: '0' } } } } }, add('value')) },
+    BODY: { block: chain(asyncWrite('wait'), { ...log('reading'), inputs: { OPERAND: { block: { type: 'mb_parameter', id: 'arg', fields: { PARAM: '0' } } } } }, add('value')) },
   } };
   run(graph(chain(start, init('shared'), startTimer(15, 1), call('from-start', 11)), chain(timer, add('shared'), call('from-timer', 77)), fn));
   await runner.settle();
@@ -78,7 +166,7 @@ it('suspends the whole event clock at a breakpoint and discards callbacks on sto
   const { runner, run } = local();
   const g = graph(chain(start, startTimer(20, 10)), chain(timer, log('tick')), chain(cycle, log('heartbeat')));
   g.breakpoints = ['tick'];
-  run(g);
+  run(g, 50);
   await expect.poll(() => runner.snapshot?.state).toBe('paused');
   const before = runner.snapshot!;
   expect(before.current).toMatchObject({ blockId: 'tick', source: 'T0' });

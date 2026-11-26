@@ -206,7 +206,7 @@ export const mountScriptEditor: MountScriptEditor = (element, input) => {
     undo: redo => { workspace.undo(redo); updateCanvasView(); },
     zoom: direction => { workspace.zoomCenter(direction); updateCanvasView(); },
     center: () => workspace.scrollCenter(),
-    preview: () => inspectScriptDraft(workspace, graphOf(workspace)),
+    preview: () => inspectScriptDraft(workspace, input().graph),
     inspect: (id, center) => {
       const block = id ? workspace.getBlockById(id) : null;
       if (block !== selected) {

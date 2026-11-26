@@ -6,7 +6,7 @@ import path from 'node:path';
 export default defineConfig({
   build: {
     rollupOptions: {
-      external: ['sql.js', 'serialport', '@serialport/bindings-cpp', '@serialport/stream', '@serialport/binding-mock'],
+      external: ['sql.js', 'wasmoon', 'serialport', '@serialport/bindings-cpp', '@serialport/stream', '@serialport/binding-mock'],
     },
   },
   resolve: {

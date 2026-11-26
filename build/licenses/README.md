@@ -1,4 +1,4 @@
-# 画布与曲线组件许可
+# 随程序分发的组件许可
 
 本目录随程序复制到 `resources/licenses/`，保留所集成组件的原始许可与 NOTICE。
 
@@ -8,5 +8,7 @@
 | ZRender | https://github.com/ecomfe/zrender |
 | re-resizable | https://github.com/bokuweb/re-resizable |
 | Blockly 12.5.1 | https://github.com/RaspberryPiFoundation/blockly |
+| Wasmoon 1.16.0 | https://github.com/ceifa/wasmoon |
+| Lua 5.4（Wasmoon 随附版本） | https://github.com/lua/lua/blob/be908a7d4d8130264ad67c5789169769f824c5d1/lua.h |
 
 许可来自本项目 lockfile 对应的发行包或上游源码。Blockly 许可取自 12.5.1 的源码提交 `6f7d50552ee658299de16c139673c2d126ac9b16`。本项目在 package.json 中声明为 MIT。

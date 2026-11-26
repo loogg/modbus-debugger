@@ -32,7 +32,7 @@ export interface ScriptVariableScope {
   source?: ScriptEventSource;
   functionId: string | null;
   inCall: boolean;
-  values: { name: string; value: number | string | boolean }[];
+  values: { name: string; value: number | string | boolean; kind?: 'integer64' }[];
 }
 
 export interface ScriptRunView {
@@ -40,6 +40,8 @@ export interface ScriptRunView {
   scriptId: string;
   scriptName: string;
   scriptRevision: number;
+  // Captured at startup. Saving a new limit applies to the next run.
+  callbackTimeoutMs: number;
   /** Identifies the compiled steps across edits to names, breakpoints and canvas positions. */
   programHash: string;
   judgments: Record<string, ScriptJudgment>;
@@ -67,4 +69,9 @@ export interface ScriptRunView {
 
 export function scriptIsActive(run: ScriptRunView | null | undefined): boolean {
   return !!run && ['running', 'waiting', 'pausing', 'paused', 'stopping'].includes(run.state);
+}
+
+export function scriptRunFor(snapshot: { scriptRuns?: Record<string, ScriptRunView>; scriptRun?: ScriptRunView | null } | null, id: string): ScriptRunView | null {
+  if (snapshot?.scriptRuns) return Object.hasOwn(snapshot.scriptRuns, id) ? snapshot.scriptRuns[id]! : null;
+  return snapshot?.scriptRun?.scriptId === id ? snapshot.scriptRun : null;
 }

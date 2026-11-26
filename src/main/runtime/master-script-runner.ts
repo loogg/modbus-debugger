@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
+import { SCRIPT_SLICE_MS, ScriptHandleFault, ScriptLuaHandle } from './script-lua-handle';
 import { clearImmediate, setImmediate } from 'node:timers';
-import { compileScriptProgram, scriptArithmetic, scriptErrors, scriptPointKey, scriptRelations, scriptStates, type FunctionSignature, type MasterScript, type ScriptCondition, type ScriptErrorKind, type ScriptHandlers, type ScriptOperand, type ScriptPointRef, type ScriptStep } from '../../domain/master-script';
+import { scriptArithmetic, scriptErrors, scriptPointKey, scriptRelations, scriptStates, type FunctionSignature, type MasterScript, type ScriptCondition, type ScriptErrorKind, type ScriptHandlers, type ScriptOperand, type ScriptPointRef, type ScriptStep } from '../../domain/master-script';
+import { compileScriptLua } from '../../domain/script-lua-program';
 import { pointWriteFields, type PointWriteFields } from '../../domain/point-write-value';
+import { displayLuaScalar, lowerLuaExpression, luaNumericLiteral, type LuaScalar, type ScriptLuaKernel } from '../../domain/script-lua-operators';
 import type { RawType } from '../../domain/mapping';
 import type { ReadRange } from '../../domain/point-access';
 import type { PointWriteResult } from '../../shared/contracts';
@@ -11,8 +13,9 @@ import { checkedPeriod, ScriptEventClock } from './script-event-clock';
 import type { SlaveCommunicationState } from '../../shared/snapshot';
 import { RuntimeNotifications, type RuntimeChange } from './runtime-notifications';
 
-type Value = string | boolean | number;
+type Value = LuaScalar;
 interface Sample { value?: Value; detail: string; sampledAtMs?: number }
+class UnavailableInput { constructor(readonly sample: Sample) {} }
 interface OperandSource { label: string; fields?: PointWriteFields; read(task: TaskContext): Sample }
 
 export interface ScriptPointBinding {
@@ -41,15 +44,20 @@ interface TaskContext {
   failedEntry?: ScriptRunEntry;
 }
 
-interface Instruction { step: PlannedStep; loopBoundary?: boolean }
+type Instruction = { step: PlannedStep; loopBoundary?: boolean } | { slice: true };
 type Flow = Generator<Instruction, void, Outcome | undefined>;
 interface ScriptTask {
   context: TaskContext;
   flow: Flow;
   advance(): void;
   current?: PlannedStep;
+  remainingMs: number;
 }
 interface ActiveRun {
+  lua: ScriptLuaHandle;
+  groups: PlannedStep[][];
+  groupIds: Record<string, number>;
+  mainOwner?: ScriptTask;
   controller: AbortController;
   sharedVariables: Map<string, Sample>;
   scopes: Map<string | null, { functionId: string | null; source?: ScriptEventSource; variables: Map<string, Sample>; inCall: boolean }>;
@@ -67,6 +75,8 @@ interface ActiveRun {
   approve?: () => void;
   breakpoints: Set<string>;
   pauseNext?: PauseReason;
+  stepOwner?: ScriptTask;
+  pauseAtBoundary?: () => void;
   resume?: (mode: 'continue' | 'step') => void;
   finished: Promise<void>;
   resolveFinished(): void;
@@ -75,9 +85,9 @@ interface ActiveRun {
 interface Outcome {
   detail: string;
   log?: boolean;
-  body?: { steps: PlannedStep[] } & ({ mode: 'sequence' } | { mode: 'call'; functionId: string; variables: Map<string, Sample> }
-    | { mode: 'loop'; count: number; until?: (task: TaskContext) => ConditionReading } | { mode: 'attempt'; handler: PlannedStep[] });
-  control?: 'stop' | 'break';
+  body?: { steps: PlannedStep[] } & ({ mode: 'sequence'; choice: number } | { mode: 'call'; functionId: string; variables: Map<string, Sample> }
+    | { mode: 'loop'; until?: (task: TaskContext) => ConditionReading } | { mode: 'attempt'; handler: PlannedStep[] });
+  control?: 'stop';
 }
 interface PlannedStep {
   blockId: string;
@@ -90,6 +100,7 @@ interface PreparedWrite { preview: string; send(): Promise<Outcome> }
 
 export interface ScriptPlan {
   script: MasterScript;
+  lua: ScriptLuaKernel;
   steps: PlannedStep[];
   handlers?: ScriptHandlers<PlannedStep>;
   programHash: string;
@@ -102,7 +113,6 @@ const messageOf = (reason: unknown): string => reason instanceof Error ? reason.
 export class StepFailure extends Error {
   constructor(message: string, readonly kinds: ScriptErrorKind[]) { super(message); }
 }
-class BreakLoop extends Error {}
 
 function enterFunction(task: TaskContext, functionId: string, variables: Map<string, Sample>) {
   const caller = task.variables;
@@ -115,18 +125,6 @@ function enterFunction(task: TaskContext, functionId: string, variables: Map<str
     task.variables = caller;
     task.session.variablesDirty = true;
   };
-}
-
-function relationMatches(actual: Value, relation: Extract<ScriptCondition, { kind: 'compare' }>['relation'], wanted: Value): boolean {
-  if (relation === 'eq') return actual === wanted;
-  if (relation === 'ne') return actual !== wanted;
-  if (typeof actual !== 'number' || typeof wanted !== 'number') return false;
-  switch (relation) {
-    case 'gt': return actual > wanted;
-    case 'ge': return actual >= wanted;
-    case 'lt': return actual < wanted;
-    case 'le': return actual <= wanted;
-  }
 }
 
 function outcomeDetail(result: PointWriteResult): string {
@@ -147,38 +145,22 @@ function sampleTime(label: string, sample: Sample): ScriptJudgment['samples'] {
 }
 
 const valueType = (type: RawType) => type === 'Bool' ? 'boolean' : type === 'String' ? 'string' : 'number';
-
-function calculate(operator: Extract<ScriptOperand, { kind: 'arithmetic' }>['operator'], left: Value, right: Value): Sample {
-  if (typeof left !== 'number' || typeof right !== 'number' || !Number.isFinite(left) || !Number.isFinite(right)) throw new Error('运算需要两个有限数值');
-  let value: number;
-  switch (operator) {
-    case 'add': value = left + right; break;
-    case 'subtract': value = left - right; break;
-    case 'multiply': value = left * right; break;
-    case 'divide':
-      if (right === 0) throw new Error('除数不能为零');
-      value = left / right;
-      break;
-  }
-  if (!Number.isFinite(value)) throw new Error('运算结果超出有限数值范围');
-  return { value, detail: String(value) };
-}
+const scalarType = (value: Value | undefined) => typeof value === 'bigint' ? 'number' : typeof value;
 
 function sampleSource(point: ScriptPointBinding): RuntimeChange {
   return { kind: 'sample', blockKey: point.blockKey, range: point.span };
 }
 
 function waitUntil(notifications: RuntimeNotifications, sources: RuntimeChange[], signal: AbortSignal, timeoutMs: number,
-  observe: (change?: RuntimeChange) => ConditionReading): Promise<Outcome> {
+  observe: (change?: RuntimeChange) => ConditionReading, clock?: ScriptEventClock): Promise<Outcome> {
   const deadline = performance.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const unsubscribe = notifications.subscribe(sources, check);
     const timer = setTimeout(() => check(undefined, true), timeoutMs);
-    // Elapsed time can satisfy a condition between two deadlines without a device notification.
-    const clockCheck = sources.some(source => source.kind === 'timer' && source.elapsed) ? setInterval(check, 10) : undefined;
+    const clockWatch = clock?.watchElapsed(sources, check);
     function cleanup() {
       clearTimeout(timer);
-      clearInterval(clockCheck);
+      clockWatch?.close();
       unsubscribe();
       signal.removeEventListener('abort', abort);
     }
@@ -189,6 +171,7 @@ function waitUntil(notifications: RuntimeNotifications, sources: RuntimeChange[]
     function check(change?: RuntimeChange, expired = false) {
       try {
         signal.throwIfAborted();
+        if (change) clockWatch?.reset();
         const timedOut = expired || performance.now() >= deadline;
         const reading = observe(timedOut ? undefined : change);
         if (timedOut) throw new StepFailure(`等待超时 · ${reading.detail}`, ['timeout']);
@@ -215,8 +198,8 @@ export class MasterScriptRunner {
 
   constructor(private readonly host: ScriptHost, private readonly notifications: RuntimeNotifications) {}
 
-  prepare(script: MasterScript): ScriptPlan {
-    const program = compileScriptProgram(script.graph);
+  prepare(script: MasterScript, artifact = compileScriptLua(script.graph)): ScriptPlan {
+    const { program } = artifact;
     const functions = new Map(program.functions.map(fn => [fn.id, fn]));
     const calculations = new Map<string, { result: OperandSource; sources: RuntimeChange[] }>();
     const procedures = new Map<string, PlannedStep[]>();
@@ -236,11 +219,12 @@ export class MasterScriptRunner {
       const inputs = args.map((arg, index) => resolveOperand(arg, undefined, fn.parameters[index]!, sources));
       return (task: TaskContext) => new Map(fn.parameters.map((name, i) => [name, inputs[i]!.read(task)]));
     };
-    const resolveOperand = (source: ScriptOperand, type: RawType | undefined, target: string, sources?: RuntimeChange[]): OperandSource => {
+    const resolveOperand = (source: ScriptOperand, type: RawType | undefined, target: string, sources?: RuntimeChange[], threshold?: number): OperandSource => {
       if (source.kind === 'timerElapsed' || source.kind === 'timerRunning') {
         const elapsed = source.kind === 'timerElapsed';
         if (type && valueType(type) !== (elapsed ? 'number' : 'boolean')) throw new Error(`${target} 与定时器值的类型不一致`);
-        sources?.push({ kind: 'timer', channel: source.channel, elapsed });
+        const phases = elapsed && threshold !== undefined ? [0, Math.ceil(threshold), Math.floor(threshold) + 1] : undefined;
+        sources?.push({ kind: 'timer', channel: source.channel, elapsed, phases });
         return { label: `T${source.channel}`, read: task => {
           const clock = task.session.clock;
           const value = elapsed ? clock.elapsed(source.channel) : clock.isRunning(source.channel);
@@ -265,21 +249,31 @@ export class MasterScriptRunner {
           const leave = enterFunction(task, fn.id, locals);
           try {
             const sample = result.read(task);
-            if (type && sample.value !== undefined && typeof sample.value !== valueType(type)) throw new Error(`函数「${fn.name}」返回值与${target}的类型不一致`);
+            if (type && sample.value !== undefined && scalarType(sample.value) !== valueType(type)) throw new Error(`函数「${fn.name}」返回值与${target}的类型不一致`);
             return sample;
           } finally { leave(); }
         } };
       }
       if (source.kind === 'arithmetic') {
         if (type && valueType(type) !== 'number') throw new Error(`${target} 与数值运算的值类型不一致`);
-        const left = resolveOperand(source.left, 'Float64', '运算左项', sources);
-        const right = resolveOperand(source.right, 'Float64', '运算右项', sources);
-        const symbol = scriptArithmetic.find(([, key]) => key === source.operator)![0];
-        return { label: `（${left.label} ${symbol} ${right.label}）`, read: task => {
-          const a = left.read(task);
-          if (a.value === undefined) return a;
-          const b = right.read(task);
-          return b.value === undefined ? b : calculate(source.operator, a.value, b.value);
+        const inputs: OperandSource[] = [];
+        const label = lowerLuaExpression(source, leaf => {
+          const binding = resolveOperand(leaf, undefined, '数值运算', sources);
+          inputs.push(binding);
+          return binding.label;
+        }, (op, a, b) => `（${a} ${scriptArithmetic.find(([, key]) => key === op)![0]} ${b}）`);
+        return { label, read: task => {
+          try {
+            const value = task.session.lua.evaluateExpression(source.expression, index => {
+              const sample = inputs[index]!.read(task);
+              if (sample.value === undefined) throw new UnavailableInput(sample);
+              return sample.value;
+            });
+            return { value, detail: String(value) };
+          } catch (reason) {
+            if (reason instanceof UnavailableInput) return reason.sample;
+            throw reason;
+          }
         } };
       }
       if (source.kind === 'condition') {
@@ -296,7 +290,7 @@ export class MasterScriptRunner {
         return { label, read: task => {
           const sample = task.variables.get(source.name);
           if (!sample) throw new Error(`${label}尚未赋值`);
-          if (type && typeof sample.value !== valueType(type)) throw new Error(`${label}与点位 ${target} 的值类型不一致`);
+          if (type && scalarType(sample.value) !== valueType(type)) throw new Error(`${label}与点位 ${target} 的值类型不一致`);
           return sample;
         } };
       }
@@ -306,13 +300,13 @@ export class MasterScriptRunner {
         sources?.push(sampleSource(point), { kind: 'slaveState', slaveId: point.ref.slaveId });
         return { label: point.label, read: () => point.read() };
       }
-      const literal = source.kind === 'literal' ? source.text : source.value;
+      const literal = source.kind === 'literal' ? source.text : source.kind === 'number' ? luaNumericLiteral(source.integerText ?? String(source.value)) : source.value;
       const text = String(literal);
       if (!type) return { label: text, read: () => ({ value: literal, detail: text }) };
       if (source.kind === 'number' && valueType(type) !== 'number') throw new Error(`${target} 与数值的值类型不一致`);
       if (source.kind === 'boolean' && type !== 'Bool') throw new Error(`${target} 需要匹配的值类型`);
       const fields = pointWriteFields(type, text);
-      const value = fields.engineering ?? fields.boolValue ?? fields.stringValue!;
+      const value = source.kind === 'number' ? literal : fields.engineering ?? fields.boolValue ?? fields.stringValue!;
       const label = source.kind === 'boolean' ? (source.value ? '真' : '假') : text || '空字符串';
       return { label, fields, read: () => ({ value, detail: label }) };
     };
@@ -332,10 +326,10 @@ export class MasterScriptRunner {
     };
     const buildCondition = (condition: ScriptCondition, sources?: RuntimeChange[]): Predicate => {
       if (condition.kind === 'truth') {
-        const source = resolveOperand(condition.operand, 'Bool', '布尔条件', sources);
+        const source = resolveOperand(condition.operand, undefined, '布尔条件', sources);
         return { label: source.label, read: task => {
           const sample = source.read(task);
-          return { matched: typeof sample.value === 'boolean' ? sample.value : undefined,
+          return { matched: sample.value === undefined ? undefined : task.session.lua.truth(sample.value),
             detail: condition.operand.kind === 'boolean' ? `固定条件为${sample.detail}` : `${source.label} · ${sample.detail}`,
             samples: sampleTime(source.label, sample) };
         } };
@@ -380,8 +374,8 @@ export class MasterScriptRunner {
         } };
       }
       if (condition.kind === 'compareValues') {
-        const left = resolveOperand(condition.left, undefined, '比较左项', sources);
-        const right = resolveOperand(condition.right, undefined, '比较右项', sources);
+        const left = resolveOperand(condition.left, undefined, '比较左项', sources, condition.right.kind === 'number' ? condition.right.value : undefined);
+        const right = resolveOperand(condition.right, undefined, '比较右项', sources, condition.left.kind === 'number' ? condition.left.value : undefined);
         const relation = scriptRelations.find(([, key]) => key === condition.relation)![0];
         return { label: `${left.label} ${relation} ${right.label}`, read: task => {
           const a = left.read(task);
@@ -389,9 +383,7 @@ export class MasterScriptRunner {
           const detail = `${a.detail} ${relation} ${b.detail}`;
           const samples = [...sampleTime(left.label, a), ...sampleTime(right.label, b)];
           if (a.value === undefined || b.value === undefined) return { detail, samples };
-          if (typeof a.value !== typeof b.value) throw new Error('比较两侧的值类型不一致');
-          if (condition.relation !== 'eq' && condition.relation !== 'ne' && typeof a.value !== 'number') throw new Error('大小比较需要两个数值');
-          return { matched: relationMatches(a.value, condition.relation, b.value), detail, samples };
+          return { matched: task.session.lua.evaluate(condition.relation, a.value, b.value) === true, detail, samples };
         } };
       }
       const point = readPoint(condition.ref);
@@ -416,7 +408,7 @@ export class MasterScriptRunner {
         const wanted = rhs.value;
         if (wanted === undefined) return { detail: `${source.label} · ${rhs.detail}` };
         const result = reading(point.read(), source.fields ? expected : `${expected}（${rhs.detail}）`,
-          actual => relationMatches(actual, condition.relation, wanted));
+          actual => task.session.lua.evaluate(condition.relation, actual, wanted) === true);
         return { ...result, samples: [...(result.samples ?? []), ...sampleTime(source.label, rhs)] };
       } };
     };
@@ -432,7 +424,7 @@ export class MasterScriptRunner {
           return { blockId, label: step.kind === 'runPeriod' ? '设置 on_run 周期' : `启动 T${step.channel}`, execute: task => {
             const sample = period.read(task);
             if (sample.value === undefined) throw new Error(sample.detail);
-            const ms = checkedPeriod(sample.value);
+            const ms = checkedPeriod(typeof sample.value === 'bigint' ? Number(sample.value) : sample.value);
             if (step.kind === 'runPeriod') {
               this.dropUndispatched(task.session, 'on_run');
               task.session.clock.setPeriod(ms);
@@ -505,7 +497,8 @@ export class MasterScriptRunner {
             if (increment) {
               const current = task.variables.get(step.variable);
               if (current?.value === undefined) throw new Error(`${label}尚未赋值`);
-              sample = calculate('add', current.value, sample.value);
+              const value = task.session.lua.evaluate('add', current.value, sample.value);
+              sample = { value, detail: String(value) };
             }
             task.variables.set(step.variable, sample);
             task.session.variablesDirty = true;
@@ -516,14 +509,10 @@ export class MasterScriptRunner {
         case 'log': {
           const source = step.operand && resolveOperand(step.operand, undefined, '记录日志');
           return { blockId, label: '记录日志', execute: task => {
-            let value = '';
-            if (source) {
-              try {
-                const sample = source.read(task);
-                value = sample.value === '' ? '""' : String(sample.value ?? sample.detail);
-              }
-              catch (error) { value = messageOf(error); }
-            }
+            const value = source ? task.session.lua.observe(() => {
+              const sample = source.read(task);
+              return sample.value ?? sample.detail;
+            }) : '';
             return { detail: [step.message, value].filter(Boolean).join(' '), log: true };
           } };
         }
@@ -542,6 +531,8 @@ export class MasterScriptRunner {
               const sample = source.read(task);
               if (sample.value === undefined) throw new Error(`${source.label} · ${sample.detail}`);
               actual = String(sample.value);
+              if (typeof sample.value === 'bigint' && BigInt(Number(sample.value)) !== sample.value)
+                throw new Error('整数无法由目标点位精确表示');
               fields = source.fields ?? pointWriteFields(point.type, actual);
               point.validateWrite(fields);
             } catch (error) { throw new StepFailure(messageOf(error), ['not-sent', 'evaluation']); }
@@ -567,10 +558,8 @@ export class MasterScriptRunner {
           return { blockId, label: `写入 ${point.label}`, prepareWrite, execute: task => prepareWrite(task).send() };
         }
         case 'delay':
-          return { blockId, label: '延时', execute: async task => {
-            await delay(step.ms, undefined, { signal: task.session.controller.signal });
-            return { detail: `${step.ms} ms` };
-          } };
+          return { blockId, label: '延时', execute: task => task.session.lua.sleep(task.source, step.ms, task.session.controller.signal)
+            .then(() => ({ detail: `${step.ms} ms` })) };
         case 'repeat':
         case 'repeatUntil':
         case 'forever': {
@@ -579,10 +568,10 @@ export class MasterScriptRunner {
           const until = step.kind === 'repeatUntil' ? resolveCondition(step.condition) : undefined;
           const label = until ? '重复直到' : step.kind === 'forever' ? '主循环' : '循环';
           return { blockId, label, execute: () => ({ detail: until?.label ?? (count === Infinity ? '持续执行' : `执行 ${count} 次`),
-            body: { mode: 'loop', steps: planned, count, until: until?.read } }) };
+            body: { mode: 'loop', steps: planned, until: until?.read } }) };
         }
         case 'stop': return { blockId, label: '停止流程', execute: () => ({ detail: '流程主动停止', control: 'stop' }) };
-        case 'break': return { blockId, label: '跳出循环', execute: () => ({ detail: '跳出当前循环', control: 'break' }) };
+        case 'break': return { blockId, label: '跳出循环', execute: () => ({ detail: '跳出当前循环' }) };
         case 'attempt': {
           const body = planSteps(step.steps);
           const handler = planSteps(step.handler);
@@ -592,7 +581,7 @@ export class MasterScriptRunner {
           const sources: RuntimeChange[] = [];
           const condition = resolveCondition(step.condition, sources);
           return { blockId, label: `等待 ${condition.label}`, execute: task =>
-            waitUntil(this.notifications, sources, task.session.controller.signal, step.timeoutMs, () => condition.read(task)) };
+            waitUntil(this.notifications, sources, task.session.controller.signal, step.timeoutMs, () => condition.read(task), task.session.clock) };
         }
         case 'assert': {
           const condition = resolveCondition(step.condition);
@@ -614,9 +603,9 @@ export class MasterScriptRunner {
               detail = `${label} · ${result.detail}`;
               recordJudgment(task, blockId, { ...result, detail });
               if (result.matched === undefined) throw new Error(`条件暂不可判定 · ${detail}`);
-              if (result.matched) return { detail, body: { mode: 'sequence', steps: arm.steps } };
+              if (result.matched) return { detail, body: { mode: 'sequence', steps: arm.steps, choice: index + 1 } };
             }
-            return { detail, body: { mode: 'sequence', steps: otherwise } };
+            return { detail, body: { mode: 'sequence', steps: otherwise, choice: arms.length + 1 } };
           } };
         }
       }
@@ -627,22 +616,23 @@ export class MasterScriptRunner {
       onRun: program.handlers.onRun && { ...program.handlers.onRun, steps: planSteps(program.handlers.onRun.steps) },
       timers: program.handlers.timers.map(timer => ({ ...timer, steps: planSteps(timer.steps) })),
     };
-    const programHash = createHash('sha256').update(JSON.stringify(program)).digest('hex');
+    const programHash = createHash('sha256').update(artifact.identity).digest('hex');
     const approval = approvals.length ? {
       writes: highRiskWrites.filter((entry, index) => highRiskWrites.findIndex(other => other.target === entry.target && other.value === entry.value) === index),
       key: createHash('sha256').update(JSON.stringify([script.id, script.revision, approvals])).digest('hex'),
     } : null;
-    return { script, steps, handlers, programHash, statementIds, approval };
+    return { script, lua: program.lua, steps, handlers, programHash, statementIds, approval };
   }
 
   start(plan: ScriptPlan, approval?: string, debug = false): ScriptRunView {
-    if (this.active) throw new Error('已有主站脚本正在运行');
+    if (this.active) throw new Error('这张流程已经在运行');
     if (plan.approval && plan.approval.key !== approval) throw new Error('请核对并确认高风险写入');
     const clock = new ScriptEventClock(plan.handlers?.onRun?.periodMs);
+    const lua = new ScriptLuaHandle(plan.lua, plan.script.callbackTimeoutMs, plan.script.id);
     const breakpoints = (plan.script.graph.breakpoints ?? []).filter(id => plan.statementIds.includes(id));
     this.view = {
       id: randomUUID(), scriptId: plan.script.id, scriptName: plan.script.name, state: 'running',
-      scriptRevision: plan.script.revision, programHash: plan.programHash, pendingWrite: null, judgments: {}, variableScopes: [], pause: null,
+      scriptRevision: plan.script.revision, callbackTimeoutMs: lua.callbackTimeoutMs, programHash: plan.programHash, pendingWrite: null, judgments: {}, variableScopes: [], pause: null,
       statementIds: plan.statementIds, breakpoints, startedAtMs: Date.now(), finishedAtMs: null, current: null, entries: [], completed: 0, detail: null,
       ...(plan.handlers ? { events: clock.snapshot(), eventLog: [] } : {}),
     };
@@ -650,7 +640,7 @@ export class MasterScriptRunner {
     let resolveFinished!: () => void;
     const finished = new Promise<void>(resolve => { resolveFinished = resolve; });
     const run: ActiveRun = {
-      controller: new AbortController(), sharedVariables, scopes: new Map([[null, { functionId: null, variables: sharedVariables, inCall: false }]]),
+      controller: new AbortController(), lua, groups: [], groupIds: plan.lua.control.groups, sharedVariables, scopes: new Map([[null, { functionId: null, variables: sharedVariables, inCall: false }]]),
       variablesDirty: false, judgments: new Map(), judgmentsDirty: false, breakpoints: new Set(breakpoints),
       pauseNext: debug ? 'entry' : undefined, clock, handlers: plan.handlers, tasks: new Map(), ready: [],
       inFlight: 0, finished, resolveFinished,
@@ -670,6 +660,8 @@ export class MasterScriptRunner {
     run.terminalError = failure;
     this.view = { ...this.view!, state: 'stopping', pause: null };
     run.resume = undefined;
+    run.pauseAtBoundary = undefined;
+    run.stepOwner = undefined;
     clearTimeout(run.wake);
     if (run.turn) clearImmediate(run.turn);
     run.controller.abort(new Error('流程已停止'));
@@ -709,16 +701,18 @@ export class MasterScriptRunner {
   }
 
   private suspend(run: ActiveRun, reason: PauseReason, locals: Map<string, Sample>, release: () => void,
-    writePreview?: string, writeError?: string) {
+    writePreview?: string, writeError?: string, owner?: ScriptTask) {
     clearTimeout(run.wake);
     run.clock.freeze();
     run.pauseNext = undefined;
+    run.stepOwner = undefined;
     const variables = Array.from(locals, ([name, sample]) => ({ name, value: String(sample.value ?? sample.detail) }));
     this.view = { ...this.view!, state: 'paused', pause: { reason, token: randomUUID(), variables, writePreview, writeError } };
     run.resume = mode => {
       run.resume = undefined;
       run.clock.resume();
       run.pauseNext = mode === 'step' ? 'step' : undefined;
+      run.stepOwner = mode === 'step' ? owner : undefined;
       this.view = { ...this.view!, state: 'running', pause: null };
       release();
       this.schedule(run, 0);
@@ -734,7 +728,10 @@ export class MasterScriptRunner {
     if (run.judgmentsDirty) next.judgments = Object.fromEntries(run.judgments);
     if (run.variablesDirty) next.variableScopes = Array.from(run.scopes.values(), scope => ({
       functionId: scope.functionId, inCall: scope.inCall, ...(scope.source ? { source: scope.source } : {}),
-      values: Array.from(scope.variables, ([name, sample]) => ({ name, value: sample.value! })),
+      values: Array.from(scope.variables, ([name, sample]) => {
+        const value = displayLuaScalar(sample.value!);
+        return { name, value, ...(typeof sample.value === 'bigint' && typeof value === 'string' ? { kind: 'integer64' as const } : {}) };
+      }),
     }));
     this.view = next;
     run.judgmentsDirty = run.variablesDirty = false;
@@ -778,6 +775,7 @@ export class MasterScriptRunner {
     this.view = { ...this.view!, state, detail: run.terminalError ?? (state === 'stopped' ? '流程已停止' : null),
       current: null, pause: null, pendingWrite: null, finishedAtMs: Date.now() };
     this.active = null;
+    run.lua.close();
     run.resolveFinished();
   }
 
@@ -793,7 +791,7 @@ export class MasterScriptRunner {
 
   private launch(run: ActiveRun, source: ScriptEventSource, steps: PlannedStep[]) {
     const context: TaskContext = { session: run, source, variables: run.sharedVariables };
-    const task: ScriptTask = { context, flow: this.walk(context, steps), advance: () => this.advance(task) };
+    const task: ScriptTask = { context, remainingMs: run.lua.callbackTimeoutMs, flow: this.walk(context, steps), advance: () => this.advance(task) };
     run.tasks.set(source, task);
     run.ready.push(task);
   }
@@ -816,8 +814,14 @@ export class MasterScriptRunner {
 
   private pump(run: ActiveRun, maxSteps = 64) {
     if (this.active !== run || run.controller.signal.aborted || run.resume || run.approve) return;
-    const sliceEnd = performance.now() + 3;
+    const sliceEnd = performance.now() + SCRIPT_SLICE_MS;
     for (let n = 0; n < maxSteps; n++) {
+      if (run.pauseAtBoundary && !run.inFlight) {
+        const pause = run.pauseAtBoundary;
+        run.pauseAtBoundary = undefined;
+        pause();
+        return;
+      }
       const due = run.clock.takeDue(run.tasks);
       for (const source of due) {
         if (source === 'on_run') this.launch(run, source, run.handlers!.onRun!.steps);
@@ -829,9 +833,28 @@ export class MasterScriptRunner {
         }
       }
       if (due.length) this.updateEventStatus(run);
-      const task = run.ready.shift();
+      if (run.inFlight && (run.pauseAtBoundary || run.pauseNext)) {
+        // Keep the clock and external completions alive without dispatching further device steps.
+        this.schedule(run, run.clock.nextDelay());
+        return;
+      }
+      const index = run.ready.findIndex(t => (!run.stepOwner || t === run.stepOwner) &&
+        (!run.mainOwner || t === run.mainOwner || t.context.source === 'on_start'));
+      const task = index < 0 ? undefined : run.ready.splice(index, 1)[0];
       if (!task) break;
-      task.advance();
+      const root = task.context.source !== 'on_start';
+      const begin = performance.now();
+      if (root) { run.mainOwner = task; run.lua.budget(task.remainingMs); }
+      try {
+        task.advance();
+        if (root && this.active === run && !run.controller.signal.aborted) {
+          task.remainingMs -= performance.now() - begin;
+          if (task.remainingMs <= 0) run.lua.watchdog();
+        }
+      } catch (error) {
+        if (task.current) this.record(task.context, task.current, 'failed', messageOf(error));
+        this.cancel(run, messageOf(error));
+      } finally { run.lua.budget(Infinity); }
       if (this.active !== run || run.controller.signal.aborted || run.resume || run.approve) return;
       if (performance.now() >= sliceEnd) break;
     }
@@ -859,8 +882,13 @@ export class MasterScriptRunner {
     const run = task.context.session;
     try {
       const next = error ? task.flow.throw(error.reason) : task.flow.next(outcome);
-      if (next.done) { run.tasks.delete(task.context.source); return; }
+      if (next.done) {
+        if (run.mainOwner === task) run.mainOwner = undefined;
+        if (run.stepOwner === task) run.stepOwner = undefined;
+        run.tasks.delete(task.context.source); return;
+      }
       const instruction = next.value;
+      if ('slice' in instruction) { task.advance = () => this.advance(task); run.ready.push(task); return; }
       const { step } = instruction;
       if (!task.current && task.context.source === 'on_run') {
         run.clock.enterCycle();
@@ -869,27 +897,37 @@ export class MasterScriptRunner {
       this.showStep(task, step);
       const reason = run.pauseNext ?? (run.breakpoints.has(step.blockId) ? 'breakpoint' : undefined);
       if (!reason) { this.execute(task, instruction); return; }
-      let prepared: PreparedWrite | undefined;
-      let writeError: StepFailure | undefined;
-      try { prepared = step.prepareWrite?.(task.context); }
-      catch (error) { writeError = new StepFailure(messageOf(error), ['not-sent', 'evaluation']); }
-      this.suspend(run, reason, task.context.variables, () => {
-        task.advance = () => this.execute(task, instruction, prepared, writeError);
-        run.ready.unshift(task);
-      }, prepared?.preview, writeError?.message);
-    } catch (error) { this.cancel(run, messageOf(error)); }
+      const pause = () => {
+        let prepared: PreparedWrite | undefined;
+        let writeError: StepFailure | undefined;
+        try { prepared = step.prepareWrite?.(task.context); }
+        catch (error) { writeError = new StepFailure(messageOf(error), ['not-sent', 'evaluation']); }
+        this.suspend(run, reason, task.context.variables, () => {
+          task.advance = () => this.execute(task, instruction, prepared, writeError);
+          run.ready.unshift(task);
+        }, prepared?.preview, writeError?.message, task);
+      };
+      if (run.inFlight) {
+        run.pauseAtBoundary = pause;
+        this.view = { ...this.view!, state: 'pausing' };
+      } else pause();
+    } catch (error) {
+      if (error instanceof ScriptHandleFault && task.current) this.record(task.context, task.current, 'failed', error.message);
+      this.cancel(run, messageOf(error));
+    }
   }
 
-  private execute(task: ScriptTask, instruction: Instruction, prepared?: PreparedWrite, writeError?: StepFailure) {
+  private execute(task: ScriptTask, instruction: Extract<Instruction, { step: PlannedStep }>, prepared?: PreparedWrite, writeError?: StepFailure) {
     const { session: run } = task.context;
     const { step } = instruction;
     const complete = (outcome?: Outcome, error?: { reason: unknown }) => {
       if (error) this.record(task.context, step, run.controller.signal.aborted ? 'stopped' : 'failed', messageOf(error.reason));
       else if (outcome) this.record(task.context, step, outcome.control === 'stop' ? 'stopped' : 'ok', outcome.detail, outcome.log);
       if (run.controller.signal.aborted) { if (!run.inFlight) this.finish(run); return; }
+      if (error?.reason instanceof ScriptHandleFault) { this.cancel(run, error.reason.message); return; }
       if (outcome?.control === 'stop') { this.cancel(run); return; }
       task.advance = () => this.advance(task, outcome, error);
-      if (error || run.pauseNext === 'step') run.ready.unshift(task);
+      if (error || run.pauseNext) run.ready.unshift(task);
       else run.ready.push(task);
     };
     try {
@@ -897,6 +935,7 @@ export class MasterScriptRunner {
       if (instruction.loopBoundary) { complete(); return; }
       const result = prepared ? prepared.send() : step.execute(task.context);
       if (!(result instanceof Promise)) { complete(result); return; }
+      if (run.mainOwner === task) run.mainOwner = undefined;
       run.inFlight++;
       const settled = (value?: Outcome, error?: { reason: unknown }) => {
         run.inFlight--;
@@ -907,49 +946,69 @@ export class MasterScriptRunner {
     } catch (reason) { complete(undefined, { reason }); }
   }
 
-  // The generator owns the program counter, loop indices, exception handlers and call frames of this invocation.
+  // Lua owns the program counter and control frames. The adapter translates its
+  // requests into checked host operations; no device Promise is awaited inside a Lua/C call.
   private *walk(task: TaskContext, steps: PlannedStep[]): Flow {
-    for (const step of steps) {
-      const outcome = (yield { step })!;
-      if (outcome.control === 'break') throw new BreakLoop();
-      if (outcome.body) yield* this.walkBody(task, outcome.body, step);
-    }
-  }
-
-  private *walkBody(task: TaskContext, body: NonNullable<Outcome['body']>, owner: PlannedStep): Flow {
-    if (body.mode === 'sequence') { yield* this.walk(task, body.steps); return; }
-    if (body.mode === 'call') {
-      const leave = enterFunction(task, body.functionId, body.variables);
-      try { yield* this.walk(task, body.steps); } finally { leave(); }
-      return;
-    }
-    if (body.mode === 'loop') {
-      try {
-        for (let i = 0; i < body.count; i++) {
-          if (i > 0) yield { step: owner, loopBoundary: true };
-          if (body.until) {
-            try {
-              const result = body.until(task);
-              if (result.matched === undefined) throw new Error(`条件暂不可判定 · ${result.detail}`);
-              if (result.matched) break;
-            } catch (error) { this.record(task, owner, 'failed', messageOf(error)); throw error; }
+    const { session: run, source } = task;
+    const groupId = (group: PlannedStep[]) => {
+      const id = group.length ? run.groupIds[group[0]!.blockId]! : 0;
+      run.groups[id] = group;
+      return id;
+    };
+    const calls: (() => void)[] = [];
+    const handlers: (StepFailure | undefined)[] = [];
+    const tests = new Map<PlannedStep, (context: TaskContext) => ConditionReading>();
+    let failure: unknown;
+    let reply = 'next';
+    let choice: number | undefined;
+    run.lua.open(source, groupId(steps));
+    try {
+      while (true) {
+        const action = run.lua.advance(source, reply, choice);
+        reply = 'next'; choice = undefined;
+        switch (action.kind) {
+          case 'done': return;
+          case 'slice': yield { slice: true }; continue;
+          case 'unhandled': throw failure;
+          case 'leave_call': calls.pop()!(); continue;
+          case 'leave_handler': task.failure = handlers.pop(); continue;
+          case 'enter_handler': {
+            handlers.push(task.failure);
+            task.failure = failure instanceof StepFailure ? failure : new StepFailure(messageOf(failure), ['evaluation']);
+            const failed = task.failedEntry;
+            if (failed) {
+              const mark = (row: ScriptRunEntry) => row === failed ? { ...row, handled: true } : row;
+              this.view = { ...this.view!, entries: this.view!.entries.map(mark), eventLog: this.view!.eventLog?.map(mark) };
+            }
+            continue;
           }
-          yield* this.walk(task, body.steps);
         }
-      } catch (error) { if (!(error instanceof BreakLoop)) throw error; }
-      return;
-    }
-    try { yield* this.walk(task, body.steps); }
-    catch (error) {
-      if (error instanceof BreakLoop || !body.handler.length) throw error;
-      const previous = task.failure;
-      task.failure = error instanceof StepFailure ? error : new StepFailure(messageOf(error), ['evaluation']);
-      const failed = task.failedEntry;
-      if (failed) {
-        const mark = (row: ScriptRunEntry) => row === failed ? { ...row, handled: true } : row;
-        this.view = { ...this.view!, entries: this.view!.entries.map(mark), eventLog: this.view!.eventLog?.map(mark) };
+        const step = run.groups[action.group]?.[action.index - 1];
+        if (!step) throw new ScriptHandleFault('Lua 返回了无效的步骤位置');
+        if (action.kind === 'test') {
+          try {
+            const reading = tests.get(step)!(task);
+            if (reading.matched === undefined) throw new Error(`条件暂不可判定 · ${reading.detail}`);
+            if (reading.matched) reply = 'exit_loop';
+          } catch (e) { this.record(task, step, 'failed', messageOf(e)); failure = e; reply = 'error'; }
+          continue;
+        }
+        if (action.kind !== 'step' && action.kind !== 'boundary') throw new ScriptHandleFault('未知 Lua 调度操作');
+        let outcome: Outcome | undefined;
+        try { outcome = yield { step, loopBoundary: action.kind === 'boundary' }; }
+        catch (e) { failure = e; reply = 'error'; continue; }
+        const body = outcome?.body;
+        if (!body) continue;
+        groupId(body.steps);
+        if (body.mode === 'sequence') choice = body.choice;
+        if (body.mode === 'call') calls.push(enterFunction(task, body.functionId, body.variables));
+        else if (body.mode === 'attempt') groupId(body.handler);
+        else if (body.mode === 'loop' && body.until) tests.set(step, body.until);
       }
-      try { yield* this.walk(task, body.handler); } finally { task.failure = previous; }
+    } finally {
+      while (calls.length) calls.pop()!();
+      task.failure = undefined;
+      run.lua.drop(source);
     }
   }
 }

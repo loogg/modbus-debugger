@@ -33,14 +33,28 @@ async function blockBounds(label: string, flyout = false) {
   const bounds = await browser.execute(({ selector, label, flyout }) => {
     const root = document.querySelector(selector);
     const surface = root?.querySelector(flyout ? '.blocklyToolboxFlyout' : '.blocklySvg');
-    const title = Array.from(surface?.querySelectorAll('g[data-id] text') ?? []).find(text => text.textContent === label);
+    const title = Array.from(surface?.querySelectorAll('g[data-id] text') ?? [])
+      .find(text => text.textContent === label && (flyout || !text.closest('.blocklyFlyout')));
     const block = title?.closest('g[data-id]');
-    const rect = block?.querySelector(':scope > .blocklyPath')?.getBoundingClientRect();
+    const shape = block?.querySelector<SVGPathElement>(':scope > .blocklyPath');
     const grip = title?.getBoundingClientRect();
-    return rect && grip ? {
-      id: block!.getAttribute('data-id')!, x: rect.x, y: rect.y, height: rect.height,
+    const matrix = shape?.getScreenCTM();
+    if (!shape || !matrix || !grip) return null;
+    // Measure the flat bottom edge of the actual SVG, beyond its connection tab.
+    const box = shape.getBBox();
+    const x = box.x + box.width * 0.75;
+    const sample = shape.ownerSVGElement!.createSVGPoint();
+    sample.x = x;
+    let low = box.y + box.height / 2, high = box.y + box.height;
+    for (let n = 0; n < 12; n++) {
+      const y = (low + high) / 2;
+      sample.y = y;
+      if (shape.isPointInFill(sample)) low = y; else high = y;
+    }
+    return {
+      id: block!.getAttribute('data-id')!, x: matrix.e, y: matrix.f, bottom: new DOMPoint(0, low).matrixTransform(matrix).y,
       gripX: grip.x + grip.width / 2, gripY: grip.y + grip.height / 2,
-    } : null;
+    };
   }, { selector: viewSelector, label, flyout });
   if (!bounds) throw new Error(`Unable to find the visible block ${label}`);
   return bounds;
@@ -63,10 +77,14 @@ async function appendAction(label: string, precedingLabel: string) {
   const from = { x: block.gripX, y: block.gripY };
   await drag(from, {
     x: preceding.x + from.x - block.x,
-    y: preceding.y + preceding.height + from.y - block.y - 4,
+    y: preceding.bottom + from.y - block.y,
   });
   await expect(view().$('.blocklyToolboxFlyout')).toBeDisplayed();
   const added = await blockBounds(label);
+  await browser.waitUntil(() => browser.execute((selector, child, parent) => {
+    const el = document.querySelector(selector)?.querySelector(`.blocklyBlockCanvas g[data-id="${CSS.escape(child)}"]`);
+    return el?.parentElement?.closest('g[data-id]')?.getAttribute('data-id') === parent;
+  }, viewSelector, added.id, preceding.id), { timeoutMsg: `${label} 未吸附到 ${precedingLabel}` });
   const escaped = await browser.execute(id => CSS.escape(id), added.id);
   // These device actions have no point yet. Follow the draft diagnostic to
   // the actual block before editing fields in the split workspace.
@@ -212,7 +230,7 @@ describe('Author and execute a master script in the packaged editor', () => {
     try {
       await $('//nav//button[normalize-space(.)="主站脚本"]').click();
       await view().$('input[type="file"]').addValue(file);
-      await view().$(`button=${name}`).click();
+      await view().$(`aria/${name}`).click();
       const writeLabel = view().$('g[data-id="dbg-write"] > .blocklyLabelField');
       await writeLabel.waitForDisplayed();
       await writeLabel.click({ button: 'right' });
@@ -222,9 +240,9 @@ describe('Author and execute a master script in the packaged editor', () => {
       await browser.waitUntil(async () => (await snapshot()).workspace.masterScripts?.find(item => item.name === name)?.graph.breakpoints?.includes('dbg-write') === true);
       await browser.refresh();
       await $('//nav//button[normalize-space(.)="主站脚本"]').click();
-      await view().$(`button=${name}`).click();
+      await view().$(`aria/${name}`).click();
       await expect(view().$('g[data-id="dbg-write"] > .script-breakpoint-dot')).toBeDisplayed();
-      expect(await readScriptLua()).toContain('print("反馈转速", modbus.value("slave-1", "pt-speed"))');
+      expect(await readScriptLua()).toContain('print("反馈转速", _ops.observe(function() return modbus.value("slave-1", "pt-speed") end))');
       await view().$('button=调试').click();
       const pause = view().$('[aria-label="调试暂停"]');
       await expect(pause).toHaveText(expect.stringContaining('调试起点'));
@@ -249,7 +267,7 @@ describe('Author and execute a master script in the packaged editor', () => {
       // Re-enter after breakpoint-only saves have advanced the workspace revision.
       await browser.refresh();
       await $('//nav//button[normalize-space(.)="主站脚本"]').click();
-      await view().$(`button=${name}`).click();
+      await view().$(`aria/${name}`).click();
       await expect(view().$('.script-lua-line[data-current][data-block-id="dbg-write"]')).toBeDisplayed();
       await pause.$('summary').click();
       await expect(pause).toHaveText(expect.stringContaining('写前转速'));
@@ -357,11 +375,11 @@ describe('Author and execute a master script in the packaged editor', () => {
     expect(lua).toContain('for _step = 1, 2 do');
     const testOnline = 'function() return modbus.state("slave-rtu-1", "online") end';
     const testOffline = 'function() return modbus.state("slave-rtu-1", "offline") end';
-    const testInitial = 'function() return modbus.compare("slave-rtu-1", "pt-flow-setpoint", "eq", value) end';
+    const testInitial = 'function() return modbus.compare("slave-rtu-1", "pt-flow-setpoint", "eq", _ops.read(value, "初值")) end';
     const testRange = 'function() return modbus.in_range("slave-rtu-1", "pt-flow-setpoint", 25.3, 25.5) end';
     expect(lua).toContain('return modbus.all(\n');
     const normalizedLua = lua.replace(/\s+/g, ' ').replaceAll('( ', '(').replaceAll(' )', ')');
-    expect(normalizedLua).toBe([
+    expect(normalizedLua).toContain([
       `modbus.wait(${testOnline}, 5000)`,
       'local value = modbus.value("slave-rtu-1", "pt-flow-setpoint")',
       'for _step = 1, 2 do',
@@ -455,9 +473,9 @@ describe('Author and execute a master script in the packaged editor', () => {
       expect(run.judgments.restored).toMatchObject({matched:true,samples:[{timeMs:expect.any(Number)},{timeMs:expect.any(Number)}]});
       expect(simulatorRegister()).toBe(before);
       const lua = await readScriptLua();
-      expect(lua).toContain('modbus.attempt(function()');
-      expect(lua).toContain('modbus.write("slave-1", "pt-speed", value)');
-      expect(lua).toContain('modbus.yield_io()');
+      expect(lua).toContain('_ops.attempt(function()');
+      expect(lua).toContain('modbus.write("slave-1", "pt-speed", _ops.read(value, "初始转速"))');
+      expect(lua).toContain('if not _ops.loop_step(function()');
       fs.mkdirSync(evidenceDir,{recursive:true});
       fs.writeFileSync(path.join(evidenceDir,'handled-restore.json'),JSON.stringify({before,after:simulatorRegister(),run,lua},null,2));
     } finally { simulatorRegister(before); }

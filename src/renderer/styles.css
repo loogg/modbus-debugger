@@ -7,13 +7,21 @@
 .script-list { display: flex; flex: none; align-items: stretch; min-width: 0; gap: 4px; padding: 0 12px; border-bottom: 1px solid #d9e1e8; background: #f3f6f9; }
 .script-list h1 { align-self: center; margin-right: 10px; color: #36485b; font-size: 13px; font-weight: 650; white-space: nowrap; }
 .script-files { display: flex; align-items: stretch; gap: 3px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
-.script-file { flex: none; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 8px 12px 6px; border-block-end: 2px solid transparent; color: #526578; font-size: 13px; }
+.script-file { display: inline-flex; align-items: center; gap: 7px; flex: none; max-width: 30ch; white-space: nowrap; padding: 8px 12px 6px; border-block-end: 2px solid transparent; color: #526578; font-size: 13px; }
+.script-file-name { overflow: hidden; text-overflow: ellipsis; }
 .script-file[aria-current="true"] { background: #fff; border-color: #276aa1; color: #223b53; font-weight: 650; }
 .script-file:hover, .script-import:hover { background: #eaf0f5; }
+.script-file-status { flex: none; color: #176a58; font-size: 11px; font-weight: 600; }
+.script-file-status[data-status="已暂停"], .script-file-status[data-status="待确认"] { color: #805414; }
+.script-file-status[data-status="失败"] { color: #a12e31; }
 .script-list .workbench-tool { flex: none; align-self: center; }
 .script-import { display: flex; flex: none; align-items: center; gap: 5px; margin-left: auto; padding: 0 6px; color: #395168; font-size: 12px; }
 .script-draft-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid #d9e1e8; background: white; }
-.script-block-search { display: flex; align-items: center; gap: 7px; width: clamp(158px, 18vw, 254px); height: 32px; margin-right: 5px; padding: 0 8px; border: 1px solid #b9c7d4; border-radius: 6px; background: #fbfcfe; color: #54697e; }
+.script-draft-name { position: relative; flex: 1 1 128px; min-width: 128px; max-width: 176px; }
+.script-callback-timeout { display: inline-flex; align-items: center; gap: 5px; padding-inline: 4px; white-space: nowrap; color: #485b70; font-size: 12px; }
+.script-callback-timeout input { width: 76px; height: 32px; padding-inline: 7px 3px; border: 1px solid #b9c7d4; border-radius: 6px; background: #fbfcfe; color: #20364c; font-size: 13px; font-variant-numeric: tabular-nums; }
+.script-callback-timeout input[aria-invalid="true"] { border-color: #a12e31; }
+.script-block-search { display: flex; flex: 1 1 145px; min-width: 145px; max-width: clamp(158px, 18vw, 254px); align-items: center; gap: 7px; height: 32px; margin-right: 5px; padding: 0 8px; border: 1px solid #b9c7d4; border-radius: 6px; background: #fbfcfe; color: #54697e; }
 .script-block-search:focus-within { border-color: #2672ad; box-shadow: 0 0 0 1px #2672ad; }
 .script-block-search input { width: 0; flex: 1; min-width: 0; outline: none; background: transparent; color: #20364c; font-size: 13px; }
 .script-block-search input::placeholder { color: #57697c; }

@@ -1,16 +1,17 @@
 import * as Blockly from 'blockly/core';
 import * as zhHans from 'blockly/msg/zh-hans';
 import { blockColours } from './block-palette';
-import { DEFAULT_RUN_PERIOD, MAX_EVENT_ITERATIONS, MIN_EVENT_PERIOD, SCRIPT_TIMER_COUNT } from '../../../domain/master-script';
-import { Order } from 'blockly/lua';
-import { compileScriptProgram, fieldText, isScriptDefinition, MAX_SCRIPT_MS, ScriptBlockError, scriptArithmetic, scriptBlocks, scriptErrors, scriptGraphBlocks, scriptPointKey, scriptRelations, scriptStates, splitParameters, type ScriptGraph } from '../../../domain/master-script';
+import { checkCallbackContexts, DEFAULT_DELAY_MS, DEFAULT_REPEAT_COUNT, DEFAULT_RUN_PERIOD, DEFAULT_WAIT_MS, MAX_EVENT_ITERATIONS, MIN_EVENT_PERIOD, SCRIPT_TIMER_COUNT } from '../../../domain/master-script';
+import type { LuaSource } from '../../../domain/script-lua-source';
+import { compileScriptLua } from '../../../domain/script-lua-program';
+import { luaNumericLiteral } from '../../../domain/script-lua-operators';
+import { fieldText, isScriptDefinition, MAX_SCRIPT_MS, ScriptBlockError, scriptArithmetic, scriptBlocks, scriptErrors, scriptGraphBlocks, scriptPointKey, scriptRelations, scriptStates, splitParameters, type ScriptGraph } from '../../../domain/master-script';
 import type { Workspace } from '../../../domain/model';
 import { canReadPoint, canWritePoint } from '../../../domain/point-access';
 import { BooleanSwitch, conditionInput, initBranch, literalShadow, LogValueControl, numberSlot, saveScriptGraph } from './block-controls';
-import { ScriptLuaGenerator, type LuaSource, type ScriptPreview } from './lua-source';
+import type { ScriptPreview } from './lua-source';
 import { initFunctionCall, parameterField, ParameterListField, ScriptReferenceField } from './function-blocks';
 
-const luaGenerator = new ScriptLuaGenerator();
 
 type Option = [string, string];
 type List = 'slave' | 'read' | 'write' | 'numeric';
@@ -140,7 +141,7 @@ function action(block: Blockly.Block, label: string, color = actionColor) {
   return block.appendDummyInput().appendField(label);
 }
 function timeout(block: Blockly.Block) {
-  block.appendDummyInput().appendField('超时').appendField(new Blockly.FieldNumber(5000, 50, MAX_SCRIPT_MS, 1), 'TIMEOUT').appendField('ms');
+  block.appendDummyInput().appendField('超时').appendField(new Blockly.FieldNumber(DEFAULT_WAIT_MS, 50, MAX_SCRIPT_MS, 1), 'TIMEOUT').appendField('ms');
 }
 function statementCondition(block: Blockly.Block, label: string) {
   block.setPreviousStatement(true);
@@ -260,10 +261,11 @@ function installBlocks() {
     initBranch(this);
   } };
   Blockly.Blocks[scriptBlocks.delay] = { init(this: Blockly.Block) {
-    action(this, '延时', controlColor).appendField(new Blockly.FieldNumber(500, 0, MAX_SCRIPT_MS, 1), 'MS').appendField('ms');
+    action(this, '延时', controlColor).appendField(new Blockly.FieldNumber(DEFAULT_DELAY_MS, 0, MAX_SCRIPT_MS, 1), 'MS').appendField('ms');
+    this.setTooltip('挂起 on_start 协程，其他事件继续运行。在周期或定时器回调中调用会使这张流程报错停止。');
   } };
   Blockly.Blocks[scriptBlocks.repeat] = { init(this: Blockly.Block) {
-    action(this, '重复', controlColor).appendField(new Blockly.FieldNumber(3, 1, MAX_EVENT_ITERATIONS, 1), 'COUNT').appendField('次');
+    action(this, '重复', controlColor).appendField(new Blockly.FieldNumber(DEFAULT_REPEAT_COUNT, 1, MAX_EVENT_ITERATIONS, 1), 'COUNT').appendField('次');
     this.appendStatementInput('BODY');
   } };
   Blockly.Blocks[scriptBlocks.forever] = { init(this: Blockly.Block) {
@@ -308,7 +310,11 @@ function installBlocks() {
   } };
   Blockly.Blocks[scriptBlocks.number] = { init(this: Blockly.Block) {
     valueReporter(this, mathColor);
-    this.appendDummyInput().appendField(new Blockly.FieldNumber(0), 'NUM');
+    this.appendDummyInput().appendField(new Blockly.FieldTextInput('0', raw => {
+      const text = raw.trim();
+      if (!text || !Number.isFinite(Number(text))) return null;
+      return String(luaNumericLiteral(text));
+    }), 'NUM');
   } };
   Blockly.Blocks[scriptBlocks.arithmetic] = { init(this: Blockly.Block) {
     valueReporter(this, mathColor);
@@ -402,179 +408,8 @@ function installBlocks() {
   } };
 }
 
-const field = (block: Blockly.Block, name: string) => String(block.getFieldValue(name) ?? '');
-function quoteLua(value: string): string {
-  const escaped = Array.from(value, char => {
-    if (char === '"' || char === '\\') return `\\${char}`;
-    const code = char.charCodeAt(0);
-    return code < 32 || code === 127 ? `\\${String(code).padStart(3, '0')}` : char;
-  });
-  return `"${escaped.join('')}"`;
-}
-function pointArgs(block: Blockly.Block): string {
-  const ref = JSON.parse(field(block, 'POINT') || '["",""]') as string[];
-  return ref.map(quoteLua).join(', ');
-}
-function conditionCode(block: Blockly.Block, input = 'CONDITION', order = Order.NONE): string {
-  return luaGenerator.valueToCode(block, input, order) || (field(block, 'BOOL_' + input) === 'TRUE' ? 'true' : 'false');
-}
-function conditionLua(block: Blockly.Block, input = 'CONDITION'): string {
-  const code = conditionCode(block, input);
-  const result = `return ${code}`;
-  return result.includes('\n')
-    ? `function()\n${luaGenerator.prefixLines(result, luaGenerator.INDENT)}\nend`
-    : `function() ${result} end`;
-}
-const deviceExpressions = new Set<string>([scriptBlocks.pointValue, scriptBlocks.state, scriptBlocks.range, scriptBlocks.compare, scriptBlocks.compareVariable, scriptBlocks.error]);
-function includesDeviceOperand(block: Blockly.Block | null): boolean {
-  if (!block) return false;
-  if (deviceExpressions.has(block.type)) return true;
-  if (block.type === scriptBlocks.callValue) {
-    const definition = block.workspace.getBlockById(field(block, 'FUNCTION'))!;
-    if (includesDeviceOperand(definition.getInputTargetBlock('RESULT'))) return true;
-  }
-  return block.inputList.some(input => includesDeviceOperand(input.connection?.targetBlock() ?? null));
-}
-
-// A device predicate can be indeterminate until a confirmed sample arrives.
-function nativePredicate(block: Blockly.Block | null): boolean {
-  if (!block || block.type === scriptBlocks.boolean || block.type === scriptBlocks.timerRunning) return true;
-  if (block.type === scriptBlocks.compareValues) return !luaGenerator.names.needsHostCheck(block) && !includesDeviceOperand(block);
-  if (block.type === scriptBlocks.callValue && !includesDeviceOperand(block)) {
-    const fn = block.workspace.getBlockById(field(block, 'FUNCTION'))!;
-    return nativePredicate(fn.getInputTargetBlock('RESULT'));
-  }
-  if (block.type === scriptBlocks.not) return nativePredicate(block.getInputTargetBlock('CONDITION'));
-  if (block.type === scriptBlocks.and || block.type === scriptBlocks.or)
-    return nativePredicate(block.getInputTargetBlock('A')) && nativePredicate(block.getInputTargetBlock('B'));
-  return false;
-}
-function branchTest(block: Blockly.Block, input = 'CONDITION', order = Order.NONE): string {
-  return nativePredicate(block.getInputTargetBlock(input)) ? conditionCode(block, input, order) : `modbus.check(${conditionLua(block, input)})`;
-}
-function combinationLua(block: Blockly.Block, operator: 'all' | 'any'): [string, Order] {
-  if (nativePredicate(block)) {
-    const order = operator === 'all' ? Order.AND : Order.OR;
-    return [`${conditionCode(block, 'A', order)} ${operator === 'all' ? 'and' : 'or'} ${conditionCode(block, 'B', order)}`, order];
-  }
-  const operands = `${conditionLua(block, 'A')},\n${conditionLua(block, 'B')}`;
-  return [`modbus.${operator}(\n${luaGenerator.prefixLines(operands, luaGenerator.INDENT)}\n)`, Order.ATOMIC];
-}
-
-function loopLuaBody(block: Blockly.Block): string {
-  const body = luaGenerator.statementToCode(block, 'BODY');
-  const first = block.getInputTargetBlock('BODY');
-  if (!first?.getDescendants(false).some(item => item.type === scriptBlocks.breakLoop)) return body;
-  // A break inside an error handler crosses a Lua function boundary. The loop
-  // captures that control signal at the nearest iteration, just as Main does.
-  return '  if not modbus.loop_step(function()\n' + luaGenerator.prefixLines(body, '  ') + '  end) then break end\n';
-}
-
-function installLua() {
-  luaGenerator.forBlock[scriptBlocks.start] = () => '';
-  luaGenerator.forBlock[scriptBlocks.onRun] = luaGenerator.forBlock[scriptBlocks.onTimer] = () => '';
-  luaGenerator.forBlock[scriptBlocks.runPeriod] = block => `rt.set_run_period(${slot(block, 'PERIOD')})\n`;
-  luaGenerator.forBlock[scriptBlocks.runControl] = block => `rt.${field(block, 'MODE') === 'start' ? 'start_run' : 'stop_run'}()\n`;
-  luaGenerator.forBlock[scriptBlocks.timerStart] = block => {
-    const mode = field(block, 'MODE');
-    return `rt.start_timer(${field(block, 'TIMER')}, ${slot(block, 'PERIOD')}, ${mode === 'loop' ? 0 : mode === 'once' ? 1 : field(block, 'COUNT')})\n`;
-  };
-  luaGenerator.forBlock[scriptBlocks.timerStop] = block => `rt.stop_timer(${field(block, 'TIMER')})\n`;
-  luaGenerator.forBlock[scriptBlocks.timerElapsed] = block => [`rt.get_timer_value(${field(block, 'TIMER')})`, Order.HIGH];
-  luaGenerator.forBlock[scriptBlocks.timerRunning] = block => [`rt.is_timer_running(${field(block, 'TIMER')})`, Order.HIGH];
-  luaGenerator.forBlock[literalShadow] = block => [quoteLua(field(block, 'TEXT')), Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.read] = block => `modbus.read(${pointArgs(block)}, ${field(block, 'TIMEOUT')})\n`;
-  luaGenerator.forBlock[scriptBlocks.readVariable] = block => `${luaGenerator.names.assignment(block)} = modbus.value(${pointArgs(block)})\n`;
-  const valueCode = (block: Blockly.Block) => luaGenerator.valueToCode(block, 'OPERAND', Order.NONE) || quoteLua(field(block, 'VALUE'));
-  luaGenerator.forBlock[scriptBlocks.write] = block => `modbus.write(${pointArgs(block)}, ${valueCode(block)})\n`;
-  const slot = (block: Blockly.Block, name: string, order = Order.NONE) => luaGenerator.valueToCode(block, name, order);
-  luaGenerator.forBlock[scriptBlocks.number] = block => [field(block, 'NUM'), Number(field(block, 'NUM')) < 0 ? Order.UNARY : Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.arithmetic] = block => {
-    const symbol = scriptArithmetic.find(([, key]) => key === field(block, 'OP'))![2];
-    if (luaGenerator.names.needsHostCheck(block) || includesDeviceOperand(block))
-      return [`modbus.arithmetic(${slot(block, 'A')}, ${quoteLua(symbol)}, ${slot(block, 'B')})`, Order.HIGH];
-    const order = symbol === '+' || symbol === '-' ? Order.ADDITIVE : Order.MULTIPLICATIVE;
-    return [`${slot(block, 'A', order)} ${symbol} ${slot(block, 'B', order)}`, order];
-  };
-  const relations: Record<string, string> = { eq: '==', ne: '~=', gt: '>', ge: '>=', lt: '<', le: '<=' };
-  luaGenerator.forBlock[scriptBlocks.compareValues] = block => {
-    const op = field(block, 'OP');
-    if (luaGenerator.names.needsHostCheck(block) || includesDeviceOperand(block))
-      return [`modbus.compare_values(${slot(block, 'A')}, ${quoteLua(op)}, ${slot(block, 'B')})`, Order.HIGH];
-    return [`${slot(block, 'A', Order.RELATIONAL)} ${relations[op]} ${slot(block, 'B', Order.RELATIONAL)}`, Order.RELATIONAL];
-  };
-  const variable = (block: Blockly.Block) => luaGenerator.names.variable(block, field(block, 'VARIABLE').trim());
-  luaGenerator.forBlock[scriptBlocks.setVariable] = block => `${luaGenerator.names.assignment(block)} = ${slot(block, 'OPERAND')}\n`;
-  luaGenerator.forBlock[scriptBlocks.changeVariable] = block => {
-    const name = variable(block);
-    if (luaGenerator.names.needsHostCheck(block)) return `${name} = modbus.arithmetic(${name}, "+", ${slot(block, 'OPERAND')})\n`;
-    return `${name} = ${name} + ${slot(block, 'OPERAND', Order.ADDITIVE)}\n`;
-  };
-  const call = (block: Blockly.Block) => {
-    const args = block.inputList.filter(input => /^ARG\d+$/.test(input.name)).map(input => slot(block, input.name));
-    const values = args.join(', ');
-    // A single wide call would otherwise need one VM register per argument.
-    const argumentsLua = args.length > 50 ? `table.unpack({${values}}, 1, ${args.length})` : values;
-    return `${luaGenerator.names.functionName(field(block, 'FUNCTION'))}(${argumentsLua})`;
-  };
-  const definition = (block: Blockly.Block) => {
-    const args = luaGenerator.names.parameters(block);
-    return `local function ${luaGenerator.names.functionName(block.id)}(${args})\n` + luaGenerator.names.preamble(block, '  ');
-  };
-  luaGenerator.forBlock[scriptBlocks.procedure] = block => definition(block) + luaGenerator.statementToCode(block, 'BODY') + 'end\n';
-  luaGenerator.forBlock[scriptBlocks.calculation] = block => definition(block) + `  return ${slot(block, 'RESULT')}\nend\n`;
-  luaGenerator.forBlock[scriptBlocks.call] = block => call(block) + '\n';
-  luaGenerator.forBlock[scriptBlocks.callValue] = block => [call(block), Order.HIGH];
-  luaGenerator.forBlock[scriptBlocks.parameter] = block => {
-    const name = splitParameters(field(block.getRootBlock(), 'PARAMS'))[Number(field(block, 'PARAM'))]!;
-    return [luaGenerator.names.variable(block, name), Order.ATOMIC];
-  };
-  luaGenerator.forBlock[scriptBlocks.log] = block => {
-    const message = field(block, 'TEXT');
-    const value = block.getInput('OPERAND') ? slot(block, 'OPERAND') : '';
-    return `print(${[message && quoteLua(message), value].filter(Boolean).join(', ')})\n`;
-  };
-  luaGenerator.forBlock[scriptBlocks.wait] = block => `modbus.wait(${conditionLua(block)}, ${field(block, 'TIMEOUT')})\n`;
-  luaGenerator.forBlock[scriptBlocks.assert] = block => `modbus.assert(${conditionLua(block)})\n`;
-  luaGenerator.forBlock[scriptBlocks.branch] = block => {
-    let code = `if ${branchTest(block)} then\n${luaGenerator.statementToCode(block, 'YES')}`;
-    for (let i = 1; block.getInput('COND' + i); i++) {
-      code += `elseif ${branchTest(block, 'COND' + i)} then\n${luaGenerator.statementToCode(block, 'YES' + i)}`;
-    }
-    if (block.getInput('NO')) code += 'else\n' + luaGenerator.statementToCode(block, 'NO');
-    return code + 'end\n';
-  };
-  luaGenerator.forBlock[scriptBlocks.delay] = block => `modbus.delay(${field(block, 'MS')})\n`;
-  const checkpoint = (unbounded = false) => luaGenerator.eventDriven ? '  coroutine.yield()\n' : unbounded ? '  modbus.yield_io()\n' : '';
-  luaGenerator.forBlock[scriptBlocks.repeat] = block => `for _step = 1, ${field(block, 'COUNT')} do\n${loopLuaBody(block)}${checkpoint()}end\n`;
-  luaGenerator.forBlock[scriptBlocks.forever] = block => `while true do\n${loopLuaBody(block)}${checkpoint(true)}end\n`;
-  luaGenerator.forBlock[scriptBlocks.repeatUntil] = block => `while not ${branchTest(block, 'CONDITION', Order.UNARY)} do\n${loopLuaBody(block)}${checkpoint(true)}end\n`;
-  luaGenerator.forBlock[scriptBlocks.stop] = () => 'modbus.stop()\n';
-  luaGenerator.forBlock[scriptBlocks.breakLoop] = () => 'modbus.break_loop()\n';
-  luaGenerator.forBlock[scriptBlocks.attempt] = block => {
-    const body = luaGenerator.statementToCode(block, 'BODY');
-    const handler = luaGenerator.statementToCode(block, 'ERROR');
-    return `modbus.attempt(function()\n${body}end${handler ? ', function()\n' + handler + 'end' : ''})\n`;
-  };
-  luaGenerator.forBlock[scriptBlocks.variable] = block => [variable(block), Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.pointValue] = block => [`modbus.value(${pointArgs(block)})`, Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.boolean] = block => [field(block, 'BOOL') === 'TRUE' ? 'true' : 'false', Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.error] = block => [`modbus.error_is(${quoteLua(field(block, 'CODE'))})`, Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.state] = block => [`modbus.state(${quoteLua(field(block, 'SLAVE'))}, ${quoteLua(field(block, 'STATE'))})`, Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.compare] = block => [`modbus.compare(${pointArgs(block)}, ${quoteLua(field(block, 'OP'))}, ${valueCode(block)})`, Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.compareVariable] = block => [`modbus.compare(${pointArgs(block)}, ${quoteLua(field(block, 'OP'))}, ${variable(block)})`, Order.HIGH];
-  luaGenerator.forBlock[scriptBlocks.range] = block => [`modbus.in_range(${pointArgs(block)}, ${field(block, 'MIN')}, ${field(block, 'MAX')})`, Order.ATOMIC];
-  luaGenerator.forBlock[scriptBlocks.and] = block => combinationLua(block, 'all');
-  luaGenerator.forBlock[scriptBlocks.or] = block => combinationLua(block, 'any');
-  luaGenerator.forBlock[scriptBlocks.not] = block => nativePredicate(block)
-    ? [`not ${conditionCode(block, 'CONDITION', Order.UNARY)}`, Order.UNARY]
-    : [`modbus.negate(${conditionLua(block)})`, Order.HIGH];
-}
-
-export function generateScriptLuaSource(workspace: Blockly.Workspace, graph: ScriptGraph): LuaSource {
-  const program = compileScriptProgram(graph);
-  const start = workspace.getBlocksByType(scriptBlocks.start, false).find(block => block.isEnabled()) ?? null;
-  return luaGenerator.preview(start, program.functions.map(fn => workspace.getBlockById(fn.id)!), workspace, program.handlers);
+export function generateScriptLuaSource(_workspace: Blockly.Workspace, graph: ScriptGraph): LuaSource {
+  return compileScriptLua(graph).source;
 }
 
 export function generateScriptLua(workspace: Blockly.Workspace, graph: ScriptGraph): string {
@@ -583,7 +418,12 @@ export function generateScriptLua(workspace: Blockly.Workspace, graph: ScriptGra
 
 export function inspectScriptDraft(workspace: Blockly.Workspace, graph: ScriptGraph): ScriptPreview {
   try {
-    const source = generateScriptLuaSource(workspace, graph);
+    const { program, source } = compileScriptLua(graph);
+    try { checkCallbackContexts(program); }
+    catch (error) {
+      if (!(error instanceof ScriptBlockError)) throw error;
+      return { source, issue: { blockId: error.blockId, message: error.message } };
+    }
     const available = bindings.get(workspace)?.available;
     for (const blockId of source.ranges.keys()) {
       const block = workspace.getBlockById(blockId);
@@ -616,4 +456,3 @@ export function updateCycleHints(workspace: Blockly.WorkspaceSvg) {
 }
 
 installBlocks();
-installLua();
