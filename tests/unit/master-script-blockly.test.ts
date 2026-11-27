@@ -170,14 +170,18 @@ it('validates the draft structure and workspace bindings, locates the issue, and
   const graph: ScriptGraph = { blocks: { languageVersion: 0, blocks: [{ id: 'entry', type: 'mb_start',
     next: { block: { id: 'sample', type: 'mb_read', fields: { POINT: missing, TIMEOUT: 600 } } } }] } };
   const inspect = () => inspectScriptDraft(ws, graphOf(ws));
+  const model = templateWorkspace();
   try {
-    bindings.set(ws, makeFieldOptions(templateWorkspace(), graph));
+    bindings.set(ws, makeFieldOptions(model, graph));
     loadScriptGraph(graph, ws);
     const loose = ws.newBlock('mb_delay', 'loose');
     expect(inspect()).toMatchObject({ source: null, issue: { blockId: 'loose', message: expect.stringContaining('同一个') } });
     loose.dispose();
     expect(inspect()).toMatchObject({ source: { text: expect.stringContaining('"Removed"') }, issue: { blockId: 'sample', message: expect.stringContaining('可读点位') } });
     ws.getBlockById('sample')!.setFieldValue(scriptPointKey({ slaveId: 's1', pointId: 'Keep' }), 'POINT');
+    expect(inspect().issue).toMatchObject({blockId:'sample',message:expect.stringContaining('从站已停用')});
+    model.slaves[0]!.enabled = true;
+    bindings.set(ws, makeFieldOptions(model, graphOf(ws)));
     expect(inspect().issue).toBeNull();
     ws.getBlockById('sample')!.dispose();
     expect(inspect()).toMatchObject({ source: null, issue: { blockId: 'entry', message: expect.stringContaining('至少一个步骤') } });

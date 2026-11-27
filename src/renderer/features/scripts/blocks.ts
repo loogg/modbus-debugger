@@ -3,6 +3,7 @@ import * as zhHans from 'blockly/msg/zh-hans';
 import { blockColours } from './block-palette';
 import { checkCallbackContexts, checkWorkspaceAssignments, DEFAULT_DELAY_MS, DEFAULT_REPEAT_COUNT, DEFAULT_RUN_PERIOD, DEFAULT_WAIT_MS, MAX_EVENT_ITERATIONS, MIN_EVENT_PERIOD, SCRIPT_TIMER_COUNT } from '../../../domain/master-script';
 import type { LuaSource } from '../../../domain/script-lua-source';
+import { checkScriptPoints, resolveScriptPoint, type ScriptPointTarget } from '../../../domain/script-point-access';
 import { compileScriptLua } from '../../../domain/script-lua-program';
 import { luaNumericLiteral } from '../../../domain/script-lua-operators';
 import { fieldText, isScriptDefinition, MAX_SCRIPT_MS, ScriptBlockError, scriptArithmetic, scriptBlocks, scriptErrors, scriptGraphBlocks, scriptPointKey, scriptRelations, scriptStates, splitParameters, type ScriptGraph } from '../../../domain/master-script';
@@ -17,6 +18,7 @@ import { initFunctionCall, parameterField, ParameterListField, ScriptReferenceFi
 type Option = [string, string];
 type List = 'slave' | 'read' | 'write' | 'numeric' | 'widget' | 'tag';
 interface FieldOptions {
+  points: Map<string, ScriptPointTarget>;
   lists: Record<List, Option[]>;
   available: Record<List, Set<string>>;
   savedPoints: Set<string>;
@@ -31,6 +33,7 @@ interface FieldOptions {
 export const bindings = new WeakMap<Blockly.Workspace, FieldOptions>();
 
 export function makeFieldOptions(workspace: Workspace | null, graph: ScriptGraph): FieldOptions {
+  const points = new Map<string, ScriptPointTarget>();
   const lists: Record<List, Option[]> = {
     widget: [['选择画布控件', '']], tag: [['选择工作区变量', '']],
     slave: [['选择从站', '']], read: [['选择点位', '']], write: [['选择点位', '']], numeric: [['数值点位', '']],
@@ -50,6 +53,7 @@ export function makeFieldOptions(workspace: Workspace | null, graph: ScriptGraph
     const template = workspace?.templates.find(item => item.id === slave.templateId);
     for (const point of template?.points ?? []) {
       const option: Option = [`${source} / ${point.name}${suffix}`, scriptPointKey({ slaveId: slave.id, pointId: point.id })];
+      points.set(option[1], { connection, slave, point });
       shortNames.set(option[1], `${point.name} · ${slave.name}${suffix}`);
       identifiers.set(option[1], point.id);
       fullNames.set(option[1], `${point.name} · ${connection.name} / ${slave.name} U${slave.unitId}${suffix}`);
@@ -92,7 +96,7 @@ export function makeFieldOptions(workspace: Workspace | null, graph: ScriptGraph
     if (slave) savedSlaves.add(slave);
   }
   const keys = (list: List) => new Set(lists[list].map(([, key]) => key));
-  return { lists, savedPoints, savedSlaves, savedWidgets, savedTags, widgetKinds, shortNames, tagTypes: new Map(workspace?.variables?.map(v => [v.id,v.type])),
+  return { lists, points, savedPoints, savedSlaves, savedWidgets, savedTags, widgetKinds, shortNames, tagTypes: new Map(workspace?.variables?.map(v => [v.id,v.type])),
     available: { slave: keys('slave'), read: keys('read'), write: keys('write'), numeric: keys('numeric'), widget: keys('widget'), tag: keys('tag') } };
 }
 
@@ -488,11 +492,14 @@ export function generateScriptLua(workspace: Blockly.Workspace, graph: ScriptGra
 
 export function inspectScriptDraft(workspace: Blockly.Workspace, graph: ScriptGraph): ScriptPreview {
   try {
-    const { program, source } = compileScriptLua(graph);
+    const { program, source, pointUses } = compileScriptLua(graph);
     try {
       checkCallbackContexts(program);
       const options = bindings.get(workspace);
-      if (options) checkWorkspaceAssignments(program, id => options.tagTypes.get(id));
+      if (options) {
+        checkWorkspaceAssignments(program, id => options.tagTypes.get(id));
+        checkScriptPoints(pointUses, (ref, access) => resolveScriptPoint(options.points.get(scriptPointKey(ref)), ref, access));
+      }
     }
     catch (error) {
       if (!(error instanceof ScriptBlockError)) throw error;
@@ -505,7 +512,7 @@ export function inspectScriptDraft(workspace: Blockly.Workspace, graph: ScriptGr
         const kind = bindings.get(workspace)?.widgetKinds.get(String(block.getFieldValue('WIDGET')));
         if (kind && !widgetEvents[kind]?.includes(block.getFieldValue('EVENT') as WidgetEvent)) return { source, issue: { blockId, message: '请为这个控件选择适用的事件' } };
       }
-      const field = block?.getField('POINT') ?? block?.getField('SLAVE') ?? block?.getField('WIDGET') ?? block?.getField('TAG');
+      const field = block?.getField('SLAVE') ?? block?.getField('WIDGET') ?? block?.getField('TAG');
       if (!(field instanceof PointDropdown) || !field.access || !available || available[field.access].has(String(field.getValue()))) continue;
       const labels: Record<List, string> = { slave: '从站', read: '可读点位', write: '可写点位', numeric: '数值点位', widget: '已启用事件的画布控件', tag: '工作区变量' };
       return { source, issue: { blockId, message: '工作区中的绑定已失效，请重新选择' + labels[field.access] + '。' } };

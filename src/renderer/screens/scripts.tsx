@@ -307,7 +307,13 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
     if (result && !result.ok) throw new Error(result.error);
   };
   const start = async (debug = false) => {
-    checkCallbackContexts(compileScriptProgram(graph));
+    const inspected = editorReady ? editor.current?.preview() : null;
+    if (inspected?.issue) {
+      setPreview(inspected); setLuaTab('validation'); setShowLua(true);
+      if (inspected.issue.blockId) inspectBlock(inspected.issue.blockId, true);
+      return;
+    }
+    if (!inspected) checkCallbackContexts(compileScriptProgram(graph));
     const saved = await save();
     const request = { scriptId: saved.id, revision: saved.revision };
     const plan = await command<ScriptApprovalView | null>({ type: 'script.plan', ...request });

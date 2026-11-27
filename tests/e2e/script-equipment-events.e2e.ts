@@ -90,3 +90,42 @@ it('waits for actual Unit 1 offline and online transitions across a native disco
     await control(true);
   }
 });
+
+it('locates a disabled point in the editor before runtime and starts the same saved binding after re-enabling its slave', async () => {
+  await $('nav').waitForDisplayed({timeout:20000});
+  const model = (await snapshot()).workspace, script = pointChangeScript();
+  const disabled = { ...model.slaves.find(s => s.id === 'slave-1')!, enabled:false };
+  model.slaves = model.slaves.map(s => s.id === disabled.id ? disabled : s);
+  model.masterScripts = [script];
+  const imported = await browser.execute((text:string) => (window as unknown as {modbus:ModbusApi}).modbus.command({type:'workspace.importText',text}),JSON.stringify(model));
+  expect(imported.ok).toBe(true);
+  await $('//nav//button[normalize-space(.)="主站脚本"]').click();
+  await view().$(`.script-file[aria-label="${script.name}"]`).click();
+  const tabs = view().$('[aria-label="检查内容"]');
+  await tabs.$('button*=校验').click();
+  const issue = view().$('.script-validation');
+  await expect(issue).toHaveText(expect.stringContaining('从站已停用'));
+  const expected = await issue.$('p').getText();
+  const preflight = await browser.execute(async id => {
+    const reply = await (window as unknown as {modbus:ModbusApi}).modbus.command({type:'script.plan',scriptId:id,revision:0});
+    return reply.ok ? '' : reply.error;
+  }, script.id);
+  expect(preflight).toBe(expected);
+  await issue.$('button=定位积木').click();
+  await expect(view().$('g.script-selected[data-id="point-event"]')).toExist();
+  await tabs.$('button*=Lua').click();
+  await view().$('button=运行').click();
+  await expect(issue).toHaveText(expect.stringContaining(expected));
+  expect((await snapshot()).scriptRuns?.[script.id]).toBeUndefined();
+  fs.mkdirSync(evidence,{recursive:true});
+  await browser.saveScreenshot(path.join(evidence,'disabled-point-validation.png'));
+  const enabled = await browser.execute(slave => (window as unknown as {modbus:ModbusApi}).modbus.command({
+    type:'slave.upsert',slave:{...slave,enabled:true},expected:slave,
+  }), disabled);
+  expect(enabled.ok).toBe(true);
+  await expect(issue).toHaveText(expect.stringContaining('静态校验通过'));
+  await view().$('button=运行').click();
+  await browser.waitUntil(async () => (await snapshot()).scriptRuns?.[script.id]?.state === 'waiting');
+  expect((await snapshot()).workspace.masterScripts![0]!.revision).toBe(0);
+  await view().$('button=停止').click();
+});

@@ -6,6 +6,7 @@ import { SCRIPT_SLICE_MS, ScriptHandleFault, ScriptLuaHandle } from './script-lu
 import { clearImmediate, setImmediate } from 'node:timers';
 import { checkWorkspaceAssignments, scriptArithmetic, scriptErrors, scriptPointKey, scriptRelations, scriptStates, type FunctionSignature, type MasterScript, type ScriptCondition, type ScriptErrorKind, type ScriptHandlers, type ScriptOperand, type ScriptPointRef, type ScriptStep } from '../../domain/master-script';
 import { compileScriptLua } from '../../domain/script-lua-program';
+import { checkScriptPoints } from '../../domain/script-point-access';
 import { pointWriteFields, type PointWriteFields } from '../../domain/point-write-value';
 import { displayLuaScalar, lowerLuaExpression, luaNumericLiteral, type LuaScalar, type ScriptLuaKernel } from '../../domain/script-lua-operators';
 import type { RawType } from '../../domain/mapping';
@@ -218,17 +219,20 @@ export class MasterScriptRunner {
     const calculations = new Map<string, { result: OperandSource; sources: RuntimeChange[] }>();
     const procedures = new Map<string, PlannedStep[]>();
     const reads = new Map<string, ScriptPointBinding>();
+    const writes = new Map<string, ScriptPointBinding>();
     const highRiskWrites: ScriptApprovalView['writes'] = [];
     const approvals: string[] = [];
 
-    const readPoint = (ref: ScriptPointRef) => {
+    const resolvePoint = (ref: ScriptPointRef, access: 'read' | 'write') => {
       const key = scriptPointKey(ref);
-      const existing = reads.get(key);
+      const cache = access === 'read' ? reads : writes;
+      const existing = cache.get(key);
       if (existing) return existing;
-      const point = this.host.point(ref, 'read');
-      reads.set(key, point);
+      const point = this.host.point(ref, access);
+      cache.set(key, point);
       return point;
     };
+    checkScriptPoints(artifact.pointUses, resolvePoint);
     const argumentsFor = (fn: FunctionSignature, args: ScriptOperand[], sources?: RuntimeChange[]) => {
       const inputs = args.map((arg, index) => resolveOperand(arg, undefined, fn.parameters[index]!, sources));
       return (task: TaskContext) => new Map(fn.parameters.map((name, i) => [name, inputs[i]!.read(task)]));
@@ -326,7 +330,7 @@ export class MasterScriptRunner {
         } };
       }
       if (source.kind === 'point') {
-        const point = readPoint(source.ref);
+        const point = resolvePoint(source.ref, 'read');
         if (type && valueType(point.type) !== valueType(type)) throw new Error(`${point.label} 与 ${target} 的值类型不一致`);
         sources?.push(sampleSource(point), { kind: 'slaveState', slaveId: point.ref.slaveId });
         return { label: point.label, read: () => point.read() };
@@ -417,20 +421,17 @@ export class MasterScriptRunner {
           return { matched: task.session.lua.evaluate(condition.relation, a.value, b.value) === true, detail, samples };
         } };
       }
-      const point = readPoint(condition.ref);
+      const point = resolvePoint(condition.ref, 'read');
       sources?.push(sampleSource(point), { kind: 'slaveState', slaveId: point.ref.slaveId });
-      const numeric = point.type !== 'Bool' && point.type !== 'String';
       const reading = (sample: Sample, expected: string, test: (actual: Value) => boolean) => {
         if (sample.value === undefined) return { detail: `${point.label} · ${sample.detail}` };
         return { matched: test(sample.value), detail: `${point.label} 当前值 ${sample.detail}，预期${expected}`, samples: sampleTime(point.label, sample) };
       };
       if (condition.kind === 'range') {
-        if (!numeric) throw new Error(`${point.label} 需要使用数值点位`);
         const expected = `在 ${condition.min}–${condition.max} 范围`;
         return { label: `${point.label} ${expected}`, read: () =>
           reading(point.read(), expected, actual => typeof actual === 'number' && actual >= condition.min && actual <= condition.max) };
       }
-      if (!numeric && condition.relation !== 'eq' && condition.relation !== 'ne') throw new Error(`${point.label} 支持等于和不等于比较`);
       const relationLabel = scriptRelations.find(([, relation]) => relation === condition.relation)![0];
       const source = resolveOperand(condition.operand, point.type, point.label, sources);
       const expected = `${relationLabel}${source.fields ? ' ' : ''}${source.label}`;
@@ -509,7 +510,7 @@ export class MasterScriptRunner {
           } };
         }
         case 'read': {
-          const point = readPoint(step.ref);
+          const point = resolvePoint(step.ref, 'read');
           return { blockId, label: `等待新采样 ${point.label}`, execute: task =>
             waitUntil(this.notifications, [sampleSource(point)], task.session.controller.signal, step.timeoutMs, change => {
               const sample = point.read();
@@ -518,7 +519,7 @@ export class MasterScriptRunner {
             }) };
         }
         case 'capture': {
-          const point = readPoint(step.ref);
+          const point = resolvePoint(step.ref, 'read');
           return { blockId, label: `读取 ${point.label} 到变量「${step.variable}」`, execute: task => {
             const sample = point.read();
             const { value, detail } = sample;
@@ -560,7 +561,7 @@ export class MasterScriptRunner {
           } };
         }
         case 'write': {
-          const point = this.host.point(step.ref, 'write');
+          const point = resolvePoint(step.ref, 'write');
           const source = resolveOperand(step.operand, point.type, point.label);
           if (source.fields) point.validateWrite(source.fields);
           if (point.highRisk) {
@@ -662,7 +663,7 @@ export class MasterScriptRunner {
       inputs: program.handlers.inputs?.map(input => {
         const { binding } = input;
         if (binding.kind === 'point') {
-          const point = readPoint(binding);
+          const point = resolvePoint(binding, 'read');
           observeEquipment.push(observePoint(binding, point, this.host.slave(binding.slaveId).state, this.notifications));
         } else if (binding.kind === 'slaveState') {
           observeEquipment.push(observeSlaveState(binding, this.host.slave(binding.slaveId), this.notifications));

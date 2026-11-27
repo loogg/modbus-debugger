@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ScriptPointUse } from './script-point-access';
 import { eventKey, signalId, slaveEventStates, widgetEventSchema, type EventBinding, type WorkspaceVariable } from './canvas-script';
 import { compileLuaKernel, lowerLuaExpression, luaNumericLiteral, type LuaHelper, type LuaOperator, type ScriptLuaKernel } from './script-lua-operators';
 import { compileLuaControl } from './script-lua-control';
@@ -424,12 +425,14 @@ export function fieldText(block: ScriptBlock, name: string): string {
   return typeof value === 'string' ? value : String(value ?? '');
 }
 
-function pointRef(block: ScriptBlock): ScriptPointRef {
+function pointRef(block: ScriptBlock, uses?: ScriptPointUse[], access: ScriptPointUse['access'] = 'read'): ScriptPointRef {
   let ref: unknown;
   try { ref = JSON.parse(fieldText(block, 'POINT')); } catch { /* Rebinding is handled by the editor. */ }
   const parsed = refSchema.safeParse(ref);
   if (!parsed.success) throw new ScriptBlockError('请选择点位', block.id);
-  return { slaveId: parsed.data[0], pointId: parsed.data[1] };
+  const point = { slaveId: parsed.data[0], pointId: parsed.data[1] };
+  uses?.push({ blockId: block.id, ref: point, access });
+  return point;
 }
 
 function workspaceVariableId(block: ScriptBlock) {
@@ -438,8 +441,8 @@ function workspaceVariableId(block: ScriptBlock) {
   return result.data;
 }
 
-export function scriptInputBinding(block: ScriptBlock): EventBinding {
-  if (block.type === scriptBlocks.onPointChange) return { kind: 'point', ...pointRef(block) };
+export function scriptInputBinding(block: ScriptBlock, pointUses?: ScriptPointUse[]): EventBinding {
+  if (block.type === scriptBlocks.onPointChange) return { kind: 'point', ...pointRef(block, pointUses) };
   if (block.type === scriptBlocks.onSlaveState) {
     const slave = signalId.safeParse(fieldText(block, 'SLAVE'));
     if (!slave.success) throw new ScriptBlockError('请选择工作区中的从站', block.id);
@@ -503,7 +506,7 @@ function variableName(block: ScriptBlock): string {
 }
 
 interface CompileScope { functions: FunctionTable; include(id: string, caller: string): number; callCost: number; parameters: string[];
-  operators: Set<LuaOperator>; expressions: string[]; helpers: Set<LuaHelper> }
+  pointUses: ScriptPointUse[]; operators: Set<LuaOperator>; expressions: string[]; helpers: Set<LuaHelper> }
 
 function callOperands(block: ScriptBlock, scope: CompileScope) {
   const functionId = fieldText(block, 'FUNCTION');
@@ -549,7 +552,7 @@ function compileReporter(block: ScriptBlock, scope: CompileScope): ScriptOperand
     return node;
   }
   if (block.type === scriptBlocks.variable) return { kind: 'variable', name: variableName(block) };
-  if (block.type === scriptBlocks.pointValue) return { kind: 'point', ref: pointRef(block) };
+  if (block.type === scriptBlocks.pointValue) return { kind: 'point', ref: pointRef(block, scope.pointUses) };
   if (block.type === scriptBlocks.boolean) {
     const value = fieldText(block, 'BOOL');
     if (value === 'TRUE' || value === 'FALSE') return { kind: 'boolean', value: value === 'TRUE' };
@@ -627,7 +630,7 @@ function conditionBlock(block: ScriptBlock, scope: CompileScope): ScriptConditio
       scope.operators.add(relation);
       if (block.type === scriptBlocks.compareVariable) scope.helpers.add('read');
       if (block.type === scriptBlocks.compareValues) return { blockId, kind: 'compareValues', relation, left: slotOperand(block, 'A', scope), right: slotOperand(block, 'B', scope) };
-      const ref = pointRef(block);
+      const ref = pointRef(block, scope.pointUses, relation === 'eq' || relation === 'ne' ? 'read' : 'ordered');
       return { blockId, kind: 'compare', ref, relation, operand: block.type === scriptBlocks.compare
         ? operand(block, scope) : { kind: 'variable', name: variableName(block) } };
     }
@@ -635,7 +638,7 @@ function conditionBlock(block: ScriptBlock, scope: CompileScope): ScriptConditio
       const min = fieldNumber(block, 'MIN');
       const max = fieldNumber(block, 'MAX');
       if (min > max) throw new ScriptBlockError('区间下限应小于或等于上限', block.id);
-      return { blockId, kind: 'range', ref: pointRef(block), min, max };
+      return { blockId, kind: 'range', ref: pointRef(block, scope.pointUses, 'range'), min, max };
     }
     default: throw new ScriptBlockError('此积木不能用作条件', block.id);
   }
@@ -668,9 +671,9 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
       case scriptBlocks.timerStop: steps.push({ blockId, kind: 'timerStop', channel: timerChannel(block) }); break;
       case scriptBlocks.call: steps.push({ blockId, kind: 'call', ...callOperands(block, scope) }); break;
       case scriptBlocks.setWorkspaceValue: steps.push({ blockId, kind: 'setWorkspaceValue', variableId: workspaceVariableId(block), operand: slotOperand(block, 'OPERAND', scope) }); break;
-      case scriptBlocks.read: steps.push({ blockId, kind: 'read', ref: pointRef(block), timeoutMs: timeout() }); break;
+      case scriptBlocks.read: steps.push({ blockId, kind: 'read', ref: pointRef(block, scope.pointUses), timeoutMs: timeout() }); break;
       case scriptBlocks.readVariable:
-        steps.push({ blockId, kind: 'capture', ref: pointRef(block), variable: variableName(block) });
+        steps.push({ blockId, kind: 'capture', ref: pointRef(block, scope.pointUses), variable: variableName(block) });
         break;
       case scriptBlocks.setVariable:
       case scriptBlocks.changeVariable:
@@ -678,7 +681,7 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
         steps.push({ blockId, kind: block.type === scriptBlocks.setVariable ? 'setVariable' : 'changeVariable',
           variable: variableName(block), operand: slotOperand(block, 'OPERAND', scope) });
         break;
-      case scriptBlocks.write: steps.push({ blockId, kind: 'write', ref: pointRef(block), operand: operand(block, scope) }); break;
+      case scriptBlocks.write: steps.push({ blockId, kind: 'write', ref: pointRef(block, scope.pointUses, 'write'), operand: operand(block, scope) }); break;
       case scriptBlocks.log: {
         const message = fieldText(block, 'TEXT');
         const value = block.inputs?.OPERAND?.block;
@@ -741,7 +744,7 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
   return { steps, count };
 }
 
-export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; program: ScriptProgram } {
+export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; program: ScriptProgram; pointUses: ScriptPointUse[] } {
   const parsed = scriptGraphSchema.safeParse(input);
   if (!parsed.success) {
     const issue = parsed.error.issues[0]!;
@@ -777,7 +780,8 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
   const operators = new Set<LuaOperator>();
   const expressions: string[] = [];
   const helpers = new Set<LuaHelper>();
-  const scopeFor = (parameters: string[]): CompileScope => ({ functions: headers, parameters, callCost: 0, include, operators, expressions, helpers });
+  const pointUses: ScriptPointUse[] = [];
+  const scopeFor = (parameters: string[]): CompileScope => ({ functions: headers, parameters, callCost: 0, include, operators, expressions, helpers, pointUses });
   function include(id: string, caller: string): number {
     const cached = compiled.get(id);
     if (cached) return cached.cost;
@@ -825,7 +829,7 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
     if (isInputHat(root.type)) {
       const body = stack(root.next?.block, scopeFor([])).steps;
       if (!body.length) continue;
-      const binding = scriptInputBinding(root), key = eventKey(binding);
+      const binding = scriptInputBinding(root, pointUses), key = eventKey(binding);
       if (seen.has(key)) throw new ScriptBlockError('同一事件来源只能有一个启用的相同入口', root.id);
       seen.add(key);
       (handlers.inputs ??= []).push({ blockId: root.id, binding, steps: body });
@@ -845,10 +849,12 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
   if (!steps.length && !handlers.onRun && !handlers.timers.length && !handlers.inputs?.length)
     throw new ScriptBlockError('请在「开始」积木或事件入口下连接至少一个步骤', start?.id ?? events[0]?.id);
   handlers.timers.sort((a, b) => a.channel - b.channel);
+  // Uncalled functions are rendered too, but their device bindings aren't executed.
+  const executablePointUses = pointUses.slice();
   const functions = [...definitions.keys()].sort().map(id => { include(id, id); return compiled.get(id)!.fn; });
   const usesClock = handlers.onRun || handlers.timers.length || handlers.inputs?.length || [...scriptGraphBlocks(graph)].some(block => enabled(block) && clockBlocks.has(block.type));
   const control = compileLuaControl(steps, functions, usesClock ? handlers : undefined);
-  return { graph, program: { steps, functions, lua: compileLuaKernel(operators, expressions, helpers, control), ...(usesClock ? { handlers } : {}) } };
+  return { graph, pointUses: executablePointUses, program: { steps, functions, lua: compileLuaKernel(operators, expressions, helpers, control), ...(usesClock ? { handlers } : {}) } };
 }
 
 export function compileScriptProgram(input: ScriptGraph): ScriptProgram { return compileScriptModel(input).program; }

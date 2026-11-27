@@ -1,4 +1,5 @@
 import { CanvasSignals } from './canvas-signals';
+import { resolveScriptPoint } from '../../domain/script-point-access';
 import type { CanvasSignalState } from '../../domain/canvas-script';
 import type { UpdateState } from '../../shared/update';
 import fs from 'node:fs';
@@ -1089,13 +1090,8 @@ export class RuntimeManager {
   }
 
   private scriptPoint(reference: ScriptPointRef, access: 'read' | 'write'): ScriptPointBinding {
-    const ref = this.pointIndex().get(pointKey(reference.slaveId, reference.pointId));
-    if (!ref || ref.slave.id !== reference.slaveId || ref.point.id !== reference.pointId || ref.connection.role === 'slave') throw new Error('积木绑定的主站点位已失效，请重新选择');
-    const label = `${ref.connection.name} / ${ref.slave.name} (Unit ${ref.slave.unitId}) / ${ref.point.name}`;
-    if (!ref.slave.enabled) throw new Error(`${label} · 从站已停用`);
-    if (access === 'read' ? !canReadPoint(ref.point) : !canWritePoint(ref.point)) {
-      throw new Error(`${label} · ${access === 'read' ? '点位为只写' : '点位为只读'}`);
-    }
+    const indexed = this.pointIndex().get(pointKey(reference.slaveId, reference.pointId));
+    const { target: ref, label } = resolveScriptPoint(indexed, reference, access);
     const key = blockKey(ref.slave.id, ref.block.id);
     const span = { offset: ref.point.mapping.offset, length: mappingWidth(ref.block.area, ref.point.mapping) };
     return {
