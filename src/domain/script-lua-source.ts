@@ -113,6 +113,7 @@ export function renderScriptLua(graph: ScriptGraph, program: ScriptProgram): Lua
       case 'point': code = `modbus.value(${target(o.ref)})`; break;
       case 'workspaceValue': code = `rt.get_workspace_variable(${quote(o.variableId)})`; break;
       case 'eventValue': code = 'rt.event_value()'; break;
+      case 'previousEventValue': code = 'rt.previous_event_value()'; break;
       case 'timerElapsed': code = `rt.get_timer_value(${o.channel})`; break;
       case 'timerRunning': code = `rt.is_timer_running(${o.channel})`; break;
       case 'callValue': code = call(root, o.functionId, o.args); break;
@@ -223,6 +224,7 @@ export function renderScriptLua(graph: ScriptGraph, program: ScriptProgram): Lua
       const inputs = events.inputs.map(({ binding, blockId, steps }) => {
         const fields = binding.kind === 'widget'
           ? `canvas = ${quote(binding.canvasId)}, widget = ${quote(binding.widgetId)}, event = ${quote(binding.event)}`
+          : binding.kind === 'point' ? `slave = ${quote(binding.slaveId)}, point = ${quote(binding.pointId)}, event = "value_changed"`
           : `variable = ${quote(binding.variableId)}`;
         return mark(blockId, `{ ${fields}, handle = function()\n${indent(sequence(blockId, steps))}end }`);
       });

@@ -40,7 +40,7 @@ function emptyMemory(block: BlockDef): RawMemory {
  */
 export class BlockCache {
   /** Runs only after a confirmed memory update, never for status/metadata revisions. */
-  onConfirmed: ((entry: BlockCacheEntry, range: ReadRange) => void) | null = null;
+  onConfirmed: ((entry: BlockCacheEntry, range: ReadRange, origin: 'read' | 'write') => void) | null = null;
   private entries = new Map<string, BlockCacheEntry>();
   private revision = 0;
   private generation = 0;
@@ -160,7 +160,7 @@ export class BlockCache {
     this.stamp(entry, offset, count);
     entry.lastDurationMs = durationMs;
     this.bump(entry);
-    this.onConfirmed?.(entry, { offset, length: count });
+    this.onConfirmed?.(entry, { offset, length: count }, 'read');
   }
 
   /** Merge confirmed registers written by a write sequence back into the cache. */
@@ -175,7 +175,7 @@ export class BlockCache {
     entry.valid.fill(true, offset, Math.min(entry.block.length, offset + registers.length));
     this.stamp(entry, offset, registers.length);
     this.bump(entry);
-    this.onConfirmed?.(entry, { offset, length: registers.length });
+    this.onConfirmed?.(entry, { offset, length: registers.length }, 'write');
   }
 
   applyBits(key: string, offset: number, bits: boolean[]): void {
@@ -189,7 +189,7 @@ export class BlockCache {
     entry.valid.fill(true, offset, Math.min(entry.block.length, offset + bits.length));
     this.stamp(entry, offset, bits.length);
     this.bump(entry);
-    this.onConfirmed?.(entry, { offset, length: bits.length });
+    this.onConfirmed?.(entry, { offset, length: bits.length }, 'write');
   }
 
   markError(key: string, status: BlockStatus, exceptionCode: number | null = null, range?: ReadRange): void {

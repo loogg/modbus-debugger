@@ -204,6 +204,11 @@ function installBlocks() {
       return key;
     });
   } };
+  Blockly.Blocks[scriptBlocks.onPointChange] = { init(this: Blockly.Block) {
+    this.hat = 'cap'; this.setNextStatement(true); this.setColour(blockColours.entry);
+    this.appendDummyInput().appendField('当点位').appendField(bindingField(this, 'read'), 'POINT').appendField('确认值改变时');
+    this.setTooltip('首笔有效采样建立基线。后续值改变时，可读取上次和本次事件值。');
+  } };
   Blockly.Blocks[scriptBlocks.onWorkspaceChange] = { init(this: Blockly.Block) {
     this.hat = 'cap'; this.setNextStatement(true); this.setColour(blockColours.entry);
     this.appendDummyInput().appendField('当工作区变量').appendField(bindingField(this, 'tag'), 'TAG').appendField('改变时');
@@ -215,6 +220,10 @@ function installBlocks() {
   Blockly.Blocks[scriptBlocks.eventValue] = { init(this: Blockly.Block) {
     valueReporter(this, blockColours.entry, true);
     this.appendDummyInput().appendField('本次事件值');
+  } };
+  Blockly.Blocks[scriptBlocks.previousEventValue] = { init(this: Blockly.Block) {
+    valueReporter(this, blockColours.entry, true);
+    this.appendDummyInput().appendField('上次事件值');
   } };
   Blockly.Blocks[scriptBlocks.setWorkspaceValue] = { init(this: Blockly.Block) {
     action(this, '把工作区变量', variableColor).appendField(bindingField(this, 'tag'), 'TAG');

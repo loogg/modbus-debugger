@@ -10,9 +10,11 @@ export const scriptBlocks = {
   onTimer: 'mb_on_timer',
   onWidget: 'mb_on_widget',
   onWorkspaceChange: 'mb_on_workspace_change',
+  onPointChange: 'mb_on_point_change',
   workspaceValue: 'mb_workspace_value',
   setWorkspaceValue: 'mb_set_workspace_value',
   eventValue: 'mb_event_value',
+  previousEventValue: 'mb_previous_event_value',
   text: 'mb_text',
   runPeriod: 'mb_run_period',
   runControl: 'mb_run_control',
@@ -362,6 +364,7 @@ export function splitParameters(text: string): string[] { return text.trim() ? t
 export type ScriptOperand = { blockId?: string } & (
   | { kind: 'workspaceValue'; variableId: string }
   | { kind: 'eventValue' }
+  | { kind: 'previousEventValue' }
   | { kind: 'literal'; text: string }
   | { kind: 'number'; value: number; integerText?: string }
   | { kind: 'timerElapsed'; channel: number }
@@ -434,6 +437,7 @@ function workspaceVariableId(block: ScriptBlock) {
 }
 
 export function scriptInputBinding(block: ScriptBlock): EventBinding {
+  if (block.type === scriptBlocks.onPointChange) return { kind: 'point', ...pointRef(block) };
   if (block.type === scriptBlocks.onWorkspaceChange) return { kind: 'workspace', variableId: workspaceVariableId(block) };
   let ref: unknown;
   try { ref = JSON.parse(fieldText(block, 'WIDGET')); } catch { ref = null; }
@@ -442,6 +446,12 @@ export function scriptInputBinding(block: ScriptBlock): EventBinding {
   if (!parsed.success || !event.success) throw new ScriptBlockError('请选择画布控件和事件', block.id);
   return { kind: 'widget', canvasId: parsed.data[0], widgetId: parsed.data[1], event: event.data };
 }
+
+function isInputHat(type: string) {
+  return type === scriptBlocks.onWidget || type === scriptBlocks.onWorkspaceChange || type === scriptBlocks.onPointChange;
+}
+
+export function isEventHat(type: string) { return isInputHat(type) || type === scriptBlocks.onRun || type === scriptBlocks.onTimer; }
 
 function fieldNumber(block: ScriptBlock, name: string): number {
   const text = fieldText(block, name);
@@ -508,6 +518,7 @@ function compileReporter(block: ScriptBlock, scope: CompileScope): ScriptOperand
   if (block.type === scriptBlocks.workspaceValue) return { kind: 'workspaceValue', variableId: workspaceVariableId(block) };
   if (block.type === scriptBlocks.text) return { kind: 'literal', text: fieldText(block, 'TEXT') };
   if (block.type === scriptBlocks.eventValue) return { kind: 'eventValue' };
+  if (block.type === scriptBlocks.previousEventValue) return { kind: 'previousEventValue' };
   if (block.type === scriptBlocks.variable || block.type === scriptBlocks.parameter) scope.helpers.add('read');
   if (block.type === scriptBlocks.callValue) return { kind: 'callValue', ...callOperands(block, scope) };
   if (block.type === scriptBlocks.parameter) {
@@ -579,6 +590,7 @@ function conditionBlock(block: ScriptBlock, scope: CompileScope): ScriptConditio
       return { blockId, kind: 'not', operand: condition(block, scope) };
     case scriptBlocks.boolean:
     case scriptBlocks.eventValue:
+    case scriptBlocks.previousEventValue:
     case scriptBlocks.workspaceValue:
     case scriptBlocks.timerRunning:
     case scriptBlocks.pointValue:
@@ -731,7 +743,7 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
   const roots = (graph.blocks?.blocks ?? []).filter(enabled);
   const stacks = roots.filter(block => !isScriptDefinition(block.type));
   const start = stacks.find(block => block.type === scriptBlocks.start);
-  const events = stacks.filter(block => [scriptBlocks.onRun, scriptBlocks.onTimer, scriptBlocks.onWidget, scriptBlocks.onWorkspaceChange].some(type => type === block.type));
+  const events = stacks.filter(block => isEventHat(block.type));
   if (!start && !events.length) throw new ScriptBlockError('请添加一个「开始」积木或事件入口');
   const stray = stacks.find(block => block !== start && !events.includes(block));
   if (stray) throw new ScriptBlockError('请将步骤接到同一个「开始」积木或对应事件入口下，函数定义可单独放置', stray.id);
@@ -783,28 +795,30 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
     return cost;
   }
   const { steps } = stack(start?.next?.block, scopeFor([]));
-  // Only input handlers have an event value. Follow calls, including value functions.
-  const checked = new Set<ScriptBlock>();
-  function checkWithoutInput(block?: ScriptBlock): void {
-    if (!block || checked.has(block)) return;
-    checked.add(block);
+  // Shared functions must support every event context from which they are called.
+  type Context = 'none' | 'input' | 'transition';
+  const checked: Record<Context, Set<ScriptBlock>> = { none: new Set(), input: new Set(), transition: new Set() };
+  function checkEventValues(block: ScriptBlock | undefined, context: Context): void {
+    if (!block || checked[context].has(block)) return;
+    checked[context].add(block);
     if (enabled(block)) {
-      if (block.type === scriptBlocks.eventValue) throw new ScriptBlockError('本次事件值仅可在画布或工作区变量事件中读取', block.id);
-      if (isScriptCall(block.type)) checkWithoutInput(definitions.get(fieldText(block, 'FUNCTION')));
-      for (const input of Object.values(block.inputs ?? {})) checkWithoutInput(input.block);
+      if (block.type === scriptBlocks.eventValue && context === 'none') throw new ScriptBlockError('本次事件值仅可在提供值的事件入口中读取', block.id);
+      if (block.type === scriptBlocks.previousEventValue && context !== 'transition') throw new ScriptBlockError('上次事件值仅可在设备变化事件中读取', block.id);
+      if (isScriptCall(block.type)) checkEventValues(definitions.get(fieldText(block, 'FUNCTION')), context);
+      for (const input of Object.values(block.inputs ?? {})) checkEventValues(input.block, context);
     }
-    checkWithoutInput(block.next?.block);
+    checkEventValues(block.next?.block, context);
   }
-  checkWithoutInput(start);
-  for (const root of events) if (root.type === scriptBlocks.onRun || root.type === scriptBlocks.onTimer) checkWithoutInput(root);
+  checkEventValues(start, 'none');
+  for (const root of events) checkEventValues(root, root.type === scriptBlocks.onPointChange ? 'transition' : isInputHat(root.type) ? 'input' : 'none');
   const handlers: ScriptHandlers<ScriptStep> = { timers: [] };
   const seen = new Set<string>();
   for (const root of events) {
-    if (root.type === scriptBlocks.onWidget || root.type === scriptBlocks.onWorkspaceChange) {
+    if (isInputHat(root.type)) {
       const body = stack(root.next?.block, scopeFor([])).steps;
       if (!body.length) continue;
       const binding = scriptInputBinding(root), key = eventKey(binding);
-      if (seen.has(key)) throw new ScriptBlockError('同一控件事件或变量变化只能有一个启用的入口', root.id);
+      if (seen.has(key)) throw new ScriptBlockError('同一事件来源只能有一个启用的相同入口', root.id);
       seen.add(key);
       (handlers.inputs ??= []).push({ blockId: root.id, binding, steps: body });
       continue;
@@ -875,7 +889,7 @@ export function scriptVariableGroups(graph: ScriptGraph): ScriptVariableGroup[] 
   };
   for (const root of graph.blocks?.blocks ?? []) {
     if (!enabled(root)) continue;
-    if ([scriptBlocks.onRun, scriptBlocks.onTimer, scriptBlocks.onWidget, scriptBlocks.onWorkspaceChange].some(type => root.type === type)) main.label = '脚本共享';
+    if (isEventHat(root.type)) main.label = '脚本共享';
     if (isScriptDefinition(root.type)) {
       const group: ScriptVariableGroup = { functionId: root.id, label: fieldText(root, 'NAME').trim() || '未命名函数', names: new Map() };
       for (const name of splitParameters(fieldText(root, 'PARAMS'))) if (name) group.names.set(name, root.id);

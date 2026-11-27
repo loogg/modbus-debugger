@@ -1,4 +1,4 @@
-import type { EventBinding } from '../domain/canvas-script';
+import type { EventBinding, SignalValue } from '../domain/canvas-script';
 
 export interface ScriptApprovalView {
   key: string;
@@ -13,7 +13,7 @@ export interface ScriptEventStatus {
 }
 
 export interface ScriptRunEntry {
-  trigger?: { binding: EventBinding; label: string };
+  trigger?: { binding: EventBinding; label: string; transition?: { previous: SignalValue; value: SignalValue } };
   source?: ScriptEventSource;
   sequence?: number;
   atMs: number;

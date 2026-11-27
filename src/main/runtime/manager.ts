@@ -115,9 +115,9 @@ export class RuntimeManager {
         return result.value;
       },
     }, new RuntimeNotifications(this.notifications)));
-    this.cache.onConfirmed = (entry, range) => {
+    this.cache.onConfirmed = (entry, range, origin) => {
       this.sampleBuffers.confirmed(entry, this.workspaceService.current, range);
-      this.notifications.publish({ kind: 'sample', blockKey: entry.key, range });
+      this.notifications.publish({ kind: 'sample', blockKey: entry.key, range, origin });
     };
   }
 

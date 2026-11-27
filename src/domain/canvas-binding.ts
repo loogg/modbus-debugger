@@ -1,5 +1,5 @@
 import { canvasPointBinding, canvasSignals, type CanvasWidget, type InputMode } from './canvas';
-import { widgetEvents, type EventBinding, type WorkspaceVariable } from './canvas-script';
+import { widgetEvents, type CanvasEventBinding, type WorkspaceVariable } from './canvas-script';
 import type { PointDef, Workspace } from './model';
 import { canReadPoint, canWritePoint } from './point-access';
 
@@ -40,7 +40,7 @@ export function variableAcceptsWidget(widget: Pick<CanvasWidget, 'kind' | 'input
   return widget.kind === 'value';
 }
 
-export function checkInputBinding(workspace: Workspace, binding: EventBinding) {
+export function checkInputBinding(workspace: Workspace, binding: CanvasEventBinding) {
   if (binding.kind === 'workspace') {
     if (!workspace.variables?.some(v => v.id === binding.variableId)) throw new Error('绑定的工作区变量不存在');
     return;

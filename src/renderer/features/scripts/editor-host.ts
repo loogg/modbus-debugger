@@ -1,5 +1,5 @@
 import * as Blockly from 'blockly/core';
-import { isScriptStatement, MAX_SCRIPT_BLOCKS, type ScriptGraph } from '../../../domain/master-script';
+import { isEventHat, isScriptStatement, MAX_SCRIPT_BLOCKS, scriptBlocks, type ScriptGraph } from '../../../domain/master-script';
 import type { Workspace } from '../../../domain/model';
 import { bindings, inspectScriptDraft, graphOf, makeFieldOptions, updateCycleHints } from './blocks';
 import { scriptToolbox } from './block-palette';
@@ -196,10 +196,16 @@ export const mountScriptEditor: MountScriptEditor = (element, input) => {
     workspace.scroll(workspace.scrollX + left + Math.max(0, width - shape.width) / 2 - shape.left,
       workspace.scrollY + top + Math.max(0, height - shape.height) / 2 - shape.top);
   };
+  const roots = workspace.getTopBlocks(true);
+  let initialEvent = roots.some(block => block.type === scriptBlocks.start) ? undefined : roots.find(block => isEventHat(block.type));
   const layout = new ResizeObserver(() => {
     Blockly.svgResize(workspace);
     if (toolbox instanceof ScriptToolbox) toolbox.revealSelectedCategory();
     if (viewportAnchor && !viewportAnchor.isDisposed()) reveal(viewportAnchor, true);
+    else if (initialEvent && element.clientWidth && element.clientHeight) {
+      if (!initialEvent.isDisposed()) { Blockly.renderManagement.triggerQueuedRenders(workspace); reveal(initialEvent, true); }
+      initialEvent = undefined;
+    }
   });
   layout.observe(element);
   Blockly.svgResize(workspace);

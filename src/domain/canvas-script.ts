@@ -23,17 +23,20 @@ export const widgetEventLabels: Record<WidgetEvent, string> = {
 export const widgetEvents: Partial<Record<string, readonly WidgetEvent[]>> = {
   button: ['click', 'press', 'release', 'cancel'], switch: ['change'], input: ['submit'],
 };
-export type EventBinding =
+export type CanvasEventBinding =
   | { kind: 'widget'; canvasId: string; widgetId: string; event: WidgetEvent }
   | { kind: 'workspace'; variableId: string };
+export type EventBinding = CanvasEventBinding | { kind: 'point'; slaveId: string; pointId: string };
 export interface ScriptInputEvent {
   binding: EventBinding;
   label: string;
   value: SignalValue;
+  previous?: SignalValue;
   changes?: readonly string[];
 }
 export function widgetKey(canvasId: string, widgetId: string) { return JSON.stringify([canvasId, widgetId]); }
 export function eventKey(binding: EventBinding) {
+  if (binding.kind === 'point') return JSON.stringify([binding.kind, binding.slaveId, binding.pointId]);
   return binding.kind === 'widget' ? JSON.stringify([binding.kind, binding.canvasId, binding.widgetId, binding.event])
     : JSON.stringify([binding.kind, binding.variableId]);
 }

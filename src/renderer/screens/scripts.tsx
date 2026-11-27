@@ -466,6 +466,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
             {entry.log && <time className="mono mr-2 text-ink2" dateTime={new Date(entry.atMs).toISOString()}>{logClock?.format(entry.atMs)}</time>}
             <span className={entry.log ? 'text-accent' : entry.result === 'ok' ? 'text-ok' : entry.result === 'failed' ? 'text-err' : 'text-ink2'}>{entry.log ? '日志' : entry.handled ? '已处理失败' : entry.result === 'ok' ? '通过' : entry.result === 'failed' ? '失败' : '停止'}</span>
             {entry.source && <span className="mono"> · {entry.trigger?.label ?? entry.source}</span>}
+            {entry.trigger?.transition && <span className="mono"> · {String(entry.trigger.transition.previous)} → {String(entry.trigger.transition.value)}</span>}
             {!entry.log && <> · {entry.label}</>} · {entry.detail}
           </button>
           {entry.trigger?.binding.kind === 'widget' && <button className="focus-ring shrink-0 text-accent" type="button" onClick={() => {

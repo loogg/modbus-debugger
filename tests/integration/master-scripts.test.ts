@@ -16,6 +16,7 @@ import type { AppDelta } from '../../src/shared/snapshot';
 import { createScratch } from '../../tools/test-paths.mjs';
 import { FakeTransport } from '../support/fake';
 import { templateWorkspace } from '../support/template-workspace';
+import { pointChangeScript } from '../support/equipment-event-fixture';
 
 const reference = { slaveId: 's1', pointId: 'Keep' };
 beforeAll(loadScriptLua);
@@ -265,6 +266,37 @@ async function setup(highRisk = false) {
   manager.start();
   return { root, service, manager, transport };
 }
+
+it('keeps a write in flight and its matched FC06 acknowledgement out of point-change callbacks until FC03 reads the new value', async () => {
+  const h = await setup();
+  try {
+    let actual = 17, reads = 0;
+    let markSent!: (frame: Uint8Array) => void;
+    const sent = new Promise<Uint8Array>(resolve => { markSent = resolve; });
+    h.transport.onResponse(frame => {
+      if (frame[7] === 6) { markSent(frame); return null; }
+      reads++;
+      return [buildTcpAdu((frame[0]! << 8) | frame[1]!, 1, encodeResponsePdu({ kind:'registers', fc:3, registers:[actual] }))];
+    });
+    const script = pointChangeScript('s1','Keep');
+    expect((await h.manager.handleCommand({type:'script.save',script,expectedRevision:null})).ok).toBe(true);
+    expect((await h.manager.handleCommand({type:'script.start',scriptId:script.id,revision:0})).ok).toBe(true);
+    const atStart = reads;
+    await expect.poll(() => reads).toBeGreaterThan(atStart + 1);
+    const logs = () => h.manager.buildSnapshot().scriptRuns?.[script.id]?.entries.filter(row => row.log).map(row => row.detail);
+    const write = h.manager.handleCommand({type:'point.write', slaveId:'s1', pointId:'Keep', engineering:44, boolValue:null, stringValue:null});
+    const request = await sent;
+    expect(logs()).toEqual([]);
+    expect(h.manager.buildSnapshot().points['s1::Keep']?.engNumber).toBe(17);
+    h.transport.inject(request);
+    expect(await write).toMatchObject({ok:true, value:{phase:'confirmed'}});
+    const atAck = reads;
+    await expect.poll(() => reads).toBeGreaterThan(atAck);
+    expect(logs()).toEqual([]);
+    actual = 44;
+    await expect.poll(logs).toEqual(['上次 17','本次 44']);
+  } finally { await h.manager.stop(); }
+});
 
 it('saves, exports, approves, and runs the configured device steps over the existing scheduler', async () => {
   const h = await setup(true);

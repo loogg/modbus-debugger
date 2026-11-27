@@ -1,7 +1,7 @@
 import type { ReadRange } from '../../domain/point-access';
 
 export type RuntimeChange =
-  | { kind: 'sample'; blockKey: string; range: ReadRange }
+  | { kind: 'sample'; blockKey: string; range: ReadRange; origin?: 'read' | 'write' }
   | { kind: 'variable'; name: string }
   | { kind: 'workspace'; variableId: string }
   | { kind: 'timer'; channel: number; elapsed?: boolean; phases?: readonly number[] }

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { eventKey, type EventBinding, type ScriptInputEvent } from '../../domain/canvas-script';
+import { eventKey, type CanvasEventBinding, type ScriptInputEvent, type SignalValue } from '../../domain/canvas-script';
+import { observePoint, type ObserveEquipment } from './script-equipment-events';
 import type { CanvasSignals } from './canvas-signals';
 import { SCRIPT_SLICE_MS, ScriptHandleFault, ScriptLuaHandle } from './script-lua-handle';
 import { clearImmediate, setImmediate } from 'node:timers';
@@ -28,13 +29,13 @@ export interface ScriptPointBinding {
   type: RawType;
   highRisk: boolean;
   identity: string;
-  read(): Sample;
+  read(): Omit<Sample, 'value'> & { value?: SignalValue };
   validateWrite(fields: PointWriteFields): void;
 }
 
 interface ScriptHost {
   signals?: Pick<CanvasSignals, 'definition' | 'read' | 'write'>;
-  checkInput?(binding: EventBinding): void;
+  checkInput?(binding: CanvasEventBinding): void;
   point(ref: ScriptPointRef, access: 'read' | 'write'): ScriptPointBinding;
   slave(id: string): { label: string; state(): SlaveCommunicationState };
   write(ref: ScriptPointRef, fields: PointWriteFields, signal: AbortSignal): Promise<PointWriteResult>;
@@ -75,6 +76,7 @@ interface ActiveRun {
   ready: ScriptTask[];
   inputs: Map<string, { blockId: string; steps: PlannedStep[] }>;
   pendingInputs: { event: ScriptInputEvent; blockId: string; steps: PlannedStep[] }[];
+  detachEquipment: (() => void)[];
   inFlight: number;
   wake?: NodeJS.Timeout;
   turn?: NodeJS.Immediate;
@@ -106,6 +108,7 @@ type PauseReason = NonNullable<ScriptRunView['pause']>['reason'];
 interface PreparedWrite { preview: string; send(): Promise<Outcome> }
 
 export interface ScriptPlan {
+  observeEquipment: ObserveEquipment[];
   script: MasterScript;
   lua: ScriptLuaKernel;
   steps: PlannedStep[];
@@ -228,9 +231,9 @@ export class MasterScriptRunner {
       return (task: TaskContext) => new Map(fn.parameters.map((name, i) => [name, inputs[i]!.read(task)]));
     };
     const resolveOperand = (source: ScriptOperand, type: RawType | undefined, target: string, sources?: RuntimeChange[], threshold?: number): OperandSource => {
-      if (source.kind === 'eventValue') return { label: '本次事件值', read: task => {
-        if (!task.input) throw new Error('当前步骤没有画布或工作区变量事件');
-        const value = task.input.value;
+      if (source.kind === 'eventValue' || source.kind === 'previousEventValue') return { label: source.kind === 'eventValue' ? '本次事件值' : '上次事件值', read: task => {
+        const value = source.kind === 'eventValue' ? task.input?.value : task.input?.previous;
+        if (value === undefined) throw new Error('当前步骤没有对应的事件值');
         if (type && typeof value !== valueType(type)) throw new Error(`${target} 与事件值类型不匹配`);
         return { value, detail: String(value) };
       } };
@@ -649,12 +652,19 @@ export class MasterScriptRunner {
     });
 
     const steps = planSteps(program.steps);
+    const observeEquipment: ObserveEquipment[] = [];
     const handlers = program.handlers && {
       onRun: program.handlers.onRun && { ...program.handlers.onRun, steps: planSteps(program.handlers.onRun.steps) },
       timers: program.handlers.timers.map(timer => ({ ...timer, steps: planSteps(timer.steps) })),
       inputs: program.handlers.inputs?.map(input => {
-        if (!this.host.checkInput) throw new Error('画布事件不可用');
-        this.host.checkInput(input.binding);
+        const { binding } = input;
+        if (binding.kind === 'point') {
+          const point = readPoint(binding);
+          observeEquipment.push(observePoint(binding, point, this.host.slave(binding.slaveId).state, this.notifications));
+        } else {
+          if (!this.host.checkInput) throw new Error('画布事件不可用');
+          this.host.checkInput(binding);
+        }
         return { ...input, steps: planSteps(input.steps) };
       }),
     };
@@ -663,7 +673,7 @@ export class MasterScriptRunner {
       writes: highRiskWrites.filter((entry, index) => highRiskWrites.findIndex(other => other.target === entry.target && other.value === entry.value) === index),
       key: createHash('sha256').update(JSON.stringify([script.id, script.revision, approvals])).digest('hex'),
     } : null;
-    return { script, lua: program.lua, steps, handlers, programHash, statementIds, approval };
+    return { script, lua: program.lua, steps, handlers, programHash, statementIds, approval, observeEquipment };
   }
 
   start(plan: ScriptPlan, approval?: string, debug = false): ScriptRunView {
@@ -685,10 +695,11 @@ export class MasterScriptRunner {
       controller: new AbortController(), lua, groups: [], groupIds: plan.lua.control.groups, sharedVariables, scopes: new Map([[null, { functionId: null, variables: sharedVariables, inCall: false }]]),
       variablesDirty: false, judgments: new Map(), judgmentsDirty: false, breakpoints: new Set(breakpoints),
       pauseNext: debug ? 'entry' : undefined, clock, handlers: plan.handlers, tasks: new Map(), ready: [],
-      inputs: new Map(plan.handlers?.inputs?.map(input => [eventKey(input.binding), input])), pendingInputs: [],
+      inputs: new Map(plan.handlers?.inputs?.map(input => [eventKey(input.binding), input])), pendingInputs: [], detachEquipment: [],
       inFlight: 0, finished, resolveFinished,
     };
     this.active = run;
+    for (const observe of plan.observeEquipment) run.detachEquipment.push(observe(event => this.receive(event)));
     if (plan.steps.length) this.launch(run, 'on_start', plan.steps);
     this.pump(run, 1);
     return this.snapshot!;
@@ -700,7 +711,7 @@ export class MasterScriptRunner {
     const input = run.inputs.get(eventKey(event.binding));
     if (!input) return false;
     if (run.pendingInputs.length >= 256) {
-      this.cancel(run, '待处理的画布和变量事件超过 256 个');
+      this.cancel(run, '待处理的输入事件超过 256 个');
       return false;
     }
     run.pendingInputs.push({ event, blockId: input.blockId, steps: input.steps });
@@ -711,7 +722,7 @@ export class MasterScriptRunner {
   recheckInputs() {
     const run = this.active;
     if (!run || run.controller.signal.aborted) return;
-    try { for (const input of run.handlers?.inputs ?? []) this.host.checkInput?.(input.binding); }
+    try { for (const { binding } of run.handlers?.inputs ?? []) if (binding.kind === 'widget' || binding.kind === 'workspace') this.host.checkInput?.(binding); }
     catch (e) { this.cancel(run, messageOf(e)); }
   }
 
@@ -729,6 +740,7 @@ export class MasterScriptRunner {
     clearTimeout(run.wake);
     if (run.turn) clearImmediate(run.turn);
     run.controller.abort(new Error('流程已停止'));
+    for (const detach of run.detachEquipment.splice(0)) detach();
     run.ready.length = 0;
     for (const task of run.tasks.values()) task.flow.return(undefined);
     run.tasks.clear();
@@ -830,6 +842,7 @@ export class MasterScriptRunner {
   }
 
   private finish(run: ActiveRun) {
+    for (const detach of run.detachEquipment.splice(0)) detach();
     clearTimeout(run.wake);
     if (run.turn) clearImmediate(run.turn);
     this.flushObservations();
@@ -847,7 +860,8 @@ export class MasterScriptRunner {
     const view = this.view!;
     const row: ScriptRunEntry = { blockId: step.blockId, label: step.label, result, detail: detail.length > 800 ? detail.slice(0, 799) + '…' : detail,
       atMs: Date.now(), ...(task.session.handlers ? { source: task.source, sequence: view.completed + 1 } : {}),
-      ...(task.input ? { trigger: { binding: task.input.binding, label: task.input.label } } : {}), ...(log ? { log } : {}) };
+      ...(task.input ? { trigger: { binding: task.input.binding, label: task.input.label,
+        ...(task.input.previous !== undefined ? { transition: { previous: task.input.previous, value: task.input.value } } : {}) } } : {}), ...(log ? { log } : {}) };
     // Operator messages have a separate bounded history so a hot loop cannot displace a heartbeat.
     this.view = { ...view, completed: view.completed + 1, entries: [...view.entries, row].slice(-LOG_LIMIT),
       ...(view.eventLog && (log || result === 'failed') ? { eventLog: [...view.eventLog, row].slice(-64) } : {}) };
