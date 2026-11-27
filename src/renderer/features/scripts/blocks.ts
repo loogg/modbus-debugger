@@ -1,12 +1,13 @@
 import * as Blockly from 'blockly/core';
 import * as zhHans from 'blockly/msg/zh-hans';
 import { blockColours } from './block-palette';
-import { checkCallbackContexts, DEFAULT_DELAY_MS, DEFAULT_REPEAT_COUNT, DEFAULT_RUN_PERIOD, DEFAULT_WAIT_MS, MAX_EVENT_ITERATIONS, MIN_EVENT_PERIOD, SCRIPT_TIMER_COUNT } from '../../../domain/master-script';
+import { checkCallbackContexts, checkWorkspaceAssignments, DEFAULT_DELAY_MS, DEFAULT_REPEAT_COUNT, DEFAULT_RUN_PERIOD, DEFAULT_WAIT_MS, MAX_EVENT_ITERATIONS, MIN_EVENT_PERIOD, SCRIPT_TIMER_COUNT } from '../../../domain/master-script';
 import type { LuaSource } from '../../../domain/script-lua-source';
 import { compileScriptLua } from '../../../domain/script-lua-program';
 import { luaNumericLiteral } from '../../../domain/script-lua-operators';
 import { fieldText, isScriptDefinition, MAX_SCRIPT_MS, ScriptBlockError, scriptArithmetic, scriptBlocks, scriptErrors, scriptGraphBlocks, scriptPointKey, scriptRelations, scriptStates, splitParameters, type ScriptGraph } from '../../../domain/master-script';
 import type { Workspace } from '../../../domain/model';
+import { widgetEventLabels, widgetEvents, widgetKey, type WidgetEvent, type WorkspaceVariable } from '../../../domain/canvas-script';
 import { canReadPoint, canWritePoint } from '../../../domain/point-access';
 import { BooleanSwitch, conditionInput, initBranch, literalShadow, LogValueControl, numberSlot, saveScriptGraph } from './block-controls';
 import type { ScriptPreview } from './lua-source';
@@ -14,12 +15,16 @@ import { initFunctionCall, parameterField, ParameterListField, ScriptReferenceFi
 
 
 type Option = [string, string];
-type List = 'slave' | 'read' | 'write' | 'numeric';
+type List = 'slave' | 'read' | 'write' | 'numeric' | 'widget' | 'tag';
 interface FieldOptions {
   lists: Record<List, Option[]>;
   available: Record<List, Set<string>>;
   savedPoints: Set<string>;
   savedSlaves: Set<string>;
+  savedWidgets: Set<string>;
+  savedTags: Set<string>;
+  widgetKinds: Map<string, string>;
+  tagTypes: Map<string, WorkspaceVariable['type']>;
   shortNames: Map<string, string>;
 }
 
@@ -27,6 +32,7 @@ export const bindings = new WeakMap<Blockly.Workspace, FieldOptions>();
 
 export function makeFieldOptions(workspace: Workspace | null, graph: ScriptGraph): FieldOptions {
   const lists: Record<List, Option[]> = {
+    widget: [['选择画布控件', '']], tag: [['选择工作区变量', '']],
     slave: [['选择从站', '']], read: [['选择点位', '']], write: [['选择点位', '']], numeric: [['数值点位', '']],
   };
   const shortNames = new Map<string, string>();
@@ -55,6 +61,16 @@ export function makeFieldOptions(workspace: Workspace | null, graph: ScriptGraph
     }
   }
   const savedPoints = new Set<string>();
+  const savedWidgets = new Set<string>(), savedTags = new Set<string>(), widgetKinds = new Map<string, string>();
+  for (const canvas of workspace?.canvases ?? []) for (const widget of canvas.widgets) {
+    if (!widgetEvents[widget.kind] || !widget.binding || !('kind' in widget.binding) || !['script-event', 'workspace-variable'].includes(widget.binding.kind)) continue;
+    const key = widgetKey(canvas.id, widget.id);
+    lists.widget.push([`${canvas.name} / ${widget.label || widget.text}`, key]);
+    widgetKinds.set(key, widget.kind);
+  }
+  for (const variable of workspace?.variables ?? []) lists.tag.push([variable.name, variable.id]);
+  if (!widgetKinds.size) lists.widget[0] = ['先在画布启用控件事件', ''];
+  if (!workspace?.variables?.length) lists.tag[0] = ['先新建工作区变量', ''];
   const savedSlaves = new Set<string>();
   const counts = new Map<string, number>();
   for (const name of shortNames.values()) counts.set(name, (counts.get(name) ?? 0) + 1);
@@ -68,13 +84,16 @@ export function makeFieldOptions(workspace: Workspace | null, graph: ScriptGraph
   }
   for (const option of new Set(Object.values(lists).flat())) if (ambiguous.has(option[1])) option[0] += ' · ' + identifiers.get(option[1]);
   for (const block of scriptGraphBlocks(graph)) {
+    if (fieldText(block, 'WIDGET')) savedWidgets.add(fieldText(block, 'WIDGET'));
+    if (fieldText(block, 'TAG')) savedTags.add(fieldText(block, 'TAG'));
     const point = fieldText(block, 'POINT');
     const slave = fieldText(block, 'SLAVE');
     if (point) savedPoints.add(point);
     if (slave) savedSlaves.add(slave);
   }
   const keys = (list: List) => new Set(lists[list].map(([, key]) => key));
-  return { lists, savedPoints, savedSlaves, shortNames, available: { slave: keys('slave'), read: keys('read'), write: keys('write'), numeric: keys('numeric') } };
+  return { lists, savedPoints, savedSlaves, savedWidgets, savedTags, widgetKinds, shortNames, tagTypes: new Map(workspace?.variables?.map(v => [v.id,v.type])),
+    available: { slave: keys('slave'), read: keys('read'), write: keys('write'), numeric: keys('numeric'), widget: keys('widget'), tag: keys('tag') } };
 }
 
 function owner(block: Blockly.Block) {
@@ -88,6 +107,9 @@ class PointDropdown extends Blockly.FieldDropdown {
     const key = this.getValue();
     const options = block && bindings.get(owner(block));
     if (options && key && this.access && !options.available[this.access].has(key)) return '绑定失效 · ' + key;
+    if (key && options && (this.access === 'widget' || this.access === 'tag')) {
+      return options.lists[this.access].find(([, id]) => id === key)?.[0] ?? '绑定失效';
+    }
     return (key && options?.shortNames.get(key)) || super.getText_();
   }
 }
@@ -96,7 +118,7 @@ function bindingField(block: Blockly.Block, list: List): Blockly.FieldDropdown {
     const options = bindings.get(owner(block));
     if (!options) return [[list === 'slave' ? '选择从站' : '选择点位', '']];
     const selected = this.getValue();
-    const saved = new Set(list === 'slave' ? options.savedSlaves : options.savedPoints);
+    const saved = new Set(list === 'slave' ? options.savedSlaves : list === 'widget' ? options.savedWidgets : list === 'tag' ? options.savedTags : options.savedPoints);
     if (selected) saved.add(selected);
     const available = options.lists[list];
     const keys = options.available[list];
@@ -170,6 +192,39 @@ function installBlocks() {
     this.setColour(blockColours.entry);
   } };
   const channelField = () => new Blockly.FieldDropdown(Array.from({ length: SCRIPT_TIMER_COUNT }, (_, id): Option => [`T${id}`, String(id)]));
+  Blockly.Blocks[scriptBlocks.onWidget] = { init(this: Blockly.Block) {
+    this.hat = 'cap'; this.setNextStatement(true); this.setColour(blockColours.entry);
+    const widget = bindingField(this, 'widget');
+    const choices = (key: string) => widgetEvents[bindings.get(owner(this))?.widgetKinds.get(key) ?? ''] ?? Object.keys(widgetEventLabels) as WidgetEvent[];
+    const event: Blockly.FieldDropdown = new ScriptReferenceField(() => choices(String(widget.getValue())).map(e => [widgetEventLabels[e], e]));
+    this.appendDummyInput().appendField('当').appendField(widget, 'WIDGET').appendField(event, 'EVENT').appendField('时');
+    widget.setValidator(key => {
+      const allowed = choices(String(key));
+      if (!allowed.some(e => e === event.getValue())) event.setValue(allowed[0]!);
+      return key;
+    });
+  } };
+  Blockly.Blocks[scriptBlocks.onWorkspaceChange] = { init(this: Blockly.Block) {
+    this.hat = 'cap'; this.setNextStatement(true); this.setColour(blockColours.entry);
+    this.appendDummyInput().appendField('当工作区变量').appendField(bindingField(this, 'tag'), 'TAG').appendField('改变时');
+  } };
+  Blockly.Blocks[scriptBlocks.workspaceValue] = { init(this: Blockly.Block) {
+    valueReporter(this, variableColor, true);
+    this.appendDummyInput().appendField('工作区变量').appendField(bindingField(this, 'tag'), 'TAG');
+  } };
+  Blockly.Blocks[scriptBlocks.eventValue] = { init(this: Blockly.Block) {
+    valueReporter(this, blockColours.entry, true);
+    this.appendDummyInput().appendField('本次事件值');
+  } };
+  Blockly.Blocks[scriptBlocks.setWorkspaceValue] = { init(this: Blockly.Block) {
+    action(this, '把工作区变量', variableColor).appendField(bindingField(this, 'tag'), 'TAG');
+    numberSlot(this, 'OPERAND', false).appendField('设为');
+    this.setInputsInline(true);
+  } };
+  Blockly.Blocks[scriptBlocks.text] = { init(this: Blockly.Block) {
+    this.setOutput(true, 'ScriptValue'); this.setColour(variableColor);
+    this.appendDummyInput().appendField('文本').appendField(new Blockly.FieldTextInput(''), 'TEXT');
+  } };
   Blockly.Blocks[scriptBlocks.onRun] = { init(this: Blockly.Block) {
     this.hat = 'cap';
     this.setNextStatement(true); this.setColour(blockColours.entry);
@@ -419,7 +474,11 @@ export function generateScriptLua(workspace: Blockly.Workspace, graph: ScriptGra
 export function inspectScriptDraft(workspace: Blockly.Workspace, graph: ScriptGraph): ScriptPreview {
   try {
     const { program, source } = compileScriptLua(graph);
-    try { checkCallbackContexts(program); }
+    try {
+      checkCallbackContexts(program);
+      const options = bindings.get(workspace);
+      if (options) checkWorkspaceAssignments(program, id => options.tagTypes.get(id));
+    }
     catch (error) {
       if (!(error instanceof ScriptBlockError)) throw error;
       return { source, issue: { blockId: error.blockId, message: error.message } };
@@ -427,9 +486,13 @@ export function inspectScriptDraft(workspace: Blockly.Workspace, graph: ScriptGr
     const available = bindings.get(workspace)?.available;
     for (const blockId of source.ranges.keys()) {
       const block = workspace.getBlockById(blockId);
-      const field = block?.getField('POINT') ?? block?.getField('SLAVE');
+      if (block?.type === scriptBlocks.onWidget) {
+        const kind = bindings.get(workspace)?.widgetKinds.get(String(block.getFieldValue('WIDGET')));
+        if (kind && !widgetEvents[kind]?.includes(block.getFieldValue('EVENT') as WidgetEvent)) return { source, issue: { blockId, message: '请为这个控件选择适用的事件' } };
+      }
+      const field = block?.getField('POINT') ?? block?.getField('SLAVE') ?? block?.getField('WIDGET') ?? block?.getField('TAG');
       if (!(field instanceof PointDropdown) || !field.access || !available || available[field.access].has(String(field.getValue()))) continue;
-      const labels: Record<List, string> = { slave: '从站', read: '可读点位', write: '可写点位', numeric: '数值点位' };
+      const labels: Record<List, string> = { slave: '从站', read: '可读点位', write: '可写点位', numeric: '数值点位', widget: '已启用事件的画布控件', tag: '工作区变量' };
       return { source, issue: { blockId, message: '工作区中的绑定已失效，请重新选择' + labels[field.access] + '。' } };
     }
     return { source, issue: null };

@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useId } from 'react';
+import type { ViewSelection } from '../../shared/workbench';
 
 export interface ViewEnvironment {
+  openTarget?(module: 'canvas' | 'scripts', selection: Partial<ViewSelection>): void;
   document: Document;
   portalRoot: HTMLElement;
   active: boolean;

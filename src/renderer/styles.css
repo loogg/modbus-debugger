@@ -105,6 +105,18 @@
 .script-watch dd { text-align: right; color: #596b7e; font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
 .script-watch dd[data-assigned] { color: #1b354d; }
 .script-watch-empty { padding: 16px 12px; color: #526579; font-size: 13px; }
+.script-watch dl > div:has(.script-share-variable) { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto; }
+.script-share-variable { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #47596c; }
+.workspace-variable-list { padding: 10px 12px; border-top: 1px solid #dce4ec; font-size: 12px; }
+.workspace-variable-list > header, .workspace-variable-row { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.workspace-variable-row { padding: 6px 0; border-bottom: 1px solid #e0e7ef; overflow-wrap: anywhere; }
+.workspace-variable-row button, .workspace-variable-row output { min-width: 0; font-family: Consolas, 'Microsoft YaHei', monospace; }
+.workspace-variable-row span { margin-left: auto; color: #526579; flex-shrink: 0; }
+.workspace-variable-form { display: grid; gap: 8px; margin-top: 8px; }
+.workspace-variable-form label { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); align-items: center; }
+.workspace-variable-form input, .workspace-variable-form select { border: 1px solid #bbc7d4; border-radius: 4px; padding: 4px 6px; background: white; min-width: 0; }
+.canvas-signal-status { position: absolute; right: 3px; bottom: 1px; max-width: 95%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; background: #fff; color: #465769; }
+.canvas-widget-host [data-located="true"] { outline: 2px solid #1469a5; outline-offset: 2px; }
 .is-compact .script-watch { grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 8px 15px; padding: 6px 12px; }
 .is-compact .script-watch header { margin-bottom: 3px; }
 .is-compact .script-watch dl > div { padding: 3px 8px; }

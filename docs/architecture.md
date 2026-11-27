@@ -169,7 +169,9 @@ Main 命令记录 -> Host 最新值读取 -> 成功/拒绝/未知与上次成功
 
 各 ConnectionRuntime 按请求完成和到期时间唤醒调度，Block 配置周期支持 0 ms 尽快采集，5 ms tick 负责定时维护。成功确认数据写入 Block Cache 后触发 `onConfirmed`，`SampleBuffers` 当次追加有效样本。RuntimeManager 的 100 ms tick 聚合诊断、连接、从站与块状态，点位值和原始块内存通过 `data.read` 按需读取。
 
-主站积木脚本在 Workspace 保存 Blockly JSON 图。Main 将保存修订编译为受限步骤，`ScriptRuns` 以脚本 ID 管理各自的 `MasterScriptRunner`，用本轮运行 ID 路由控制命令。Snapshot 的 `scriptRuns` 包含各流程的运行记录，delta 只发送有变化的记录，以 `null` 移除。保存变量与判断直接读取共享缓存的最新有效确认值。「等待新采样」订阅覆盖完整点位范围的后续缓存确认。「等待条件」在订阅后立即检查，相关采样和从站状态通知到达时同步复查。设备通知为工作区共享，变量和定时器通知只在所属实例分发。时间条件订阅单调时钟的下一次有效相位变化，宿主唤醒稍晚时按逻辑截止点复查。等待步骤各设一个超时计时器，成功、失败、停止或超时时释放订阅。写入复用点位校验和 ConnectionRuntime，停止信号在发送前校验且可移除队列项。
+主站积木脚本在 Workspace 保存 Blockly JSON 图。Main 将保存修订编译为受限步骤，`ScriptRuns` 以脚本 ID 管理各自的 `MasterScriptRunner`，用本轮运行 ID 路由控制命令。Snapshot 的 `scriptRuns` 包含各流程的运行记录，delta 只发送有变化的记录，以 `null` 移除。保存变量与判断直接读取共享缓存的最新有效确认值。「等待新采样」订阅覆盖完整点位范围的后续缓存确认。「等待条件」在订阅后立即检查，相关采样和从站状态通知到达时同步复查。设备和工作区变量通知为工作区共享，脚本私有变量和定时器只在所属实例分发。时间条件订阅单调时钟的下一次有效相位变化，宿主唤醒稍晚时按逻辑截止点复查。等待步骤各设一个超时计时器，成功、失败、停止或超时时释放订阅。写入复用点位校验和 ConnectionRuntime，停止信号在发送前校验且可移除队列项。
+
+画布操作由实际收到用户输入的视图发送 `canvas.interact`。Main 检查工作区会话、画布修订、控件绑定和事件类型，同一操作 ID 去重后通过 `ScriptRuns` 向各有效监听投递。共享数值、布尔与文本由 `CanvasSignals` 保存，视图通过 `canvasSignals` 快照同步。控件事件和工作区变量变化在各自脚本的主 Lua 状态执行，使用该流程的看门狗与调试边界。每个句柄最多积压 256 个输入事件，溢出显式停止本图。一次变量变化引发的更新链重复改变同一变量时会报错，避免多流程互相触发。导出的 Lua 将监听声明置于返回值的 `inputs` 表，宿主按 `canvas`、`widget`、`event` 或 `variable` 匹配并调用 `handle`。`rt.event_value()` 读取本次事件值，`rt.get_workspace_variable(id)` 和 `rt.set_workspace_variable(id, value)` 访问工作区变量。
 
 Main 与 Renderer 调用同一领域编译器 `compileScriptLua`。编译器先规范化已保存或正在编辑的 Blockly 图，再从同一组语句、操作数与函数生成结构化 Lua、积木行映射和可恢复的原生 Lua 控制块。运行指纹覆盖语句、函数、事件和结构化源码。「校验」复用流程编译规则及点位下拉框的工作区绑定范围。执行边框使用 Main 上报的当前积木 ID。草稿或保存修订变化时，Renderer 对照 Main 的编译步骤摘要，支持只改断点后重新打开页面继续单步。执行内容已变化时，原运行日志保留原结果，并可通过稳定 ID 定位当前草稿中保留的积木。
 

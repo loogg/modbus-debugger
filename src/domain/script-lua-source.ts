@@ -69,7 +69,7 @@ export function renderScriptLua(graph: ScriptGraph, program: ScriptProgram): Lua
   const functions = new Map(program.functions.map(f => [f.id, f]));
   const start = graph.blocks?.blocks.find(b => b.type === scriptBlocks.start && b.enabled !== false && !b.disabledReasons?.length);
   const events = program.handlers;
-  const entries = [...(events?.onRun ? [events.onRun] : []), ...events?.timers ?? []];
+  const entries = [...(events?.onRun ? [events.onRun] : []), ...events?.timers ?? [], ...events?.inputs ?? []];
   const names = new LuaNames(start, program.functions.map(f => blocks.get(f.id)!), events ? entries.map(e => blocks.get(e.blockId)!) : undefined);
   const read = (root: string, name: string) => `_ops.read(${names.variable(root, name)}, ${quote(name)})`;
 
@@ -111,6 +111,8 @@ export function renderScriptLua(graph: ScriptGraph, program: ScriptProgram): Lua
       case 'variable': code = read(root, o.name); break;
       case 'arithmetic': return lowerLuaExpression(o, leaf => operand(root, leaf), luaBinaryCall, (node, text) => mark(node.blockId, text));
       case 'point': code = `modbus.value(${target(o.ref)})`; break;
+      case 'workspaceValue': code = `rt.get_workspace_variable(${quote(o.variableId)})`; break;
+      case 'eventValue': code = 'rt.event_value()'; break;
       case 'timerElapsed': code = `rt.get_timer_value(${o.channel})`; break;
       case 'timerRunning': code = `rt.is_timer_running(${o.channel})`; break;
       case 'callValue': code = call(root, o.functionId, o.args); break;
@@ -158,6 +160,7 @@ export function renderScriptLua(graph: ScriptGraph, program: ScriptProgram): Lua
     const body = (steps: ScriptStep[]) => indent(sequence(root, steps, signalBreak));
     switch (s.kind) {
       case 'setVariable': return `${names.assignment(root, s.blockId, s.variable)} = ${val(s.operand)}\n`;
+      case 'setWorkspaceValue': return `rt.set_workspace_variable(${quote(s.variableId)}, ${val(s.operand)})\n`;
       case 'changeVariable': return `${names.variable(root, s.variable)} = ${luaBinaryCall('add', read(root, s.variable), val(s.operand))}\n`;
       case 'call': return call(root, s.functionId, s.args) + '\n';
       case 'capture': return `${names.assignment(root, s.blockId, s.variable)} = modbus.value(${target(s.ref)})\n`;
@@ -215,6 +218,15 @@ export function renderScriptLua(graph: ScriptGraph, program: ScriptProgram): Lua
       const arms = events.timers.map((t, i) => mark(t.blockId, `  ${i ? 'elseif' : 'if'} _timer_id == ${t.channel} then\n${indent(indent(sequence(t.blockId, t.steps)))}`));
       parts.push(`local function on_timer(_timer_id)\n${arms.join('')}  end\nend\n`);
       published.push('on_timer = on_timer');
+    }
+    if (events.inputs?.length) {
+      const inputs = events.inputs.map(({ binding, blockId, steps }) => {
+        const fields = binding.kind === 'widget'
+          ? `canvas = ${quote(binding.canvasId)}, widget = ${quote(binding.widgetId)}, event = ${quote(binding.event)}`
+          : `variable = ${quote(binding.variableId)}`;
+        return mark(blockId, `{ ${fields}, handle = function()\n${indent(sequence(blockId, steps))}end }`);
+      });
+      published.push(`inputs = {\n${indent(inputs.join(',\n'))}\n}`);
     }
     parts.push(`return { ${published.join(', ')} }`);
   } else if (start) {

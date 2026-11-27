@@ -179,7 +179,7 @@ const createAppStore = () => create<AppState>((set, get) => ({
       revision: d.revision,
       update: d.update ?? prev.update,
       scriptRun: d.scriptRun === undefined ? prev.scriptRun : d.scriptRun,
-      scriptRuns,
+      scriptRuns, canvasSignals: d.canvasSignals ?? prev.canvasSignals,
       workspace: d.workspace ?? prev.workspace,
       workspacePath: d.workspacePath !== undefined ? d.workspacePath : prev.workspacePath,
       dirty: d.dirty !== undefined ? d.dirty : prev.dirty,

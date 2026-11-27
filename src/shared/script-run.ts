@@ -1,15 +1,19 @@
+import type { EventBinding } from '../domain/canvas-script';
+
 export interface ScriptApprovalView {
   key: string;
   writes: Array<{ target: string; value: string }>;
 }
 
-export type ScriptEventSource = 'on_start' | 'on_run' | `T${number}`;
+export type ScriptEventSource = 'on_start' | 'on_run' | `T${number}` | `input:${string}`;
 export interface ScriptEventStatus {
+  inputs?: EventBinding[];
   onRun: { periodMs: number; enabled: boolean; calls: number } | null;
   timers: { channel: number; periodMs: number; remaining: number | null }[];
 }
 
 export interface ScriptRunEntry {
+  trigger?: { binding: EventBinding; label: string };
   source?: ScriptEventSource;
   sequence?: number;
   atMs: number;
@@ -60,7 +64,7 @@ export interface ScriptRunView {
   } | null;
   startedAtMs: number;
   finishedAtMs: number | null;
-  current: { blockId: string; label: string; source?: ScriptEventSource } | null;
+  current: { blockId: string; label: string; source?: ScriptEventSource; triggerLabel?: string } | null;
   entries: ScriptRunEntry[];
   eventLog?: ScriptRunEntry[];
   completed: number;

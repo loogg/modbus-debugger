@@ -1,3 +1,4 @@
+import { workspaceVariableSchema } from './canvas-script';
 import { z } from 'zod';
 import { bufferConfigSchema } from '../shared/point-data';
 import { canvasSchema } from './canvas';
@@ -152,6 +153,7 @@ export const workspaceSchema = z.object({
   sampleBuffers: z.array(bufferConfigSchema).max(20000).optional(),
   canvases: z.array(canvasSchema).max(100).optional(),
   masterScripts: z.array(masterScriptSchema).max(100).optional(),
+  variables: z.array(workspaceVariableSchema).max(1000).optional(),
   workbench: workbenchLayoutSchema.optional(),
   layout: layoutSchema.default({ module: 'devices', selection: {} }),
 }).superRefine((ws, ctx) => {
@@ -164,6 +166,8 @@ export const workspaceSchema = z.object({
   if (new Set(bufferKeys).size !== bufferKeys.length) fail('Duplicate point buffer configuration');
   if (new Set((ws.canvases ?? []).map(c => c.id)).size !== (ws.canvases ?? []).length) fail('Duplicate canvas id');
   if (new Set((ws.masterScripts ?? []).map(script => script.id)).size !== (ws.masterScripts ?? []).length) fail('Duplicate script id');
+  const variables = ws.variables ?? [];
+  if (new Set(variables.map(v => v.id)).size !== variables.length || new Set(variables.map(v => v.name)).size !== variables.length) fail('工作区变量 ID 或名称重复');
   for (const template of ws.templates) {
     if (new Set(template.blocks.map(block => block.id)).size !== template.blocks.length) fail('Duplicate block id');
     if (findBlockOverlaps(template.blocks).length) fail('Blocks in the same area overlap');

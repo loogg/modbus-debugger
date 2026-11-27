@@ -1,7 +1,9 @@
 import React from 'react';
 import { canvasPointBinding, canvasSignals, type CanvasDef, type CanvasWidget } from '../../../domain/canvas';
 import { descendantIds, parentFrame, widgetMinimum } from '../../../domain/canvas-geometry';
-import { bindingError } from '../../../domain/canvas-binding';
+import { bindingError, variableAcceptsWidget } from '../../../domain/canvas-binding';
+import { widgetEventLabels, widgetEvents, widgetKey, type WidgetEvent } from '../../../domain/canvas-script';
+import { fieldText, scriptBlocks } from '../../../domain/master-script';
 import { useApp, useWorkspace } from '../../store/app';
 import { bufferCapacity } from '../../../domain/point-buffers';
 import { WIDGET_LABELS } from './widget';
@@ -12,11 +14,13 @@ import { GAUGE_STYLES, INPUT_MODES } from './presets';
 import { CanvasStyleInspector } from './style-inspector';
 import { CanvasLampInspector } from './lamp-inspector';
 import { statusLampConfig } from './status-lamp';
+import { useViewEnvironment } from '../../workbench/view-context';
 
 const statusBindingKey = (slaveId: string) => `status:${encodeURIComponent(slaveId)}`;
 
 export function CanvasInspector({ widget: w, canvas, onChange, onReparent, onFit }: { widget: CanvasWidget; canvas: CanvasDef; onChange: (patch: Partial<CanvasWidget>) => void; onReparent: (id: string | null) => void; onFit: () => void }) {
   const workspace = useWorkspace();
+  const environment = useViewEnvironment();
   const openOverlay = useApp(state => state.openOverlay);
   const points = (workspace?.slaves ?? []).flatMap(slave => {
     const template = workspace?.templates.find(t => t.id === slave.templateId);
@@ -24,7 +28,15 @@ export function CanvasInspector({ widget: w, canvas, onChange, onReparent, onFit
     return (template?.points ?? []).map(point => ({ value: pointKey(slave.id, point.id), slave, point, label: `${connection?.name} / ${slave.name} / ${point.name}`, error: bindingError(w.kind, point, w.inputMode) }));
   });
   const pointBinding = canvasPointBinding(w.binding);
-  const statusBinding = w.binding && 'kind' in w.binding ? w.binding : null;
+  const statusBinding = w.binding && 'kind' in w.binding && w.binding.kind === 'slave-status' ? w.binding : null;
+  const special = w.binding && 'kind' in w.binding && w.binding.kind !== 'slave-status' ? w.binding : null;
+  const tags = workspace?.variables?.filter(v => variableAcceptsWidget(w, v.type)) ?? [];
+  const shared = workspace?.masterScripts?.flatMap(s => (s.publishedVariables ?? []).map(name => ({
+    key: JSON.stringify([s.id, name]), name, scriptId: s.id, label: `${s.name} / ${name}`,
+  }))) ?? [];
+  const listeners = widgetEvents[w.kind] ? workspace?.masterScripts?.flatMap(s => (s.graph.blocks?.blocks ?? [])
+    .filter(b => b.type === scriptBlocks.onWidget && fieldText(b, 'WIDGET') === widgetKey(canvas.id, w.id))
+    .map(b => ({ script: s, block: b }))) ?? [] : [];
   const binding = pointBinding ? pointKey(pointBinding.slaveId, pointBinding.pointId) : statusBinding ? statusBindingKey(statusBinding.slaveId) : '';
   const statusOptions = w.kind === 'lamp' ? (workspace?.slaves ?? []).flatMap(slave => {
     const connection = workspace?.connections.find(item => item.id === slave.connectionId);
@@ -61,12 +73,41 @@ export function CanvasInspector({ widget: w, canvas, onChange, onReparent, onFit
     {w.kind === 'input' && <label className="canvas-field">输入类型<select aria-label="输入类型" value={w.inputMode} onChange={event => {
       const inputMode = event.target.value as CanvasWidget['inputMode'];
       const current = points.find(item => item.value === binding);
+      const tag = special?.kind === 'workspace-variable' ? tags.find(v => v.id === special.variableId) : undefined;
+      if (tag && !variableAcceptsWidget({ kind: w.kind, inputMode }, tag.type)) { onChange({ inputMode, binding: null }); return; }
       onChange({ inputMode, binding: current && bindingError('input', current.point, inputMode) ? null : w.binding });
     }}>{Object.entries(INPUT_MODES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
     <label className="canvas-field">所属容器<select aria-label="所属容器" value={w.parentId ?? ''} onChange={e => onReparent(e.target.value || null)}><option value="">画布根层</option>{canvas.widgets.filter(parent => parent.kind === 'container' && !excluded.has(parent.id)).map(parent => <option key={parent.id} value={parent.id}>{parent.label || '容器'}</option>)}</select></label>
     <div className="grid grid-cols-2 gap-3">{number('x', 'X', 0)}{number('y', 'Y', 0)}{number('width', '宽度', minimum.width)}{number('height', '高度', minimum.height)}</div>
     <button className="focus-ring text-xs text-accent" onClick={onFit}>适合内容</button>
-    {!['text', 'container', 'trend'].includes(w.kind) && <label className="canvas-field">{bindingLabel}
+    {!['text', 'container', 'trend'].includes(w.kind) && <label className="canvas-field">{widgetEvents[w.kind] ? '操作方式' : '数据来源'}
+      <select aria-label={widgetEvents[w.kind] ? '操作方式' : '数据来源'} value={special?.kind ?? 'device'} onChange={event => {
+        const mode = event.target.value;
+        if (mode === 'device') onChange({ binding: null });
+        if (mode === 'script-event') onChange({ binding: { kind: 'script-event' } });
+        if (mode === 'workspace-variable' && tags[0]) onChange({ binding: { kind: mode, variableId: tags[0].id } });
+        if (mode === 'script-variable' && shared[0]) onChange({ binding: { kind: mode, scriptId: shared[0].scriptId, name: shared[0].name } });
+      }}>
+        <option value="device">{widgetEvents[w.kind] ? '直接写点位' : '设备数据'}</option>
+        {widgetEvents[w.kind] && <option value="script-event">触发脚本事件</option>}
+        {w.kind !== 'button' && <option value="workspace-variable" disabled={!tags.length}>工作区变量{!tags.length ? '（需先创建匹配类型）' : ''}</option>}
+        {['value','gauge','lamp'].includes(w.kind) && <option value="script-variable" disabled={!shared.length}>公开脚本变量{!shared.length ? '（需先公开）' : ''}</option>}
+      </select>
+    </label>}
+    {special?.kind === 'workspace-variable' && <label className="canvas-field">工作区变量<select aria-label="绑定工作区变量" value={special.variableId}
+      onChange={e => onChange({ binding: { kind: 'workspace-variable', variableId: e.target.value } })}>
+      {!tags.some(v => v.id === special.variableId) && <option value={special.variableId}>绑定已失效</option>}
+      {tags.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}</select></label>}
+    {special?.kind === 'script-variable' && <label className="canvas-field">公开脚本变量<select aria-label="绑定公开脚本变量" value={JSON.stringify([special.scriptId, special.name])}
+      onChange={e => { const item = shared.find(v => v.key === e.target.value); if (item) onChange({ binding: { kind: 'script-variable', scriptId: item.scriptId, name: item.name } }); }}>
+      {!shared.some(v => v.scriptId === special.scriptId && v.name === special.name) && <option value={JSON.stringify([special.scriptId, special.name])}>绑定已失效</option>}
+      {shared.map(v => <option key={v.key} value={v.key}>{v.label}</option>)}</select></label>}
+    {special && widgetEvents[w.kind] && <div className="space-y-1 text-xs">
+      {listeners.length ? listeners.map(({ script, block }) => <button type="button" className="focus-ring block text-accent" key={JSON.stringify([script.id,block.id])}
+        onClick={() => environment?.openTarget?.('scripts', { scriptId: script.id, scriptFocusId: block.id })}>定位事件积木 · {script.name} · {widgetEventLabels[fieldText(block, 'EVENT') as WidgetEvent] ?? '点击'}</button>)
+        : <span className="text-ink2">在脚本的「事件」分类中选择此控件。</span>}
+    </div>}
+    {!special && !['text', 'container', 'trend'].includes(w.kind) && <label className="canvas-field">{bindingLabel}
       <select aria-label={bindingLabel} value={binding} onChange={e => changeBinding(e.target.value)}>
         <option value="">{w.kind === 'lamp' ? '选择状态或设备点位…' : '选择设备点位…'}</option>
         {binding && !bindingExists && <option value={binding}>绑定已失效，请重新选择</option>}
@@ -104,12 +145,12 @@ export function CanvasInspector({ widget: w, canvas, onChange, onReparent, onFit
       <p className="text-[11px] leading-5 text-ink2">每个信号按实际采样时间绘制。共享缓冲容量可在设备实例中修改。</p>
     </div>}
     {['text', 'button'].includes(w.kind) && <label className="canvas-field">{w.kind === 'text' ? '文本内容' : '按钮文字'}<textarea aria-label={w.kind === 'text' ? '文本内容' : '按钮文字'} rows={3} maxLength={2000} value={w.text} onChange={e => onChange({ text: e.target.value })} /></label>}
-    {w.kind === 'button' && <label className="canvas-field">点击写入值<input aria-label="点击写入值" value={w.onValue} onChange={e => onChange({ onValue: e.target.value })} /><span className="font-normal text-ink2">一次点击发送一次写入，匹配的正常写应答表示成功。</span></label>}
-    {w.kind === 'switch' && <p className="text-xs text-ink2">打开写入 1，关闭写入 0；开关位置始终反映设备确认值。</p>}
+    {!special && w.kind === 'button' && <label className="canvas-field">点击写入值<input aria-label="点击写入值" value={w.onValue} onChange={e => onChange({ onValue: e.target.value })} /><span className="font-normal text-ink2">一次点击发送一次写入，匹配的正常写应答表示成功。</span></label>}
+    {!special && w.kind === 'switch' && <p className="text-xs text-ink2">打开写入 1，关闭写入 0；开关位置始终反映设备确认值。</p>}
     {w.kind === 'lamp' && <CanvasLampInspector widget={w} point={points.find(item => item.value === binding)?.point} frame={frame} onChange={onChange} />}
     {w.kind === 'gauge' && <div className="grid grid-cols-2 gap-3">{number('min', '量程下限')}{number('max', '量程上限')}</div>}
-    {w.kind === 'input' && w.inputMode === 'select' && <p className="text-xs leading-5 text-ink2">选项来自点位的枚举映射，Bool 默认提供 OFF/ON。选择后点击写入。</p>}
-    {w.kind === 'input' && w.inputMode === 'text' && <p className="text-xs leading-5 text-ink2">绑定 String 点位，按其编码和长度写入。清空文本后写入可清除设备字符串。</p>}
+    {!special && w.kind === 'input' && w.inputMode === 'select' && <p className="text-xs leading-5 text-ink2">选项来自点位的枚举映射，Bool 默认提供 OFF/ON。选择后点击写入。</p>}
+    {!special && w.kind === 'input' && w.inputMode === 'text' && <p className="text-xs leading-5 text-ink2">绑定 String 点位，按其编码和长度写入。清空文本后写入可清除设备字符串。</p>}
     {w.kind === 'input' && ['number', 'stepper', 'slider'].includes(w.inputMode) && <>
       {number('step', '步长')}
       {w.inputMode !== 'slider' && <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={w.limitInput} onChange={event => onChange({ limitInput: event.target.checked })} />限制输入范围</label>}

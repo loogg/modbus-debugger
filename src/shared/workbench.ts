@@ -5,6 +5,7 @@ export type ModuleId = z.infer<typeof moduleIdSchema>;
 export const viewSelectionSchema = z.object({
   canvasId: z.string().nullable(), connectionId: z.string().nullable(), slaveId: z.string().nullable(),
   scriptId: z.string().nullable().optional(),
+  scriptFocusId: z.string().nullable().optional(), canvasFocusId: z.string().nullable().optional(),
   scriptPointLookup: z.string().max(600).nullable().optional(),
   blockId: z.string().nullable(), templateId: z.string().nullable(), groupId: z.string().nullable(), sessionId: z.string().nullable(),
   commView: z.enum(['messages', 'health', 'trace']), historyTab: z.enum(['trend', 'events', 'data', 'signals']),

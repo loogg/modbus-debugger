@@ -1,3 +1,4 @@
+import { WorkspaceVariables } from './workspace-variables';
 import React, { useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CheckmarkCircle16Regular, Code16Regular, Copy16Regular, ErrorCircle16Regular, Eye16Regular } from '@fluentui/react-icons';
 import * as Tabs from '@radix-ui/react-tabs';
@@ -20,8 +21,10 @@ function colorLua(text: string) {
   });
 }
 
-export function LuaPane({ preview, tab, onTab, selection, executing, pauseToken, groups, run, onSelect, onCopy }: {
+export function LuaPane({ preview, tab, onTab, selection, executing, pauseToken, groups, run, onSelect, onCopy, published, onPublish, createVariable, variableFormOpened }: {
   preview: ScriptPreview | null; tab: LuaTab; onTab(tab: LuaTab): void;
+  createVariable?: boolean; variableFormOpened?(): void;
+  published?: readonly string[]; onPublish?(name: string): void;
   groups: ScriptVariableGroup[]; run: ScriptRunView | null;
   selection: ScriptSelection; executing: string | null; pauseToken?: string;
   onSelect(blockId: string, line?: number): void; onCopy(): void;
@@ -87,7 +90,8 @@ export function LuaPane({ preview, tab, onTab, selection, executing, pauseToken,
       </button>}
     </header>
     <Tabs.Content value="variables" className="script-watch-body">
-      <VariableWatch groups={groups} run={run} onSelect={onSelect} />
+      <VariableWatch groups={groups} run={run} onSelect={onSelect} published={published} onPublish={onPublish} />
+      <WorkspaceVariables create={createVariable} consumed={variableFormOpened} />
     </Tabs.Content>
     <Tabs.Content value="validation" className="script-validation-body">
       {diagnostic || (preview && <div className="script-validation is-valid" role="status"><CheckmarkCircle16Regular aria-hidden="true" />

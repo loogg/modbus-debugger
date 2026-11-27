@@ -8,7 +8,7 @@ vi.mock('../../src/main/runtime/script-handle.lua?raw', async importOriginal => 
   return { default: program + `
 local next_step = advance_flow
 function advance_flow(slot, ...)
-  if slot == 0 or slot == 1 then
+  if slot == 0 or slot == 1 or type(slot) == "string" then
     local sum = 0
     for i = 1, 4000000 do sum = sum + i end
     assert(sum == 8000002000000)
@@ -19,7 +19,7 @@ end` };
 
 beforeAll(loadScriptLua);
 
-it('preempts a long startup Lua call and errors inside a long main-state call on its own handle', () => {
+it.each(['on_run','input:button'] as const)('preempts startup and applies the main-state watchdog to %s', source => {
   const kernel = compileScriptProgram({ blocks: { languageVersion: 0, blocks: [{ id: 'root', type: 'mb_start',
     next: { block: { id: 'first', type: 'mb_log', fields: { TEXT: 'done' } } } }] } }).lua;
   const group = kernel.control.groups.first!;
@@ -29,9 +29,9 @@ it('preempts a long startup Lua call and errors inside a long main-state call on
     let action = startup.advance('on_start', 'next');
     expect(action.kind).toBe('slice');
     busy.budget(100);
-    busy.open('on_run', group);
+    busy.open(source, group);
     busy.budget(1);
-    expect(() => busy.advance('on_run', 'next')).toThrowError(new ScriptHandleFault('主 L 看门狗超时（累计执行上限 240 ms）'));
+    expect(() => busy.advance(source, 'next')).toThrowError(new ScriptHandleFault('主 L 看门狗超时（累计执行上限 240 ms）'));
     while (action.kind === 'slice') action = startup.advance('on_start', 'next');
     expect(action).toEqual({ kind: 'step', group, index: 1 });
   } finally { busy.close(); startup.close(); }

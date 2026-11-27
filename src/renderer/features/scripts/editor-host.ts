@@ -21,6 +21,7 @@ export interface ScriptEditorInput {
   search: string;
   variableNames: readonly string[];
   onClearSearch(): void;
+  onCreateVariable?(): void;
   onViewChange?(view: ScriptCanvasView): void;
   breakpoints?: readonly string[];
   onBreakpoint?(id: string): void;
@@ -105,12 +106,16 @@ export const mountScriptEditor: MountScriptEditor = (element, input) => {
     scrollbars: true,
   });
   editorInputs.set(workspace, input);
+  workspace.registerButtonCallback('CREATE_WORKSPACE_VARIABLE', () => input().onCreateVariable?.());
   const updateBindings = () => {
     const { graph, equipment } = input();
     bindings.set(workspace, makeFieldOptions(equipment, graph));
     for (const block of workspace.getAllBlocks(false)) {
       block.getField('POINT')?.forceRerender();
       block.getField('SLAVE')?.forceRerender();
+      block.getField('WIDGET')?.forceRerender();
+      block.getField('EVENT')?.forceRerender();
+      block.getField('TAG')?.forceRerender();
     }
   };
   updateBindings();

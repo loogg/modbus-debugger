@@ -20,18 +20,23 @@ import { canWritePoint } from '../../../domain/point-access';
 import { fmtEpochDateTimeMs } from '../../time';
 import { previewDisplayValue, previewLampResult, type WidgetPreview } from './preview';
 import { statusLampValue } from './status-lamp';
+import { CanvasEventButton, useCanvasSignal } from './script-signal';
+import type { WidgetEvent } from '../../../domain/canvas-script';
 
 export const WIDGET_LABELS: Record<CanvasWidget['kind'], string> = { text: '文字标签', value: '数值显示', lamp: '指示灯', button: '按钮', switch: '开关', input: '数值输入', gauge: '仪表', trend: '趋势图', container: '容器' };
 
-export function CanvasWidgetView({ widget: w, editing, preview }: { widget: CanvasWidget; editing: boolean; preview?: WidgetPreview }) {
+export function CanvasWidgetView({ widget: w, editing, preview, canvasId = '', revision = 0, active: viewActive = true }: {
+  widget: CanvasWidget; editing: boolean; preview?: WidgetPreview; canvasId?: string; revision?: number; active?: boolean;
+}) {
   const workspace = useWorkspace();
   const { point, slave, connection } = workspace ? canvasPoint(workspace, w) : {};
   const binding = canvasPointBinding(w.binding);
-  const statusBinding = Boolean(w.binding && 'kind' in w.binding);
-  const key = pointKey(binding?.slaveId, binding?.pointId ?? '');
+  const statusBinding = Boolean(w.binding && 'kind' in w.binding && w.binding.kind === 'slave-status');
+  const signal = useCanvasSignal(w, canvasId, revision);
+  const key = signal.binding ? JSON.stringify([canvasId, w.id, signal.binding]) : pointKey(binding?.slaveId, binding?.pointId ?? '');
   const confirmedValue = useApp(s => binding ? s.snapshot?.points[key] : undefined);
   const simulation = editing ? preview : undefined;
-  const value = simulation ? previewDisplayValue(w, simulation, point) : confirmedValue;
+  const value = simulation ? previewDisplayValue(w, simulation, point) : signal.binding ? signal.sample : confirmedValue;
   const commandOnly = !simulation && point?.access === 'wo';
   const lastWrite = confirmedValue?.lastWrite;
   const accepted = commandOnly ? lastWrite?.accepted : undefined;
@@ -65,13 +70,16 @@ export function CanvasWidgetView({ widget: w, editing, preview }: { widget: Canv
     else if (simulation.uiState === 'disabled') quality = '预览：已禁用';
     else if (!value?.hasValue) quality = '预览：未采集';
     else if (lamp ? lamp.invalid : !value.finite && value.boolValue === null && value.stringValue === null) quality = '预览：无效值';
+  } else if (signal.binding) {
+    quality = signal.status;
   } else if (!['text', 'container', 'trend'].includes(w.kind)) {
     if (!w.binding) quality = '未绑定点位';
     else if (!validBinding) quality = '绑定已失效';
     else if (!statusBinding) quality = typeError ?? issue?.label ?? (commandOnly ? '' : !value?.hasValue ? '等待采集' : lamp?.invalid ? '数值无效' : '');
   }
   const disabled = simulation ? simulation.uiState === 'disabled' || simulation.uiState === 'writing'
-    : editing || pending || writeState?.phase === 'writing' || !point || !canWritePoint(point) || deviceUnavailable || Boolean(typeError);
+    : editing || !viewActive || pending || (signal.binding ? signal.status === '绑定已失效' || signal.binding.kind === 'script-event' && !signal.listening
+      : writeState?.phase === 'writing' || !point || !canWritePoint(point) || deviceUnavailable || Boolean(typeError));
   const shownPending = simulation ? simulation.uiState === 'writing' : pending || writeState?.phase === 'writing';
   const status = !simulation && !deviceUnavailable && feedback && feedback !== '写入成功' ? feedback : quality || (!simulation ? feedback : '');
   const statusTitle = !simulation && status === issue?.label && issue.title ? `${status} · ${issue.title}` : status;
@@ -81,12 +89,27 @@ export function CanvasWidgetView({ widget: w, editing, preview }: { widget: Canv
   const number = (commandOnly ? Boolean(accepted) : value?.hasValue) && numericValue !== null && Number.isFinite(numericValue) ? numericValue : null;
   let confirmedOption = '';
   if (accepted) confirmedOption = typeof accepted.value === 'boolean' ? String(Number(accepted.value)) : String(accepted.value);
-  else if (!commandOnly && value?.hasValue) confirmedOption = point?.mapping.rawType === 'Bool' ? String(Number(value.boolValue)) : String(value.rawNumber ?? value.engNumber ?? '');
-  const source = slave && (statusBinding ? `${slave.name} / 通信状态` : point ? `${slave.name} / ${point.name}` : '');
+  else if (!commandOnly && value?.hasValue) confirmedOption = point?.mapping.rawType === 'Bool' || signal.binding && typeof value.boolValue === 'boolean' ? String(Number(value.boolValue)) : String(value.rawNumber ?? value.engNumber ?? '');
+  const source = signal.label || (slave && (statusBinding ? `${slave.name} / 通信状态` : point ? `${slave.name} / ${point.name}` : ''));
   const description = [w.label, simulation ? '本地预览 · 不写入设备' : commandOnly ? '只写命令点' : '', source, !simulation && statusBinding && slave ? slaveStatus(deviceState).label : '', point || simulation ? `${simulation ? '预览值' : commandOnly ? '上次成功写入' : '确认值'}：${confirmed} ${point?.unit ?? ''}` : '', lastWrite ? `最后下发 ${lastWrite.attempted} · ${fmtEpochDateTimeMs(lastWrite.atMs)} · ${lastWrite.phase === 'confirmed' ? '写入成功' : lastWrite.phase === 'rejected' ? '设备拒绝' : lastWrite.phase === 'not-sent' ? '未发送' : '结果未知'}` : '', lamp ? `状态：${lamp.style.label}` : '', statusTitle].filter(Boolean).join('\n');
 
+  const emit = (event: WidgetEvent) => {
+    void signal.send(event).catch(error => setFeedback(error instanceof Error ? error.message : String(error)));
+  };
   const write = async (text: string, confirmedRisk = false) => {
-    if (editing || simulation || disabled || !point || !slave) return;
+    if (editing || simulation || disabled) return;
+    if (signal.binding) {
+      try {
+        setPending(true);
+        const val = w.inputMode === 'text' ? text : w.inputMode === 'select' ? text === '1' : Number(text);
+        if (w.kind === 'input' && w.inputMode !== 'text' && !text.trim()) throw new Error('请输入有效值');
+        await signal.send(w.kind === 'switch' ? 'change' : 'submit', w.kind === 'input' ? val : undefined);
+        setDraft(null); setFeedback('');
+      } catch (e) { setFeedback(e instanceof Error ? e.message : String(e)); }
+      finally { setPending(false); }
+      return;
+    }
+    if (!point || !slave) return;
     try {
       const fields = pointWriteFields(point.mapping.rawType, text);
       if (w.kind === 'input') validateCanvasInput(w, text);
@@ -121,14 +144,16 @@ export function CanvasWidgetView({ widget: w, editing, preview }: { widget: Canv
       {w.kind === 'text' && <div className="canvas-text" style={{ fontSize: w.fontSize }}>{w.text}</div>}
       {w.kind === 'value' && <div className="canvas-value"><span className="font-medium tabular-nums" style={{ fontSize: w.fontSize }}>{confirmed}</span>{point?.unit && <span className="ml-1.5 text-xs text-ink2">{point.unit}</span>}</div>}
       {lamp && <CanvasLamp widget={w} result={lamp} />}
-      {w.kind === 'button' && <button className="canvas-action focus-ring" tabIndex={editing ? -1 : undefined} disabled={disabled} onClick={() => void write(w.onValue)}>{shownPending ? '写入中…' : w.text}</button>}
+      {w.kind === 'button' && (signal.binding ? <CanvasEventButton text={w.text} disabled={disabled || editing} send={emit} />
+        : <button className="canvas-action focus-ring" tabIndex={editing ? -1 : undefined} disabled={disabled} onClick={() => void write(w.onValue)}>{shownPending ? '写入中…' : w.text}</button>)}
       {w.kind === 'switch' && <button role="switch" tabIndex={editing ? -1 : undefined} aria-checked={Boolean(active && (commandOnly ? accepted : value?.hasValue))} aria-label={w.label} className="focus-ring flex h-full items-center gap-1.5 disabled:opacity-50" disabled={disabled || !commandOnly && !value?.hasValue} onClick={() => void write(active ? '0' : '1')}><span className="relative h-6 w-11 shrink-0 rounded-full" style={{ background: active ? w.color : '#BFC6CE' }}><span className="absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all" style={{ left: active ? 22 : 2 }} /></span>{w.showStateText && <span className="text-xs">{(commandOnly ? accepted : value?.hasValue) ? active ? 'ON' : 'OFF' : '—'}</span>}{shownPending && <ArrowSync16Regular className="spin" />}</button>}
       {w.kind === 'input' && <CanvasInput widget={w} point={point} disabled={disabled} confirmed={confirmed} confirmedNumber={number}
-        confirmationLabel={commandOnly ? '上次写入' : undefined} confirmedString={commandOnly ? typeof accepted?.value === 'string' ? accepted.value : '' : value?.hasValue ? value.stringValue ?? '' : ''} confirmedOption={confirmedOption} preview={Boolean(simulation)} pending={shownPending} tabIndex={editing ? -1 : undefined}
+        scriptInput={!!signal.binding} confirmationLabel={signal.binding ? '当前值' : commandOnly ? '上次写入' : undefined} confirmedString={commandOnly ? typeof accepted?.value === 'string' ? accepted.value : '' : value?.hasValue ? value.stringValue ?? '' : ''} confirmedOption={confirmedOption} preview={Boolean(simulation)} pending={shownPending} tabIndex={editing ? -1 : undefined}
         draft={simulation ? value?.hasValue && simulation.dataState === 'value' ? simulation.value : null : draft} onDraft={editing ? () => undefined : setDraft} onWrite={text => void write(text)} />}
       {w.kind === 'gauge' && <CanvasGauge widget={w} value={number} confirmed={confirmed} unit={point?.unit ?? ''} decimalPlaces={point?.decimalPlaces} />}
       {w.kind === 'trend' && <CanvasTrendView widget={w} editing={editing} preview={simulation} />}
     </div>
-    {status && w.kind !== 'trend' && <span className={`canvas-widget-status ${simulation?.uiState === 'error' ? 'text-err' : status === '写入成功' ? 'text-ok' : 'text-warn'}`} title={statusTitle} role="status" aria-label={statusTitle}>{shownPending ? <ArrowSync16Regular className="spin" /> : status === '写入成功' ? <Checkmark16Regular /> : <Warning16Regular />}<span className="sr-only">{statusTitle}</span></span>}
+    {signal.binding && status && !simulation ? <span className="canvas-signal-status" role="status" title={statusTitle}>{status}</span> :
+      status && w.kind !== 'trend' && <span className={`canvas-widget-status ${simulation?.uiState === 'error' ? 'text-err' : status === '写入成功' ? 'text-ok' : 'text-warn'}`} title={statusTitle} role="status" aria-label={statusTitle}>{shownPending ? <ArrowSync16Regular className="spin" /> : status === '写入成功' ? <Checkmark16Regular /> : <Warning16Regular />}<span className="sr-only">{statusTitle}</span></span>}
   </div>;
 }

@@ -8,6 +8,34 @@ import { compileMasterScript, compileScriptProgram, withScriptBreakpoints } from
 import alarmExample from '../../docs/examples/consecutive-temperature.modbus-script.json';
 import { synchronizeScriptFunctions } from '../../src/renderer/features/scripts/function-blocks';
 import { searchPalette, variablePalette } from '../../src/renderer/features/scripts/block-palette';
+import { canvasScriptFixture } from '../support/canvas-script-fixture';
+import { widgetKey } from '../../src/domain/canvas-script';
+
+it('selects compatible widget events, retains the same control across a rename and diagnoses a removed binding', () => {
+  const model = canvasScriptFixture(), graph = model.masterScripts![0]!.graph;
+  const workspace = new Blockly.Workspace();
+  try {
+    bindings.set(workspace, makeFieldOptions(model, graph));
+    loadScriptGraph(graph, workspace);
+    const hat = workspace.getBlockById('on-click')!;
+    expect(hat.getField('WIDGET')!.getText()).toContain('采样一次');
+    const event = hat.getField('EVENT') as Blockly.FieldDropdown;
+    hat.setFieldValue(widgetKey('panel','note'), 'WIDGET');
+    expect(hat.getFieldValue('EVENT')).toBe('submit');
+    expect(event.getOptions(false).map(([,value]) => value)).toEqual(['submit']);
+    hat.setFieldValue(widgetKey('panel','sample'), 'WIDGET');
+    expect(hat.getFieldValue('EVENT')).toBe('click');
+    const saved = graphOf(workspace);
+    model.canvases![0]!.widgets[0]!.label = '采样 B';
+    bindings.set(workspace, makeFieldOptions(model, saved));
+    expect(hat.getField('WIDGET')!.getText()).toContain('采样 B');
+    expect(inspectScriptDraft(workspace, saved).issue).toBeNull();
+    model.canvases![0]!.widgets.shift();
+    bindings.set(workspace, makeFieldOptions(model, saved));
+    expect(inspectScriptDraft(workspace, saved).issue?.message).toContain('失效');
+    expect(hat.getFieldValue('WIDGET')).toBe(widgetKey('panel','sample'));
+  } finally { workspace.dispose(); }
+});
 
 it('lists variables from the editable graph by scope, skipping disabled bodies and keeping same-named parameters separate', () => {
   const graph = scriptFileSchema.parse(alarmExample).graph;

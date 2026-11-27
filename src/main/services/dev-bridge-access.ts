@@ -5,7 +5,7 @@ import type { RuntimeManager } from '../runtime/manager';
 
 const ALLOWED_COMMANDS = new Set<Command['type']>([
   'data.read','data.demand','buffer.configure','buffer.export',
-  'canvas.create','canvas.edit','canvas.delete','workbench.saveLayout',
+  'canvas.create','canvas.edit','canvas.delete','canvas.interact','variable.save','variable.delete','workbench.saveLayout',
   'script.save','script.delete','script.plan','script.start','script.pause','script.resume','script.breakpoint','script.stop','script.confirmWrite','script.exportFile',
   'workspace.new','workspace.open','workspace.save','workspace.saveAs','workspace.export','workspace.exportFile','workspace.importText',
   'connection.upsert','connection.connect','connection.disconnect','slave.upsert',
@@ -50,7 +50,7 @@ export function validateBridgeCommand(raw: unknown, roots: readonly string[], ma
   else if (command.type === 'workspace.saveAs' || command.type === 'workspace.exportFile' || command.type === 'template.importFile' || command.type === 'buffer.export' || command.type === 'script.exportFile') file = command.path;
   else if (command.type === 'import.parse' && command.source.kind === 'file') file = command.source.path;
   else if (command.type === 'prefs.set') file = command.patch.historyDbPath;
-  else if (command.type === 'workspace.save' || command.type === 'template.save' || command.type === 'slave.saveInitialValues' || command.type.startsWith('canvas.') || command.type === 'script.save' || command.type === 'script.delete' || command.type === 'workbench.saveLayout' || command.type === 'buffer.configure') file = manager.workspaceService.currentPath;
+  else if (command.type === 'workspace.save' || command.type === 'template.save' || command.type === 'slave.saveInitialValues' || ['canvas.create','canvas.edit','canvas.delete','variable.save','variable.delete'].includes(command.type) || command.type === 'script.save' || command.type === 'script.delete' || command.type === 'workbench.saveLayout' || command.type === 'buffer.configure') file = manager.workspaceService.currentPath;
   if (file && !isReviewPathAllowed(file, roots)) throw new Error('文件必须位于当前审查数据目录内');
   return command;
 }

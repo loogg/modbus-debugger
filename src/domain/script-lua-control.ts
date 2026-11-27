@@ -18,6 +18,7 @@ export function compileLuaControl(steps: ScriptStep[], functions: ScriptFunction
   group(steps);
   if (events?.onRun) group(events.onRun.steps);
   for (const timer of events?.timers ?? []) group(timer.steps);
+  for (const handler of events?.inputs ?? []) group(handler.steps);
   const procedures = new Map(functions.flatMap(f => f.kind === 'procedure' ? [[f.id, group(f.steps)] as const] : []));
   const definitions: string[] = [];
   // New nested groups are discovered while emitting the parent.

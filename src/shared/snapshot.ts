@@ -1,3 +1,4 @@
+import type { CanvasSignalState } from '../domain/canvas-script';
 import type { UpdateState } from './update';
 import type { Workspace } from '../domain/model';
 import type { ConnectionHealth, ParseEventRecord, PointWriteReceipt, Prefs, SessionSummary, TransactionRecord } from './contracts';
@@ -75,6 +76,7 @@ export interface SlaveStateView {
 }
 
 export interface AppSnapshot {
+  canvasSignals?: CanvasSignalState;
   scriptRuns?: Record<string, ScriptRunView>;
   update?: UpdateState;
   scriptRun?: ScriptRunView | null;
@@ -100,6 +102,7 @@ export interface AppSnapshot {
 export interface SnapshotOptions { includeDiagnostics?: boolean }
 
 export interface AppDelta {
+  canvasSignals?: CanvasSignalState;
   scriptRuns?: Record<string, ScriptRunView | null>;
   pointWrites?: Record<string, PointWriteReceipt>;
   scriptRun?: ScriptRunView | null;

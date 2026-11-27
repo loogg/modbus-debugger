@@ -28,12 +28,15 @@ export function CanvasScreen() {
   const confirm = useConfirm();
   const workspace = useWorkspace();
   const selectedId = useApp(s => s.selection.canvasId);
+  const workspaceEpoch = useApp(s => s.snapshot?.canvasSignals?.epoch);
   const select = useApp(s => s.select);
   const command = useApp(s => s.command);
   const [dirty, setDirty] = useState(false);
   const viewWindow = useViewWindow();
   const environment = useViewEnvironment();
   const lastKnown = useRef(new Map<string, CanvasDef>());
+  const lastEpoch = useRef(workspaceEpoch);
+  if (lastEpoch.current !== workspaceEpoch) { lastEpoch.current = workspaceEpoch; lastKnown.current.clear(); }
   const canvases = workspace?.canvases ?? [];
   for (const canvas of canvases) lastKnown.current.set(canvas.id, canvas);
   const id = selectedId ?? canvases[0]?.id;
@@ -60,7 +63,7 @@ export function CanvasScreen() {
       <CanvasLibraryControls disabled={!selected} onAdd={preset => viewWindow.dispatchEvent(new CustomEvent('canvas-add-widget', { detail: { preset, canvasId: id, viewId: environment?.portalRoot.dataset.viewId } }))} />
       <p className="mt-6 text-[11px] leading-5 text-ink2">框选或 Shift+单击多选<br />方向键微调 · Delete 删除<br />Ctrl+Z 撤销 · Ctrl+S 保存</p>
     </aside>
-    {selected ? <CanvasEditor key={selected.id} source={selected} removed={!canvases.some(c => c.id === selected.id)} onDirty={setDirty} onCopy={draft => void create(draft)} /> : <div className="min-w-0 flex-1"><EmptyState title="创建你的设备操作面板" message="拖入显示与控制组件，绑定工作区中的设备点位。画布可独立弹出到其他显示器。" actions={<Button variant="primary" onClick={() => void create()}><Add20Regular />新建画布</Button>} /></div>}
+    {selected ? <CanvasEditor key={JSON.stringify([workspaceEpoch, selected.id])} source={selected} removed={!canvases.some(c => c.id === selected.id)} onDirty={setDirty} onCopy={draft => void create(draft)} /> : <div className="min-w-0 flex-1"><EmptyState title="创建你的设备操作面板" message="拖入显示与控制组件，绑定设备点位、变量或脚本事件。" actions={<Button variant="primary" onClick={() => void create()}><Add20Regular />新建画布</Button>} /></div>}
   </main>;
 }
 
@@ -80,6 +83,23 @@ function CanvasEditor({ source, removed, onDirty, onCopy }: { source: CanvasDef;
   const dragStart = useRef({ x: 0, y: 0, ids: [] as string[] });
   const [marquee, setMarquee] = useState<{ x: number; y: number; endX: number; endY: number } | null>(null);
   const stage = useRef<HTMLDivElement>(null);
+  const focusWidget = useApp(s => s.selection.canvasFocusId);
+  const selectView = useApp(s => s.select);
+  useEffect(() => {
+    const root = stage.current;
+    if (!focusWidget || !root) return;
+    if (!draft.widgets.some(w => w.id === focusWidget)) { setError('日志来源控件已移除'); selectView({ canvasFocusId: null }); return; }
+    const locate = () => {
+      const item = root.querySelector<HTMLElement>(`[data-widget-id="${CSS.escape(focusWidget)}"]`);
+      if (!item) return false;
+      setSelected([focusWidget]); item.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      selectView({ canvasFocusId: null }); return true;
+    };
+    if (locate()) return;
+    const observer = new MutationObserver(() => { if (locate()) observer.disconnect(); });
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [focusWidget, draft.widgets, selectView]);
   const inspector = useRef<HTMLElement>(null);
   const command = useApp(s => s.command);
   const toast = useApp(s => s.toast);
@@ -105,6 +125,7 @@ function CanvasEditor({ source, removed, onDirty, onCopy }: { source: CanvasDef;
     return binding ? [binding] : [];
   });
   useHostData({ points: [...pointRefs, ...curveRefs], series: curveRefs });
+  const linked = draft.widgets.some(w => w.binding && 'kind' in w.binding && w.binding.kind !== 'slave-status');
   const dirty = JSON.stringify(base) !== JSON.stringify(draft);
   useDirtyGuard(dirty);
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
@@ -260,6 +281,6 @@ function CanvasEditor({ source, removed, onDirty, onCopy }: { source: CanvasDef;
         <div className="mt-6 border-t border-line pt-4"><div className="mb-2 text-xs font-semibold text-ink2">图层 · 从上到下</div>{[...draft.widgets].reverse().map(w => <button key={w.id} className={`focus-ring mb-1 w-full truncate rounded px-2 py-1.5 text-left text-xs ${selected.includes(w.id) ? 'bg-accentsoft text-accent' : 'hover:bg-surface2'}`} style={{ paddingLeft: 8 + widgetDepth(draft, w) * 12 }} title={w.parentId ? `所属容器：${draft.widgets.find(parent => parent.id === w.parentId)?.label ?? ''}` : undefined} onClick={e => setSelected(selectionRoots(draft, e.shiftKey ? [...new Set([...selected, w.id])] : [w.id]).map(item => item.id))}>{w.label || WIDGET_LABELS[w.kind]}</button>)}</div>
       </aside>}
     </div>
-    <div className="flex h-7 shrink-0 items-center justify-between border-t border-line bg-surface px-4 text-[11px] text-ink2"><span>{editing ? '编辑模式：设备写入已锁定' : '运行模式：显示设备确认值'}{editing && previewCount > 0 ? ` · 本地预览 ${previewCount} 项` : ''}{selected.length ? ` · 已选 ${selected.length} 项` : ''}</span><span>共享点位数据 · {draft.widgets.length} 个控件</span></div>
+    <div className="flex h-7 shrink-0 items-center justify-between border-t border-line bg-surface px-4 text-[11px] text-ink2"><span>{editing ? (linked ? '编辑模式 · 控件操作已锁定' : '编辑模式：设备写入已锁定') : linked ? '运行模式 · 画布与脚本联动' : '运行模式：显示设备确认值'}{editing && previewCount > 0 ? ` · 本地预览 ${previewCount} 项` : ''}{selected.length ? ` · 已选 ${selected.length} 项` : ''}</span><span>{linked ? '脚本与点位绑定' : '共享点位数据'} · {draft.widgets.length} 个控件</span></div>
   </div>;
 }

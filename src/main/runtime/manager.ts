@@ -1,3 +1,5 @@
+import { CanvasSignals } from './canvas-signals';
+import type { CanvasSignalState } from '../../domain/canvas-script';
 import type { UpdateState } from '../../shared/update';
 import fs from 'node:fs';
 import { templateSchema, workspaceSchema } from '../../domain/model';
@@ -5,14 +7,14 @@ import { copyTemplate } from '../../domain/template-copy';
 import { removeTemplateBlock, removeTemplatePoint } from '../../domain/template-edit';
 import { mutateWorkspace } from '../../domain/workspace-mutations';
 import { applyCanvasChanges } from '../../domain/canvas';
-import { validateCanvasBindings } from '../../domain/canvas-binding';
+import { checkInputBinding, validateCanvasBindings } from '../../domain/canvas-binding';
 import { BlockCache, blockKey } from './block-cache';
 import { SampleBuffers } from './sample-buffers';
 import { bufferCapacity, validateBufferBudget, withBufferConfigs } from '../../domain/point-buffers';
 import { MAX_READ_SAMPLES, MAX_READ_SAMPLE_BYTES, type ColumnDataReadResult, type DataReadResult } from '../../shared/point-data';
 import { sampleColumnBytes } from '../../shared/sample-columns';
 import { canReadPoint, canWritePoint, mappingWidth, planBlockReads } from '../../domain/point-access';
-import { serializeScriptFile, type MasterScript, type ScriptPointRef } from '../../domain/master-script';
+import { scriptGraphBlocks, serializeScriptFile, type MasterScript, type ScriptPointRef } from '../../domain/master-script';
 import { preparePointWrite } from '../../domain/point-write-value';
 import { MasterScriptRunner, StepFailure, type ScriptPointBinding } from './master-script-runner';
 import { ScriptRuns } from './script-runs';
@@ -53,6 +55,8 @@ export function defaultTransportFactory(config: ConnectionDef): Transport {
 }
 
 export class RuntimeManager {
+  private readonly signals: CanvasSignals;
+  private sentSignals?: CanvasSignalState;
   readonly cache = new BlockCache();
   readonly diagnostics = new DiagnosticsStore();
   readonly sampleBuffers: SampleBuffers;
@@ -96,7 +100,12 @@ export class RuntimeManager {
     this.clock = opts.clock ?? systemClock;
     this.transportFactory = opts.transportFactory ?? defaultTransportFactory;
     this.sampleBuffers = new SampleBuffers(this.cache, this.clock);
+    this.signals = new CanvasSignals(() => this.workspaceService.current, event => {
+      if (event.binding.kind === 'workspace') this.notifications.publish(event.binding);
+      return this.scripts.dispatch(event);
+    });
     this.scripts = new ScriptRuns(() => new MasterScriptRunner({
+      signals: this.signals, checkInput: binding => checkInputBinding(this.workspaceService.current, binding),
       point: (ref, access) => this.scriptPoint(ref, access),
       slave: id => this.scriptSlave(id),
       write: async (ref, fields, signal) => {
@@ -437,7 +446,7 @@ export class RuntimeManager {
     const snapshot: AppSnapshot = {
       revision: this.revision,
       update: this.updateState,
-      scriptRun: this.scripts.lastRun, scriptRuns: this.scripts.snapshots(),
+      scriptRun: this.scripts.lastRun, scriptRuns: this.scripts.snapshots(), canvasSignals: this.signals.snapshot,
       workspace: ws,
       workspacePath: this.workspaceService.currentPath,
       dirty: this.workspaceService.isDirty(),
@@ -510,6 +519,10 @@ export class RuntimeManager {
       delta.update = this.updateState; this.sentUpdateRevision = this.updateRevision; changed = true;
     }
     const changes = this.scripts.delta();
+    if (this.sentSignals !== this.signals.snapshot) {
+      this.sentSignals = delta.canvasSignals = this.signals.snapshot;
+      changed = true;
+    }
     if (changes) { delta.scriptRuns = changes; changed = true; }
     const scriptRun = this.scripts.lastRun;
     if (scriptRun !== this.sentScriptRun) {
@@ -721,6 +734,31 @@ export class RuntimeManager {
         wsSvc.set({ ...wsSvc.current, schemaVersion: 2, workbench: cmd.layout });
         this.publishWorkspaceMetadata();
         return { ok: true, value: null };
+      case 'canvas.interact': {
+        try { return { ok: true, value: this.signals.interact(cmd) }; }
+        catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+      }
+      case 'variable.save':
+      case 'variable.delete': {
+        try {
+          const variables = wsSvc.current.variables ?? [];
+          const id = cmd.type === 'variable.save' ? cmd.variable.id : cmd.expected.id;
+          const current = variables.find(v => v.id === id) ?? null;
+          if (JSON.stringify(current) !== JSON.stringify(cmd.expected)) throw new Error('工作区变量已在其他页面修改，请重试');
+          if (cmd.type === 'variable.save' && current && current.type !== cmd.variable.type) throw new Error('已有变量的类型不能更改');
+          if (cmd.type === 'variable.delete' && (wsSvc.current.canvases?.some(c => c.widgets.some(w => w.binding && 'variableId' in w.binding && w.binding.variableId === id))
+            || wsSvc.current.masterScripts?.some(s => [...scriptGraphBlocks(s.graph)].some(b => b.fields?.TAG === id)))) throw new Error('变量仍被画布或脚本引用，请先更换绑定');
+          const next = cmd.type === 'variable.delete' ? variables.filter(v => v.id !== id)
+            : current ? variables.map(v => v.id === id ? cmd.variable : v) : [...variables, cmd.variable];
+          const liveValue = current ? this.signals.read(id) : undefined;
+          const result = wsSvc.saveManaged({ ...wsSvc.current, variables: next });
+          if (!result.ok) throw new Error(result.error ?? '保存工作区变量失败');
+          this.signals.definitionChanged(id, cmd.type === 'variable.delete' ? undefined : liveValue);
+          this.scripts.recheckInputs();
+          this.publishWorkspaceMetadata();
+          return { ok: true, value: null };
+        } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+      }
       case 'script.save':
       case 'script.delete': {
         try {
@@ -801,10 +839,21 @@ export class RuntimeManager {
           }
           const next = workspaceSchema.parse({ ...wsSvc.current, schemaVersion: 2, canvases });
           validateBufferBudget(next, wsSvc.current);
-          wsSvc.set(next);
-          const saved = wsSvc.saveManaged();
+          const previous = wsSvc.current.canvases ?? [];
+          const saved = wsSvc.saveManaged(next);
+          if (!saved.ok) return { ok: false, error: saved.error ?? '保存画布失败' };
+          if (cmd.type !== 'canvas.create') {
+            const old = previous.find(c => c.id === cmd.canvasId);
+            const current = canvases.find(c => c.id === cmd.canvasId);
+            for (const widget of old?.widgets ?? []) {
+              const after = current?.widgets.find(w => w.id === widget.id);
+              if (!after || after.kind !== widget.kind || after.inputMode !== widget.inputMode || JSON.stringify(after.binding) !== JSON.stringify(widget.binding))
+                this.signals.forgetControl(cmd.canvasId, widget.id);
+            }
+            this.scripts.recheckInputs();
+          }
           this.publishWorkspaceMetadata();
-          return saved.ok ? { ok: true, value: canvases } : { ok: false, error: `画布已更新，但写入文件失败：${saved.error}` };
+          return { ok: true, value: canvases };
         } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
       }
       case 'template.save': {
@@ -849,6 +898,7 @@ export class RuntimeManager {
       }
       case 'workspace.new':
         this.scripts.clear();
+        this.signals.reset();
         this.sampleBuffers.reset();
         wsSvc.newWorkspace();
         this.workspaceChanged();
@@ -857,6 +907,7 @@ export class RuntimeManager {
         const res = wsSvc.loadFrom(cmd.path);
         if (!res.ok) return { ok: false, error: res.error ?? 'open failed' };
         this.scripts.clear();
+        this.signals.reset();
         this.sampleBuffers.reset();
         this.workspaceRev++;
         this.rebuildRuntimes();
@@ -882,6 +933,7 @@ export class RuntimeManager {
         if (!res.ok || !res.workspace) return { ok: false, error: res.error ?? 'import failed' };
         wsSvc.adopt(res.workspace, null);
         this.scripts.clear();
+        this.signals.reset();
         this.sampleBuffers.reset();
         this.workspaceChanged();
         return { ok: true, value: null };
@@ -889,6 +941,7 @@ export class RuntimeManager {
       case 'workspace.apply':
         wsSvc.set(cmd.workspace);
         this.scripts.clear();
+        this.signals.reset();
         this.sampleBuffers.reset();
         this.workspaceChanged();
         return { ok: true, value: null };

@@ -1,4 +1,5 @@
 import { checkCallbackContexts, type MasterScript } from '../../domain/master-script';
+import type { ScriptInputEvent } from '../../domain/canvas-script';
 import { compileScriptLua } from '../../domain/script-lua-program';
 import type { ScriptRunView } from '../../shared/script-run';
 import type { MasterScriptRunner } from './master-script-runner';
@@ -27,7 +28,11 @@ export class ScriptRuns {
     checkCallbackContexts(artifact.program);
     const handle = this.forScript(script.id) ?? this.create();
     const previous = handle.snapshot;
-    const view = handle.start(handle.prepare(script, artifact), approval, debug);
+    const plan = handle.prepare(script, artifact);
+    this.handles.set(script.id, handle);
+    let view: ScriptRunView;
+    try { view = handle.start(plan, approval, debug); }
+    catch (error) { if (!previous) this.handles.delete(script.id); throw error; }
     if (previous) this.byId.delete(previous.id);
     this.handles.delete(script.id);
     this.handles.set(script.id, handle);
@@ -38,6 +43,12 @@ export class ScriptRuns {
   snapshots(): Record<string, ScriptRunView> {
     return Object.fromEntries(Array.from(this.handles, ([id, handle]) => [id, handle.snapshot!]));
   }
+  dispatch(event: ScriptInputEvent) {
+    let count = 0;
+    for (const handle of this.handles.values()) if (handle.receive(event)) count++;
+    return count;
+  }
+  recheckInputs() { for (const handle of this.handles.values()) handle.recheckInputs(); }
   delta(): Record<string, ScriptRunView | null> | undefined {
     const changes: [string, ScriptRunView | null][] = [];
     for (const [id, handle] of this.handles) {

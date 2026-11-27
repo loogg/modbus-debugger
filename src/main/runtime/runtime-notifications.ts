@@ -3,10 +3,12 @@ import type { ReadRange } from '../../domain/point-access';
 export type RuntimeChange =
   | { kind: 'sample'; blockKey: string; range: ReadRange }
   | { kind: 'variable'; name: string }
+  | { kind: 'workspace'; variableId: string }
   | { kind: 'timer'; channel: number; elapsed?: boolean; phases?: readonly number[] }
   | { kind: 'slaveState'; slaveId: string };
 
 function matches(source: RuntimeChange, change: RuntimeChange): boolean {
+  if (source.kind === 'workspace') return change.kind === 'workspace' && source.variableId === change.variableId;
   if (source.kind === 'variable') return change.kind === 'variable' && source.name === change.name;
   if (source.kind === 'timer') return change.kind === 'timer' && source.channel === change.channel;
   if (source.kind === 'slaveState') return change.kind === 'slaveState' && change.slaveId === source.slaveId;
@@ -24,7 +26,7 @@ export class RuntimeNotifications {
       if (sources.some(source => matches(source, change))) notify(change);
     };
     this.listeners.add(listener);
-    const hardware = sources.filter(source => source.kind === 'sample' || source.kind === 'slaveState');
+    const hardware = sources.filter(source => source.kind === 'sample' || source.kind === 'slaveState' || source.kind === 'workspace');
     const detach = hardware.length ? this.equipment?.subscribe(hardware, notify) : undefined;
     return () => { this.listeners.delete(listener); detach?.(); };
   }

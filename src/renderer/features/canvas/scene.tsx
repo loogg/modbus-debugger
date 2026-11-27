@@ -67,11 +67,11 @@ export function CanvasScene(props: Props) {
       editing={props.editing} selected={props.selected.includes(w.id)}
       onSelect={(widget, shift) => { props.stage.current?.focus({ preventScroll: true }); props.onSelect(widget, shift); }}
       onDragStart={props.onDragStart} onDrag={props.onDrag} onDragStop={props.onDragStop} onResize={props.onResize}>
-      <div data-widget-id={w.id} className="h-full w-full" aria-label={`${WIDGET_LABELS[w.kind]}：${w.label}`}>
+      <div data-widget-id={w.id} data-located={!props.editing && props.selected.includes(w.id) || undefined} className="h-full w-full" aria-label={`${WIDGET_LABELS[w.kind]}：${w.label}`}>
         {w.kind === 'container' ? <div className={`canvas-container ${props.editing ? 'is-editing' : ''}`} style={{ ...canvasTheme(w), background: w.showBackground ? w.background : undefined, borderRadius: w.borderRadius, outline: w.showBorder || props.editing ? `${w.borderWidth}px ${props.editing ? 'dashed' : 'solid'} ${w.borderColor ?? w.color}` : undefined }}>
           {(props.editing || w.showLabel) && <div className={props.editing ? 'canvas-container-handle' : 'canvas-container-caption'}>{w.label || '容器'}</div>}
           <div className="canvas-container-body" data-container-id={w.id} ref={node => { if (node) containers.current.set(w.id, node); else containers.current.delete(w.id); }} />
-        </div> : <CanvasWidgetView widget={w} editing={props.editing} preview={props.editing ? props.previews?.[w.id] : undefined} />}
+        </div> : <CanvasWidgetView canvasId={props.canvas.id} revision={props.canvas.revision} widget={w} editing={props.editing} active={props.active} preview={props.editing ? props.previews?.[w.id] : undefined} />}
       </div>
     </CanvasItem>, host.element, w.id);
   })}</>;

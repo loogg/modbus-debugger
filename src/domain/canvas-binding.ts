@@ -1,9 +1,11 @@
 import { canvasPointBinding, canvasSignals, type CanvasWidget, type InputMode } from './canvas';
+import { widgetEvents, type EventBinding, type WorkspaceVariable } from './canvas-script';
 import type { PointDef, Workspace } from './model';
 import { canReadPoint, canWritePoint } from './point-access';
 
 export function canvasPoint(workspace: Workspace, widget: CanvasWidget) {
-  const slave = workspace.slaves.find(s => s.id === widget.binding?.slaveId);
+  const binding = widget.binding;
+  const slave = binding && 'slaveId' in binding ? workspace.slaves.find(s => s.id === binding.slaveId) : undefined;
   const template = workspace.templates.find(t => t.id === slave?.templateId);
   const pointId = canvasPointBinding(widget.binding)?.pointId;
   const point = template?.points.find(p => p.id === pointId);
@@ -30,11 +32,45 @@ export function bindingError(kind: CanvasWidget['kind'], point: PointDef, inputM
   return null;
 }
 
+export function variableAcceptsWidget(widget: Pick<CanvasWidget, 'kind' | 'inputMode'>, type: WorkspaceVariable['type']) {
+  if (widget.kind === 'switch') return type === 'boolean';
+  if (widget.kind === 'input') return type === (widget.inputMode === 'text' ? 'string' : widget.inputMode === 'select' ? 'boolean' : 'number');
+  if (widget.kind === 'gauge') return type === 'number';
+  if (widget.kind === 'lamp') return type !== 'string';
+  return widget.kind === 'value';
+}
+
+export function checkInputBinding(workspace: Workspace, binding: EventBinding) {
+  if (binding.kind === 'workspace') {
+    if (!workspace.variables?.some(v => v.id === binding.variableId)) throw new Error('绑定的工作区变量不存在');
+    return;
+  }
+  const widget = workspace.canvases?.find(c => c.id === binding.canvasId)?.widgets.find(w => w.id === binding.widgetId);
+  if (!widget) throw new Error('绑定的画布控件不存在');
+  if (!widget.binding || !('kind' in widget.binding) || !['script-event', 'workspace-variable'].includes(widget.binding.kind)
+    || !widgetEvents[widget.kind]?.includes(binding.event)) throw new Error('控件没有启用此脚本事件');
+  if (widget.binding.kind === 'workspace-variable') {
+    const tagId = widget.binding.variableId;
+    const tag = workspace.variables?.find(v => v.id === tagId);
+    if (!tag || !variableAcceptsWidget(widget, tag.type)) throw new Error('控件绑定的工作区变量无效');
+  }
+}
+
 export function validateCanvasBindings(workspace: Workspace, widgets: CanvasWidget[]): void {
   for (const widget of widgets) {
     const bindings = widget.kind === 'trend' ? canvasSignals(widget) : widget.binding ? [widget.binding] : [];
     if (['text', 'container'].includes(widget.kind) && bindings.length) throw new Error('文字标签和容器不绑定设备点位');
     for (const binding of bindings) {
+      if ('kind' in binding && binding.kind === 'script-event') continue;
+      if ('kind' in binding && binding.kind === 'workspace-variable') {
+        const variable = workspace.variables?.find(v => v.id === binding.variableId);
+        if (!variable || !variableAcceptsWidget(widget, variable.type)) throw new Error('工作区变量不存在或与控件类型不匹配');
+        continue;
+      }
+      if ('kind' in binding && binding.kind === 'script-variable') {
+        if (!workspace.masterScripts?.find(s => s.id === binding.scriptId)?.publishedVariables?.includes(binding.name)) throw new Error('请选择已公开的脚本变量');
+        continue;
+      }
       const { point, slave, connection } = canvasPoint(workspace, { ...widget, binding });
       if ('kind' in binding) {
         if (widget.kind !== 'lamp') throw new Error('设备通信状态可绑定到指示灯');

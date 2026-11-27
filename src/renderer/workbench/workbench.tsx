@@ -126,9 +126,9 @@ export function Workbench(props: { navigation: React.ComponentType<NavigationPro
     view.stopWaiting = () => clearInterval(wait);
   }, [dock, persist, toast]);
 
-  const add = (module: ModuleId, source?: View) => {
+  const add = (module: ModuleId, source?: View, selection?: WorkbenchView['selection']) => {
     if (views.length >= 40) { toast({ kind: 'warning', title: '最多同时打开 40 个页面，请先关闭不需要的页面' }); return; }
-    const view = makeView({ id: uid('view'), module, selection: source ? { ...source.store.getState().selection } : {} });
+    const view = makeView({ id: uid('view'), module, selection: selection ?? (source ? { ...source.store.getState().selection } : {}) });
     if (source) {
       const from = source.store.getState();
       view.store.setState({ sidebarWidth: from.sidebarWidth, commSlaveFilter: { ...from.commSlaveFilter }, commResultFilter: { ...from.commResultFilter } });
@@ -139,6 +139,19 @@ export function Workbench(props: { navigation: React.ComponentType<NavigationPro
     const existing = [...views].reverse().find(v => v.store.getState().module === module);
     if (!existing) add(module);
     else { setActiveId(existing.id); existing.popup?.focus(); }
+  };
+  const openTarget: NonNullable<ViewEnvironment['openTarget']> = (module, selection) => {
+    const key = module === 'canvas' ? 'canvasId' : 'scriptId';
+    const existing = views.find(v => {
+      const state = v.store.getState();
+      if (state.module !== module) return false;
+      const workspace = state.snapshot?.workspace;
+      const displayed = state.selection[key] ?? (module === 'canvas' ? workspace?.canvases?.[0]?.id : workspace?.masterScripts?.[0]?.id);
+      return displayed === selection[key];
+    });
+    if (!existing) { add(module, undefined, selection); return; }
+    existing.store.getState().select(selection); setActiveId(existing.id);
+    if (existing.popup) existing.popup.focus(); else window.focus();
   };
   const close = async (view: View) => {
     if (isDirty(view) && !(await confirm('此页面有未提交的编辑。关闭页面将丢弃草稿，是否继续？', '丢弃并关闭'))) return;
@@ -236,7 +249,7 @@ export function Workbench(props: { navigation: React.ComponentType<NavigationPro
       </div>
     </div>
     {views.filter(view => view.mounted).map(view => createPortal(<AppStoreContext.Provider value={view.store}>
-      <ViewEnvironmentContext.Provider value={{ document: view.mount.ownerDocument, portalRoot: view.mount, active: Boolean(view.popup) || view.id === activeId, guards: view.guards }}>
+      <ViewEnvironmentContext.Provider value={{ document: view.mount.ownerDocument, portalRoot: view.mount, active: Boolean(view.popup) || view.id === activeId, guards: view.guards, openTarget }}>
         {view.popup && !view.opening && <div className="flex h-10 shrink-0 items-center justify-between border-b border-line bg-surface px-4 text-sm"><span className="truncate">{title(view)}</span><button className="focus-ring ml-4 flex shrink-0 items-center gap-1 text-accent" onClick={() => dock(view)}><ArrowLeft20Regular />回入主窗口</button></div>}
         <ViewErrorBoundary><Page /></ViewErrorBoundary>
       </ViewEnvironmentContext.Provider>

@@ -13,7 +13,7 @@ import { useApp, useWorkspace } from '../store/app';
 import { uid } from '../uid';
 import { createTimeMsFormatter, fmtEpochDateTimeMs, fmtTimeMs } from '../time';
 import { useConfirm } from '../workbench/use-confirm';
-import { useDirtyGuard, useViewDocument, useViewWindow } from '../workbench/view-context';
+import { useDirtyGuard, useViewDocument, useViewEnvironment, useViewWindow } from '../workbench/view-context';
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 const runLabels = { running: '运行中', waiting: '等待事件', pausing: '等待当前步骤完成', paused: '已暂停', stopping: '停止中', passed: '通过', failed: '失败', stopped: '已停止' } as const;
@@ -39,6 +39,7 @@ function ScriptFileTab({ script, selected, choose }: { script: MasterScript; sel
 }
 
 export function ScriptsScreen() {
+  const workspaceEpoch = useApp(state => state.snapshot?.canvasSignals?.epoch);
   const palette = useRef<PaletteState>({ category: 0, open: true });
   const [panes, setPanes] = useState<PanePreferences>({});
   const workspace = useWorkspace();
@@ -52,6 +53,10 @@ export function ScriptsScreen() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [focus, setFocus] = useState<{ scriptId: string; blockId: string } | null>(null);
+  const focusId = useApp(state => state.selection.scriptFocusId);
+  useEffect(() => {
+    if (focusId && selectedId) { setFocus({ scriptId: selectedId, blockId: focusId }); select({ scriptFocusId: null }); }
+  }, [focusId, selectedId, select]);
   useDirtyGuard(dirty);
   const current = scripts.find(script => script.id === selectedId) ?? scripts[0];
 
@@ -62,11 +67,11 @@ export function ScriptsScreen() {
     setFocus(null);
     select({ scriptId: id });
   };
-  const add = async (file?: Pick<MasterScript, 'name' | 'graph' | 'callbackTimeoutMs'>) => {
+  const add = async (file?: Pick<MasterScript, 'name' | 'graph' | 'callbackTimeoutMs' | 'publishedVariables'>) => {
     setSaving(true);
     try {
       const script = { id: uid('script'), name: file?.name ?? `流程 ${scripts.length + 1}`, graph: file?.graph ?? newScriptGraph(uid('start')),
-        callbackTimeoutMs: file?.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default };
+        publishedVariables: file?.publishedVariables, callbackTimeoutMs: file?.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default };
       const result = await command<MasterScript>({ type: 'script.save', script, expectedRevision: null });
       if (result.ok) { setDirty(false); select({ scriptId: script.id }); setError(''); }
       else setError(result.error);
@@ -95,7 +100,7 @@ export function ScriptsScreen() {
       }} />
     </aside>
     {error && <p className="px-3 py-1 break-words text-xs text-err" role="alert">{error}</p>}
-    {current ? <ScriptDraft key={current.id} source={current} equipment={workspace} palette={palette.current} panes={panes} setPanes={setPanes} onDirty={setDirty} focus={focus}
+    {current ? <ScriptDraft key={JSON.stringify([workspaceEpoch, current.id])} source={current} equipment={workspace} palette={palette.current} panes={panes} setPanes={setPanes} onDirty={setDirty} focus={focus}
       onJump={async (scriptId, blockId) => {
         if (scriptId !== current.id && !await allowSwitch()) return;
         if (scriptId !== current.id) { setDirty(false); select({ scriptId }); }
@@ -116,6 +121,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
   const run = useApp(state => scriptRunFor(state.snapshot, source.id));
   const confirm = useConfirm();
   const viewDocument = useViewDocument();
+  const environment = useViewEnvironment();
   const viewWindow = useViewWindow();
   const editor = useRef<ScriptEditorApi>(null);
   const split = useRef<HTMLDivElement>(null);
@@ -139,6 +145,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
   const [base, setBase] = useState(source);
   const [name, setName] = useState(source.name);
   const [graph, setGraph] = useState(source.graph);
+  const [published, setPublished] = useState(source.publishedVariables ?? []);
   const [timeoutText, setTimeoutText] = useState(String(source.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default));
   const timeout = useMemo(() => callbackTimeoutSchema.safeParse(Number(timeoutText)), [timeoutText]);
   const timeoutHelpId = React.useId();
@@ -151,6 +158,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
   const [preview, setPreview] = useState<ScriptPreview | null>(null);
+  const [createVariable, setCreateVariable] = useState(false);
   const [luaTab, setLuaTab] = useState<LuaTab>('code');
   const [logsOnly, setLogsOnly] = useState(false);
   const [selection, setSelection] = useState<ScriptSelection>({ blockId: null });
@@ -175,7 +183,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
       return point && slave ? `${point.name} · ${slave.name}` : lookup;
     } catch { return lookup; }
   }, [equipment, lookup]);
-  const dirty = !timeout.success || timeout.data !== (base.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default)
+  const dirty = JSON.stringify(published) !== JSON.stringify(base.publishedVariables ?? []) || !timeout.success || timeout.data !== (base.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default)
     || name.trim() !== base.name || JSON.stringify(graph) !== JSON.stringify(base.graph);
   const conflict = source.revision !== base.revision;
   const runId = run?.id;
@@ -230,7 +238,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
 
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
   const reload = useCallback(() => {
-    setBase(source); setName(source.name); setGraph(source.graph);
+    setBase(source); setName(source.name); setGraph(source.graph); setPublished(source.publishedVariables ?? []);
     setTimeoutText(String(source.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS.default));
     setError(''); setEditorKey(key => key + 1);
   }, [source]);
@@ -258,9 +266,10 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
     const nameToSave = name.trim();
     if (!nameToSave) throw new Error('请输入流程名称');
     const result = await command<MasterScript>({ type: 'script.save', expectedRevision: base.revision,
-      script: { id: source.id, name: nameToSave, graph, callbackTimeoutMs: timeout.data } });
+      script: { id: source.id, name: nameToSave, graph, callbackTimeoutMs: timeout.data, publishedVariables: published.filter(v => mainNames.includes(v)) } });
     if (!result.ok) throw new Error(result.error);
     setBase(result.value);
+    setPublished(result.value.publishedVariables ?? []);
     return result.value;
   };
   const perform = async (action: () => Promise<void>) => {
@@ -382,7 +391,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
     <div ref={split} className={`script-split ${wide ? 'is-wide' : 'is-compact'}`} style={{ '--lua-width': luaWidth + 'px' } as React.CSSProperties}>
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <ScriptEditor ref={editor} key={editorKey} graph={graph} equipment={equipment} palette={palette} breakpoints={breakpoints}
-          search={search} variableNames={mainNames} onClearSearch={() => setSearch('')}
+          search={search} variableNames={mainNames} onCreateVariable={() => { setShowLua(true); setLuaTab('variables'); setCreateVariable(true); }} onClearSearch={() => setSearch('')}
           onBreakpoint={id => void perform(() => toggleBreakpoint(id))} onChange={next => setGraph(current => withScriptBreakpoints(next, current.breakpoints ?? []))} onSelect={inspectBlock}
           onFindPoint={findPoint} onReady={() => setEditorReady(key => key + 1)} />
         {working && <div className="absolute inset-0 z-10 cursor-progress" aria-hidden="true" />}
@@ -390,7 +399,8 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
       {showLua && <>
         {wide && <LuaDivider min={minLuaWidth} max={maxLuaWidth} width={luaWidth} onChange={width => setPanes(value => ({ ...value, width }))} />}
         <LuaPane preview={preview} tab={luaTab} onTab={setLuaTab} selection={selection} executing={executing} pauseToken={pauseToken}
-          groups={groups} run={matchesRun ? run : null}
+          createVariable={createVariable} variableFormOpened={() => setCreateVariable(false)} groups={groups} run={matchesRun ? run : null} published={published}
+          onPublish={value => setPublished(current => current.includes(value) ? current.filter(n => n !== value) : [...current, value])}
           onSelect={(id, line) => inspectBlock(id, true, line)} onCopy={async () => {
             const lua = preview?.source;
             if (!lua) return;
@@ -406,7 +416,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
     </section>}
     {run?.pause && <section className="script-debug-pause" aria-label="调试暂停">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1"><strong>{pauseLabels[run.pause.reason]}</strong>
-        <span>{run.current?.source && `${run.current.source} · `}{run.current?.label}</span>{run.pause.writePreview !== undefined && <span>待写值 <b className="mono">{run.pause.writePreview}</b></span>}
+        <span>{run.current?.source && `${run.current.triggerLabel ?? run.current.source} · `}{run.current?.label}</span>{run.pause.writePreview !== undefined && <span>待写值 <b className="mono">{run.pause.writePreview}</b></span>}
         {run.pause.writeError && <span className="text-err">写值不可用 · {run.pause.writeError}</span>}</div>
       {run.pause.variables.length > 0 && <details><summary>运行变量（{run.pause.variables.length}）</summary>
         <dl>{run.pause.variables.map(variable => <div key={variable.name}><dt>{variable.name}</dt><dd>{variable.value}</dd></div>)}</dl></details>}
@@ -437,6 +447,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
         <span className="text-xs text-ink2">已结算 {run.completed} 步</span>
         {live && run.callbackTimeoutMs !== undefined && (!timeout.success || timeout.data !== run.callbackTimeoutMs)
           && <span className="script-event-status">本次主回调超时 {run.callbackTimeoutMs} ms</span>}
+        {ongoing(run) && Boolean(run.events?.inputs?.length) && <span className="script-event-status">监听 {run.events?.inputs?.length} 个事件</span>}
         {run.events?.onRun && <span className="script-event-status">on_run · {run.events.onRun.periodMs} ms · {run.events.onRun.calls} 次{ongoing(run) && !run.events.onRun.enabled && ' · 周期已暂停'}</span>}
         {run.events?.timers.map(timer => <span className="script-event-status" key={timer.channel}>T{timer.channel} · {timer.periodMs} ms · {timer.remaining === null ? '循环' : `剩余 ${timer.remaining} 次`}</span>)}
         {run.current && !run.pause && <span className="break-words text-xs">{run.current.label}</span>}
@@ -447,16 +458,20 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
         </> : <span className="text-xs text-ink2">暂无运行记录</span>}
       </div>
       {run && <ol className="script-result-rows space-y-1 text-xs" aria-label="步骤结果">
-        {shownEntries.slice().reverse().map((entry, index) => <li key={`${entry.sequence ?? run.completed - index}-${entry.blockId}`}>
+        {shownEntries.slice().reverse().map((entry, index) => <li className="flex items-baseline gap-2" key={`${entry.sequence ?? run.completed - index}-${entry.blockId}`}>
           <button disabled={!draftBlocks.has(entry.blockId)} title={!draftBlocks.has(entry.blockId) ? '此积木已移除' : undefined}
-            className="focus-ring w-full break-words text-left enabled:hover:text-accent" onClick={() => {
+            className="focus-ring min-w-0 flex-1 break-words text-left enabled:hover:text-accent" onClick={() => {
             setLookup(null); setLuaTab('code'); setShowLua(true); inspectBlock(entry.blockId, true);
           }}>
             {entry.log && <time className="mono mr-2 text-ink2" dateTime={new Date(entry.atMs).toISOString()}>{logClock?.format(entry.atMs)}</time>}
             <span className={entry.log ? 'text-accent' : entry.result === 'ok' ? 'text-ok' : entry.result === 'failed' ? 'text-err' : 'text-ink2'}>{entry.log ? '日志' : entry.handled ? '已处理失败' : entry.result === 'ok' ? '通过' : entry.result === 'failed' ? '失败' : '停止'}</span>
-            {entry.source && <span className="mono"> · {entry.source}</span>}
+            {entry.source && <span className="mono"> · {entry.trigger?.label ?? entry.source}</span>}
             {!entry.log && <> · {entry.label}</>} · {entry.detail}
           </button>
+          {entry.trigger?.binding.kind === 'widget' && <button className="focus-ring shrink-0 text-accent" type="button" onClick={() => {
+            const ref = entry.trigger?.binding;
+            if (ref?.kind === 'widget') environment?.openTarget?.('canvas', { canvasId: ref.canvasId, canvasFocusId: ref.widgetId });
+          }}>定位源控件</button>}
         </li>)}
       </ol>}
     </section>

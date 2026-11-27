@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { lampConfigSchema } from './canvas-lamp';
+import { signalId } from './canvas-script';
 
 const id = z.string().min(1).max(200);
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
@@ -11,7 +12,11 @@ export type GaugeStyle = z.infer<typeof gaugeStyleSchema>;
 export type InputMode = z.infer<typeof inputModeSchema>;
 const canvasPointBindingSchema = z.object({ slaveId: id, pointId: id });
 const canvasStatusBindingSchema = z.object({ slaveId: id, kind: z.literal('slave-status') });
-const canvasBindingSchema = z.union([canvasStatusBindingSchema, canvasPointBindingSchema]);
+const canvasBindingSchema = z.union([canvasStatusBindingSchema, canvasPointBindingSchema,
+  z.object({ kind: z.literal('script-event') }),
+  z.object({ kind: z.literal('workspace-variable'), variableId: signalId }),
+  z.object({ kind: z.literal('script-variable'), scriptId: signalId, name: z.string().min(1).max(120) }),
+]);
 export type CanvasBinding = z.infer<typeof canvasBindingSchema>;
 export const canvasSignalSchema = canvasPointBindingSchema.extend({ color: color.optional() });
 export type CanvasSignal = z.infer<typeof canvasSignalSchema>;
@@ -55,8 +60,13 @@ export const canvasWidgetSchema = z.object({
   padding: z.number().int().min(0).max(32).default(0),
   lamp: lampConfigSchema.default({}),
 }).superRefine((widget, ctx) => {
-  if (widget.binding && 'kind' in widget.binding && widget.kind !== 'lamp') {
+  if (widget.binding && 'kind' in widget.binding && widget.binding.kind === 'slave-status' && widget.kind !== 'lamp') {
     ctx.addIssue({ code: 'custom', path: ['binding'], message: '设备通信状态可绑定到指示灯' });
+  }
+  if (widget.binding && 'kind' in widget.binding && widget.binding.kind !== 'slave-status') {
+    const kinds = widget.binding.kind === 'script-event' ? ['button', 'switch', 'input']
+      : widget.binding.kind === 'script-variable' ? ['value', 'lamp', 'gauge'] : ['value', 'lamp', 'gauge', 'switch', 'input'];
+    if (!kinds.includes(widget.kind)) ctx.addIssue({ code: 'custom', path: ['binding'], message: '此控件不支持所选脚本绑定' });
   }
 });
 export type CanvasWidget = z.infer<typeof canvasWidgetSchema>;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { eventKey, signalId, widgetEventSchema, type EventBinding, type WorkspaceVariable } from './canvas-script';
 import { compileLuaKernel, lowerLuaExpression, luaNumericLiteral, type LuaHelper, type LuaOperator, type ScriptLuaKernel } from './script-lua-operators';
 import { compileLuaControl } from './script-lua-control';
 import type { SlaveCommunicationState } from '../shared/snapshot';
@@ -7,6 +8,12 @@ export const scriptBlocks = {
   start: 'mb_start',
   onRun: 'mb_on_run',
   onTimer: 'mb_on_timer',
+  onWidget: 'mb_on_widget',
+  onWorkspaceChange: 'mb_on_workspace_change',
+  workspaceValue: 'mb_workspace_value',
+  setWorkspaceValue: 'mb_set_workspace_value',
+  eventValue: 'mb_event_value',
+  text: 'mb_text',
   runPeriod: 'mb_run_period',
   runControl: 'mb_run_control',
   timerStart: 'mb_timer_start',
@@ -78,6 +85,7 @@ export const MAX_EVENT_ITERATIONS = 1_000_000;
 
 type ScriptBlockKind = typeof scriptBlocks[keyof typeof scriptBlocks];
 export const scriptNumberSlots: Partial<Record<ScriptBlockKind, Record<string, number>>> = {
+  mb_set_workspace_value: { OPERAND: 0 },
   [scriptBlocks.runPeriod]: { PERIOD: DEFAULT_RUN_PERIOD },
   [scriptBlocks.timerStart]: { PERIOD: 1000 },
   [scriptBlocks.calculation]: { RESULT: 0 },
@@ -268,16 +276,17 @@ export const masterScriptSchema = z.object({
   name: z.string().trim().min(1).max(120),
   revision: z.number().int().nonnegative(),
   callbackTimeoutMs: callbackTimeoutSchema.optional(),
+  publishedVariables: z.array(z.string().trim().min(1).max(120)).max(MAX_SCRIPT_BLOCKS).optional(),
   graph: scriptGraphSchema,
 });
 export type MasterScript = z.infer<typeof masterScriptSchema>;
-export const scriptFileSchema = masterScriptSchema.pick({ name: true, graph: true, callbackTimeoutMs: true }).extend({
+export const scriptFileSchema = masterScriptSchema.pick({ name: true, graph: true, callbackTimeoutMs: true, publishedVariables: true }).extend({
   format: z.literal('modbus-master-script'),
   version: z.literal(1),
 });
 
-export function serializeScriptFile({ name, graph, callbackTimeoutMs = CALLBACK_TIMEOUT_MS.default }: MasterScript): string {
-  return JSON.stringify({ format: 'modbus-master-script', version: 1, name, callbackTimeoutMs, graph });
+export function serializeScriptFile({ name, graph, publishedVariables, callbackTimeoutMs = CALLBACK_TIMEOUT_MS.default }: MasterScript): string {
+  return JSON.stringify({ format: 'modbus-master-script', version: 1, name, callbackTimeoutMs, publishedVariables, graph });
 }
 
 export interface ScriptPointRef { slaveId: string; pointId: string }
@@ -286,8 +295,43 @@ export type ScriptFunction = FunctionSignature & ({ kind: 'procedure'; steps: Sc
 export interface ScriptHandlers<T> {
   onRun?: { blockId: string; periodMs: number; steps: T[] };
   timers: { blockId: string; channel: number; steps: T[] }[];
+  inputs?: { blockId: string; binding: EventBinding; steps: T[] }[];
 }
 export interface ScriptProgram { steps: ScriptStep[]; functions: ScriptFunction[]; lua: ScriptLuaKernel; handlers?: ScriptHandlers<ScriptStep> }
+
+export function checkWorkspaceAssignments(program: ScriptProgram, lookup: (id: string) => WorkspaceVariable['type'] | undefined) {
+  const functions = new Map(program.functions.map(fn => [fn.id, fn]));
+  const valueType = (operand: ScriptOperand): WorkspaceVariable['type'] | undefined => {
+    switch (operand.kind) {
+      case 'literal': return 'string';
+      case 'arithmetic': case 'number': case 'timerElapsed': return 'number';
+      case 'boolean': case 'condition': case 'timerRunning': return 'boolean';
+      case 'workspaceValue': return lookup(operand.variableId);
+      case 'callValue': {
+        const fn = functions.get(operand.functionId);
+        return fn?.kind === 'calculation' ? valueType(fn.result) : undefined;
+      }
+      default: return undefined;
+    }
+  };
+  const check = (steps: ScriptStep[]) => {
+    for (const step of steps) {
+      if (step.kind === 'setWorkspaceValue') {
+        const target = lookup(step.variableId);
+        if (!target) throw new ScriptBlockError('工作区变量绑定已失效', step.blockId);
+        const actual = valueType(step.operand);
+        if (actual && actual !== target) throw new ScriptBlockError('赋值与工作区变量的类型不一致', step.blockId);
+      }
+      if ('steps' in step) check(step.steps);
+      if (step.kind === 'attempt') check(step.handler);
+      if (step.kind === 'branch') { for (const arm of step.arms) check(arm.steps); check(step.no); }
+    }
+  };
+  check(program.steps);
+  for (const fn of program.functions) if (fn.kind === 'procedure') check(fn.steps);
+  if (program.handlers?.onRun) check(program.handlers.onRun.steps);
+  for (const handler of [...program.handlers?.timers ?? [], ...program.handlers?.inputs ?? []]) check(handler.steps);
+}
 
 export function checkCallbackContexts(program: ScriptProgram): void {
   const procedures = new Map(program.functions.filter(fn => fn.kind === 'procedure').map(fn => [fn.id, fn]));
@@ -306,6 +350,7 @@ export function checkCallbackContexts(program: ScriptProgram): void {
   };
   if (program.handlers?.onRun) check(program.handlers.onRun.steps);
   for (const timer of program.handlers?.timers ?? []) check(timer.steps);
+  for (const input of program.handlers?.inputs ?? []) check(input.steps);
 }
 type FunctionTable = ReadonlyMap<string, FunctionSignature>;
 export function isScriptDefinition(type: string) { return type === scriptBlocks.procedure || type === scriptBlocks.calculation; }
@@ -315,6 +360,8 @@ export function isScriptCall(type: string) { return type === scriptBlocks.call |
 export function splitParameters(text: string): string[] { return text.trim() ? text.split(/[,，]/).map(name => name.trim()) : []; }
 
 export type ScriptOperand = { blockId?: string } & (
+  | { kind: 'workspaceValue'; variableId: string }
+  | { kind: 'eventValue' }
   | { kind: 'literal'; text: string }
   | { kind: 'number'; value: number; integerText?: string }
   | { kind: 'timerElapsed'; channel: number }
@@ -336,6 +383,7 @@ export type ScriptCondition = { blockId: string } & (
   | { kind: 'not'; operand: ScriptCondition }
   | { kind: 'range'; ref: ScriptPointRef; min: number; max: number });
 export type ScriptStep = { blockId: string } & (
+  | { kind: 'setWorkspaceValue'; variableId: string; operand: ScriptOperand }
   | { kind: 'read'; ref: ScriptPointRef; timeoutMs: number }
   | { kind: 'capture'; ref: ScriptPointRef; variable: string }
   | { kind: 'setVariable' | 'changeVariable'; variable: string; operand: ScriptOperand }
@@ -377,6 +425,22 @@ function pointRef(block: ScriptBlock): ScriptPointRef {
   const parsed = refSchema.safeParse(ref);
   if (!parsed.success) throw new ScriptBlockError('请选择点位', block.id);
   return { slaveId: parsed.data[0], pointId: parsed.data[1] };
+}
+
+function workspaceVariableId(block: ScriptBlock) {
+  const result = signalId.safeParse(fieldText(block, 'TAG'));
+  if (!result.success) throw new ScriptBlockError('请选择工作区变量', block.id);
+  return result.data;
+}
+
+export function scriptInputBinding(block: ScriptBlock): EventBinding {
+  if (block.type === scriptBlocks.onWorkspaceChange) return { kind: 'workspace', variableId: workspaceVariableId(block) };
+  let ref: unknown;
+  try { ref = JSON.parse(fieldText(block, 'WIDGET')); } catch { ref = null; }
+  const parsed = refSchema.safeParse(ref);
+  const event = widgetEventSchema.safeParse(fieldText(block, 'EVENT') || 'click');
+  if (!parsed.success || !event.success) throw new ScriptBlockError('请选择画布控件和事件', block.id);
+  return { kind: 'widget', canvasId: parsed.data[0], widgetId: parsed.data[1], event: event.data };
 }
 
 function fieldNumber(block: ScriptBlock, name: string): number {
@@ -441,6 +505,9 @@ function reporter(block: ScriptBlock, scope: CompileScope): ScriptOperand {
 
 function compileReporter(block: ScriptBlock, scope: CompileScope): ScriptOperand {
   if (!enabled(block)) throw new ScriptBlockError('请启用或移除停用的值积木', block.id);
+  if (block.type === scriptBlocks.workspaceValue) return { kind: 'workspaceValue', variableId: workspaceVariableId(block) };
+  if (block.type === scriptBlocks.text) return { kind: 'literal', text: fieldText(block, 'TEXT') };
+  if (block.type === scriptBlocks.eventValue) return { kind: 'eventValue' };
   if (block.type === scriptBlocks.variable || block.type === scriptBlocks.parameter) scope.helpers.add('read');
   if (block.type === scriptBlocks.callValue) return { kind: 'callValue', ...callOperands(block, scope) };
   if (block.type === scriptBlocks.parameter) {
@@ -511,6 +578,8 @@ function conditionBlock(block: ScriptBlock, scope: CompileScope): ScriptConditio
     case scriptBlocks.not:
       return { blockId, kind: 'not', operand: condition(block, scope) };
     case scriptBlocks.boolean:
+    case scriptBlocks.eventValue:
+    case scriptBlocks.workspaceValue:
     case scriptBlocks.timerRunning:
     case scriptBlocks.pointValue:
     case scriptBlocks.parameter:
@@ -578,6 +647,7 @@ function stack(first: ScriptBlock | undefined, scope: CompileScope, depth = 0, i
       }
       case scriptBlocks.timerStop: steps.push({ blockId, kind: 'timerStop', channel: timerChannel(block) }); break;
       case scriptBlocks.call: steps.push({ blockId, kind: 'call', ...callOperands(block, scope) }); break;
+      case scriptBlocks.setWorkspaceValue: steps.push({ blockId, kind: 'setWorkspaceValue', variableId: workspaceVariableId(block), operand: slotOperand(block, 'OPERAND', scope) }); break;
       case scriptBlocks.read: steps.push({ blockId, kind: 'read', ref: pointRef(block), timeoutMs: timeout() }); break;
       case scriptBlocks.readVariable:
         steps.push({ blockId, kind: 'capture', ref: pointRef(block), variable: variableName(block) });
@@ -661,7 +731,7 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
   const roots = (graph.blocks?.blocks ?? []).filter(enabled);
   const stacks = roots.filter(block => !isScriptDefinition(block.type));
   const start = stacks.find(block => block.type === scriptBlocks.start);
-  const events = stacks.filter(block => block.type === scriptBlocks.onRun || block.type === scriptBlocks.onTimer);
+  const events = stacks.filter(block => [scriptBlocks.onRun, scriptBlocks.onTimer, scriptBlocks.onWidget, scriptBlocks.onWorkspaceChange].some(type => type === block.type));
   if (!start && !events.length) throw new ScriptBlockError('请添加一个「开始」积木或事件入口');
   const stray = stacks.find(block => block !== start && !events.includes(block));
   if (stray) throw new ScriptBlockError('请将步骤接到同一个「开始」积木或对应事件入口下，函数定义可单独放置', stray.id);
@@ -713,9 +783,32 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
     return cost;
   }
   const { steps } = stack(start?.next?.block, scopeFor([]));
+  // Only input handlers have an event value. Follow calls, including value functions.
+  const checked = new Set<ScriptBlock>();
+  function checkWithoutInput(block?: ScriptBlock): void {
+    if (!block || checked.has(block)) return;
+    checked.add(block);
+    if (enabled(block)) {
+      if (block.type === scriptBlocks.eventValue) throw new ScriptBlockError('本次事件值仅可在画布或工作区变量事件中读取', block.id);
+      if (isScriptCall(block.type)) checkWithoutInput(definitions.get(fieldText(block, 'FUNCTION')));
+      for (const input of Object.values(block.inputs ?? {})) checkWithoutInput(input.block);
+    }
+    checkWithoutInput(block.next?.block);
+  }
+  checkWithoutInput(start);
+  for (const root of events) if (root.type === scriptBlocks.onRun || root.type === scriptBlocks.onTimer) checkWithoutInput(root);
   const handlers: ScriptHandlers<ScriptStep> = { timers: [] };
   const seen = new Set<string>();
   for (const root of events) {
+    if (root.type === scriptBlocks.onWidget || root.type === scriptBlocks.onWorkspaceChange) {
+      const body = stack(root.next?.block, scopeFor([])).steps;
+      if (!body.length) continue;
+      const binding = scriptInputBinding(root), key = eventKey(binding);
+      if (seen.has(key)) throw new ScriptBlockError('同一控件事件或变量变化只能有一个启用的入口', root.id);
+      seen.add(key);
+      (handlers.inputs ??= []).push({ blockId: root.id, binding, steps: body });
+      continue;
+    }
     const cycle = root.type === scriptBlocks.onRun;
     const channel = cycle ? -1 : timerChannel(root);
     const key = cycle ? 'on_run' : `T${channel}`;
@@ -727,11 +820,11 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
       if (body.length) handlers.onRun = { blockId: root.id, periodMs, steps: body };
     } else if (body.length) handlers.timers.push({ blockId: root.id, channel, steps: body });
   }
-  if (!steps.length && !handlers.onRun && !handlers.timers.length)
+  if (!steps.length && !handlers.onRun && !handlers.timers.length && !handlers.inputs?.length)
     throw new ScriptBlockError('请在「开始」积木或事件入口下连接至少一个步骤', start?.id ?? events[0]?.id);
   handlers.timers.sort((a, b) => a.channel - b.channel);
   const functions = [...definitions.keys()].sort().map(id => { include(id, id); return compiled.get(id)!.fn; });
-  const usesClock = handlers.onRun || handlers.timers.length || [...scriptGraphBlocks(graph)].some(block => enabled(block) && clockBlocks.has(block.type));
+  const usesClock = handlers.onRun || handlers.timers.length || handlers.inputs?.length || [...scriptGraphBlocks(graph)].some(block => enabled(block) && clockBlocks.has(block.type));
   const control = compileLuaControl(steps, functions, usesClock ? handlers : undefined);
   return { graph, program: { steps, functions, lua: compileLuaKernel(operators, expressions, helpers, control), ...(usesClock ? { handlers } : {}) } };
 }
@@ -782,7 +875,7 @@ export function scriptVariableGroups(graph: ScriptGraph): ScriptVariableGroup[] 
   };
   for (const root of graph.blocks?.blocks ?? []) {
     if (!enabled(root)) continue;
-    if (root.type === scriptBlocks.onRun || root.type === scriptBlocks.onTimer) main.label = '脚本共享';
+    if ([scriptBlocks.onRun, scriptBlocks.onTimer, scriptBlocks.onWidget, scriptBlocks.onWorkspaceChange].some(type => root.type === type)) main.label = '脚本共享';
     if (isScriptDefinition(root.type)) {
       const group: ScriptVariableGroup = { functionId: root.id, label: fieldText(root, 'NAME').trim() || '未命名函数', names: new Map() };
       for (const name of splitParameters(fieldText(root, 'PARAMS'))) if (name) group.names.set(name, root.id);
@@ -795,7 +888,7 @@ export function scriptVariableGroups(graph: ScriptGraph): ScriptVariableGroup[] 
 
 const statementTypes = new Set<string>([scriptBlocks.read, scriptBlocks.readVariable, scriptBlocks.write, scriptBlocks.log,
   scriptBlocks.runPeriod, scriptBlocks.runControl, scriptBlocks.timerStart, scriptBlocks.timerStop,
-  scriptBlocks.setVariable, scriptBlocks.changeVariable,
+  scriptBlocks.setVariable, scriptBlocks.changeVariable, scriptBlocks.setWorkspaceValue,
   scriptBlocks.call,
   scriptBlocks.wait, scriptBlocks.assert, scriptBlocks.delay, scriptBlocks.repeat, scriptBlocks.forever,
   scriptBlocks.repeatUntil, scriptBlocks.stop, scriptBlocks.breakLoop, scriptBlocks.attempt, scriptBlocks.branch]);

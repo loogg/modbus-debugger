@@ -7,8 +7,9 @@ const runStatus: Record<ScriptRunView['state'], string> = {
   passed: '已完成', stopped: '已停止', failed: '运行失败',
 };
 
-export function VariableWatch({ groups, run, onSelect }: {
+export function VariableWatch({ groups, run, onSelect, published, onPublish }: {
   groups: ScriptVariableGroup[]; run: ScriptRunView | null; onSelect(id: string): void;
+  published?: readonly string[]; onPublish?(name: string): void;
 }) {
   if (!groups.length) return <p className="script-watch-empty">还没有变量。拖入「变量」分类的赋值积木即可开始观察。</p>;
   return <div className="script-watch">{groups.flatMap(group => {
@@ -28,6 +29,8 @@ export function VariableWatch({ groups, run, onSelect }: {
             <dd data-assigned={value !== undefined || undefined} title={row?.kind === 'integer64' ? 'Lua 64 位整数' : undefined}>
               {value === undefined ? '未赋值' : typeof value === 'string' && row?.kind !== 'integer64' ? JSON.stringify(value) : String(value)}
             </dd>
+            {group.functionId === null && onPublish && <label className="script-share-variable" title="保存流程后画布可读取此变量">
+              <input type="checkbox" aria-label={`公开 ${name} 到画布`} checked={published?.includes(name) ?? false} onChange={() => onPublish(name)} />公开</label>}
           </div>;
         })}</dl>
       </section>;

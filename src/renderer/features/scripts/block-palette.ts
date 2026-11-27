@@ -15,6 +15,8 @@ const categories: Category[] = [
     ['pointValue', '点位值 确认值']] },
   { name: '事件', colour: blockColours.entry, blocks: [
     ['start', '开始 当脚本启动 on_start 初始化'], ['onRun', '周期运行 on_run 每毫秒'],
+    ['onWidget', '当画布控件 按钮 点击 按下 松开 取消 开关切换 输入提交'], ['onWorkspaceChange', '当工作区变量改变时'],
+    ['eventValue', '本次事件值 控件 输入 提交'],
     ['runPeriod', '设置周期 set_run_period'], ['runControl', '启用 暂停 周期回调 start_run stop_run']] },
   { name: '定时器', colour: blockColours.timer, blocks: [
     ['onTimer', '定时器到期 on_timer 触发'], ['timerStart', '启动重置定时器 start_timer 一次 循环 次数'],
@@ -32,7 +34,8 @@ const categories: Category[] = [
     ['error', '本次错误 错误类型']] },
   { name: '变量', colour: blockColours.variable, blocks: [
     ['setVariable', '赋值 把变量设为 设置'], ['changeVariable', '给变量加 递增 累加'],
-    ['variable', '取变量 选择变量']] },
+    ['variable', '取变量 选择变量'], ['workspaceValue', '工作区变量 取值 全局共享'],
+    ['setWorkspaceValue', '设置工作区变量 赋值 全局共享'], ['text', '文本 字符串']] },
   { name: '运算', colour: blockColours.math, blocks: [
     ['arithmetic', '四则运算 加减乘除 + - × ÷'], ['number', '数值 数字 常数']] },
   { name: '日志', colour: blockColours.log, blocks: [['log', '记录日志 打印 输出 print']] },
@@ -55,7 +58,7 @@ function namedVariables(names: readonly string[]) {
 }
 
 export function variablePalette(names: readonly string[]): utils.toolbox.FlyoutItemInfoArray {
-  return [...variableCategory.blocks.map(blockItem), ...(names.length ? [
+  return [{ kind: 'button', text: '新建工作区变量', callbackkey: 'CREATE_WORKSPACE_VARIABLE' }, ...variableCategory.blocks.map(blockItem), ...(names.length ? [
     { kind: 'label', text: '脚本变量', id: undefined }, ...namedVariables(names),
   ] : [])];
 }

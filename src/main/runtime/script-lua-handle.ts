@@ -17,7 +17,10 @@ export function loadScriptLua(): Promise<void> {
     .catch(error => { loading = undefined; throw error; });
 }
 
-function slot(source: ScriptEventSource) { return source === 'on_start' ? 0 : source === 'on_run' ? 1 : 2 + Number(source.slice(1)); }
+function slot(source: ScriptEventSource) {
+  if (source.startsWith('input:')) return JSON.stringify(source);
+  return source === 'on_start' ? 0 : source === 'on_run' ? 1 : 2 + Number(source.slice(1));
+}
 
 export class ScriptLuaHandle {
   private readonly lua: LuaWasm;

@@ -16,6 +16,7 @@ interface Props {
   pending?: boolean;
   confirmed: string;
   confirmationLabel?: string;
+  scriptInput?: boolean;
   confirmedNumber: number | null;
   confirmedString: string;
   confirmedOption: string;
@@ -26,7 +27,7 @@ interface Props {
 
 export function CanvasInput(props: Props) {
   const { widget: w, point, draft, disabled, onDraft, onWrite } = props;
-  const options = point ? canvasInputOptions(point) : props.preview ? [{ value: props.confirmedOption || '0', label: `预览值 ${props.confirmedOption || '0'}` }] : [];
+  const options = point ? canvasInputOptions(point) : props.scriptInput ? [{ value: '0', label: '假' }, { value: '1', label: '真' }] : props.preview ? [{ value: props.confirmedOption || '0', label: `预览值 ${props.confirmedOption || '0'}` }] : [];
   const selected = props.confirmedOption === '' ? '' : options.find(option => Number(option.value) === Number(props.confirmedOption))?.value ?? props.confirmedOption;
   const bounded = w.inputMode === 'slider' || w.limitInput;
   const minimum = bounded ? w.min : undefined;
@@ -40,9 +41,9 @@ export function CanvasInput(props: Props) {
     onDraft(String(next));
   };
   const canSubmit = draft !== null && (w.inputMode === 'text' || draft.trim() !== '');
-  const input = <input aria-label={`${w.label} 写入值`} type={w.inputMode === 'text' ? 'text' : 'number'}
+  const input = <input aria-label={`${w.label} ${props.scriptInput ? '输入值' : '写入值'}`} type={w.inputMode === 'text' ? 'text' : 'number'}
     className="canvas-input-field focus-ring" value={draft ?? (w.inputMode === 'text' ? props.confirmedString : w.inputMode === 'stepper' ? props.confirmedNumber ?? '' : '')}
-    step={w.step} min={minimum} max={maximum} maxLength={w.inputMode === 'text' ? point?.mapping.stringLength : undefined}
+    step={w.step} min={minimum} max={maximum} maxLength={w.inputMode === 'text' ? (props.scriptInput ? 4000 : point?.mapping.stringLength) : undefined}
     onChange={event => update(event.target.value)} disabled={disabled} tabIndex={props.tabIndex}
     onKeyDown={event => { if (event.key === 'Enter' && canSubmit) onWrite(draft!); }} />;
   return <div className={`canvas-input input-${w.inputMode}`} data-appearance={canvasAppearance(w)}>
@@ -58,7 +59,7 @@ export function CanvasInput(props: Props) {
           className="block h-4 w-full" style={{ accentColor: w.color }} onChange={event => onDraft(event.target.value)} />
       </div> : input}
       {w.inputMode === 'stepper' && <button className="canvas-step focus-ring" tabIndex={props.tabIndex} aria-label={`${w.label} 增加`} disabled={disabled || (bounded && base >= w.max)} onClick={() => step(1)}><Add16Regular /></button>}
-      <button className="canvas-input-submit focus-ring" tabIndex={props.tabIndex} style={{ background: w.color }} disabled={disabled || !canSubmit} onClick={() => onWrite(draft!)}>{props.pending ? '写入中…' : '写入'}</button>
+      <button className="canvas-input-submit focus-ring" tabIndex={props.tabIndex} style={{ background: w.color }} disabled={disabled || !canSubmit} onClick={() => onWrite(draft!)}>{props.scriptInput ? (props.pending ? '提交中…' : '提交') : props.pending ? '写入中…' : '写入'}</button>
     </div>
     {w.showConfirmed && <div className="mt-1 truncate text-[11px] text-ink2">{props.preview ? '预览值' : props.confirmationLabel ?? '确认值'}：{props.confirmed} {point?.unit}</div>}
   </div>;
