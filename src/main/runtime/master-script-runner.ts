@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { eventKey, type CanvasEventBinding, type ScriptInputEvent, type SignalValue } from '../../domain/canvas-script';
+import { eventKey, widgetKey, type CanvasEventBinding, type ScriptInputEvent, type SignalValue } from '../../domain/canvas-script';
 import { observePoint, observeSlaveState, type ObserveEquipment } from './script-equipment-events';
 import type { CanvasSignals } from './canvas-signals';
 import { SCRIPT_SLICE_MS, ScriptHandleFault, ScriptLuaHandle } from './script-lua-handle';
@@ -76,6 +76,8 @@ interface ActiveRun {
   ready: ScriptTask[];
   inputs: Map<string, { blockId: string; steps: PlannedStep[] }>;
   pendingInputs: { event: ScriptInputEvent; blockId: string; steps: PlannedStep[] }[];
+  heldButtons: Map<string, string>;
+  releasedButtons: Map<string, string>;
   detachEquipment: (() => void)[];
   inFlight: number;
   wake?: NodeJS.Timeout;
@@ -119,6 +121,7 @@ export interface ScriptPlan {
 }
 
 const LOG_LIMIT = 250;
+const INPUT_LIMIT = 256;
 const messageOf = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
 export class StepFailure extends Error {
   constructor(message: string, readonly kinds: ScriptErrorKind[]) { super(message); }
@@ -697,7 +700,8 @@ export class MasterScriptRunner {
       controller: new AbortController(), lua, groups: [], groupIds: plan.lua.control.groups, sharedVariables, scopes: new Map([[null, { functionId: null, variables: sharedVariables, inCall: false }]]),
       variablesDirty: false, judgments: new Map(), judgmentsDirty: false, breakpoints: new Set(breakpoints),
       pauseNext: debug ? 'entry' : undefined, clock, handlers: plan.handlers, tasks: new Map(), ready: [],
-      inputs: new Map(plan.handlers?.inputs?.map(input => [eventKey(input.binding), input])), pendingInputs: [], detachEquipment: [],
+      inputs: new Map(plan.handlers?.inputs?.map(input => [eventKey(input.binding), input])), pendingInputs: [],
+      heldButtons: new Map(), releasedButtons: new Map(), detachEquipment: [],
       inFlight: 0, finished, resolveFinished,
     };
     this.active = run;
@@ -708,13 +712,35 @@ export class MasterScriptRunner {
     return this.snapshot!;
   }
 
-  receive(event: ScriptInputEvent): boolean {
+  private acceptButtonPhase(run: ActiveRun, binding: ScriptInputEvent['binding'], id: string) {
+    if (binding.kind !== 'widget') return false;
+    const key = widgetKey(binding.canvasId, binding.widgetId);
+    if (binding.event === 'press') {
+      // A click-only listener still needs the identity of the operation that may activate it.
+      if (run.heldButtons.has(id) || run.releasedButtons.has(id) || !run.handlers?.inputs?.some(({ binding: b }) =>
+        b.kind === 'widget' && b.canvasId === binding.canvasId && b.widgetId === binding.widgetId)) return false;
+      if (run.heldButtons.size >= INPUT_LIMIT) { this.cancel(run, `待结束的按钮操作超过 ${INPUT_LIMIT} 个`); return false; }
+      run.heldButtons.set(id, key);
+      return true;
+    }
+    if (binding.event === 'click') return run.releasedButtons.get(id) === key && run.releasedButtons.delete(id);
+    if ((binding.event !== 'release' && binding.event !== 'cancel') || run.heldButtons.get(id) !== key) return false;
+    run.heldButtons.delete(id);
+    if (binding.event === 'release' && run.inputs.has(eventKey({ ...binding, event: 'click' }))) {
+      // The browser can release without issuing a click. Bound only these completed receipts.
+      run.releasedButtons.set(id, key);
+      if (run.releasedButtons.size > INPUT_LIMIT) run.releasedButtons.delete(run.releasedButtons.keys().next().value!);
+    }
+    return true;
+  }
+
+  receive(event: ScriptInputEvent, pressId?: string): boolean {
     const run = this.active;
-    if (!run || run.controller.signal.aborted) return false;
+    if (!run || run.controller.signal.aborted || (pressId && !this.acceptButtonPhase(run, event.binding, pressId))) return false;
     const input = run.inputs.get(eventKey(event.binding));
     if (!input) return false;
-    if (run.pendingInputs.length >= 256) {
-      this.cancel(run, '待处理的输入事件超过 256 个');
+    if (run.pendingInputs.length >= INPUT_LIMIT) {
+      this.cancel(run, `待处理的输入事件超过 ${INPUT_LIMIT} 个`);
       return false;
     }
     run.pendingInputs.push({ event, blockId: input.blockId, steps: input.steps });
@@ -743,6 +769,9 @@ export class MasterScriptRunner {
     clearTimeout(run.wake);
     if (run.turn) clearImmediate(run.turn);
     run.controller.abort(new Error('流程已停止'));
+    run.heldButtons.clear();
+    run.releasedButtons.clear();
+    run.pendingInputs.length = 0;
     for (const detach of run.detachEquipment.splice(0)) detach();
     run.ready.length = 0;
     for (const task of run.tasks.values()) task.flow.return(undefined);

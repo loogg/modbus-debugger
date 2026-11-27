@@ -34,3 +34,18 @@ export function canvasScriptFixture(): Workspace {
     script('observe', '变更记录', [{ id: 'changed', type: b.onWorkspaceChange, fields: { TAG: 'count' }, next: { block: eventLog('observed','计数') } }]),
   ] };
 }
+
+export function heldButtonFixture(): Workspace {
+  const ws = canvasScriptFixture();
+  ws.variables!.push({ id: 'held', name: 'held', type: 'boolean', initial: false });
+  const canvas = ws.canvases![0]!;
+  canvas.widgets.push({ ...canvas.widgets.find(w => w.id === 'total')!, id: 'held-value', label: '按住状态', x: 460,
+    binding: { kind: 'workspace-variable', variableId: 'held' } });
+  for (const hat of ws.masterScripts![0]!.graph.blocks!.blocks) {
+    const event = hat.fields?.EVENT;
+    if (event !== 'press' && event !== 'release' && event !== 'cancel') continue;
+    hat.next = { block: { id: `set-${event}`, type: b.setWorkspaceValue, fields: { TAG:'held' },
+      inputs: { OPERAND: { block: { id: `flag-${event}`, type: b.boolean, fields: { BOOL: event === 'press' ? 'TRUE' : 'FALSE' } } } }, next: hat.next } };
+  }
+  return ws;
+}

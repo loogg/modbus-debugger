@@ -93,8 +93,10 @@ export function CanvasWidgetView({ widget: w, editing, preview, canvasId = '', r
   const source = signal.label || (slave && (statusBinding ? `${slave.name} / 通信状态` : point ? `${slave.name} / ${point.name}` : ''));
   const description = [w.label, simulation ? '本地预览 · 不写入设备' : commandOnly ? '只写命令点' : '', source, !simulation && statusBinding && slave ? slaveStatus(deviceState).label : '', point || simulation ? `${simulation ? '预览值' : commandOnly ? '上次成功写入' : '确认值'}：${confirmed} ${point?.unit ?? ''}` : '', lastWrite ? `最后下发 ${lastWrite.attempted} · ${fmtEpochDateTimeMs(lastWrite.atMs)} · ${lastWrite.phase === 'confirmed' ? '写入成功' : lastWrite.phase === 'rejected' ? '设备拒绝' : lastWrite.phase === 'not-sent' ? '未发送' : '结果未知'}` : '', lamp ? `状态：${lamp.style.label}` : '', statusTitle].filter(Boolean).join('\n');
 
-  const emit = (event: WidgetEvent) => {
-    void signal.send(event).catch(error => setFeedback(error instanceof Error ? error.message : String(error)));
+  const emit = (event: WidgetEvent, pressId?: string) => {
+    void signal.send(event, undefined, pressId).then(() => {
+      if (currentTarget.current === key) setFeedback('');
+    }, error => { if (currentTarget.current === key) setFeedback(error instanceof Error ? error.message : String(error)); });
   };
   const write = async (text: string, confirmedRisk = false) => {
     if (editing || simulation || disabled) return;

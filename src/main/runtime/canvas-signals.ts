@@ -11,7 +11,7 @@ export class CanvasSignals {
   private readonly actions = new Map<string, number>();
   private cached?: CanvasSignalState;
 
-  constructor(private readonly workspace: () => Workspace, private readonly dispatch: (event: ScriptInputEvent) => number) {}
+  constructor(private readonly workspace: () => Workspace, private readonly dispatch: (event: ScriptInputEvent, pressId?: string) => number) {}
 
   get snapshot(): CanvasSignalState {
     return this.cached ??= { epoch: this.epoch,
@@ -45,16 +45,23 @@ export class CanvasSignals {
     this.dispatch({ binding: { kind: 'workspace', variableId: id }, label: variable.name, value, changes: [...changes, id] });
   }
   interact(command: Extract<Command, { type: 'canvas.interact' }>) {
-    if (command.epoch !== this.epoch) throw new Error('工作区已切换，请重新操作');
+    const { canvasId, widgetId, event, pressId } = command;
+    if (pressId && event !== 'press' && event !== 'release' && event !== 'cancel' && event !== 'click') throw new Error('按下标识仅适用于按钮操作');
+    const ending = !!pressId && event !== 'press';
+    if (command.epoch !== this.epoch) {
+      if (ending) return 0;
+      throw new Error('工作区已切换，请重新操作');
+    }
     const duplicate = this.actions.get(command.actionId);
     if (duplicate !== undefined) return duplicate;
-    const { canvasId, widgetId, event } = command;
     const binding = { kind: 'widget' as const, canvasId, widgetId, event };
     const workspace = this.workspace();
+    const canvas = workspace.canvases?.find(c => c.id === canvasId);
+    const widget = canvas?.widgets.find(w => w.id === widgetId);
+    if (ending && (widget?.kind !== 'button' || !widget.binding || !('kind' in widget.binding) || widget.binding.kind !== 'script-event')) return 0;
     checkInputBinding(workspace, binding);
-    const canvas = workspace.canvases!.find(c => c.id === canvasId)!;
-    if (canvas.revision !== command.revision) throw new Error('画布已更新，请重新操作');
-    const widget = canvas.widgets.find(w => w.id === widgetId)!;
+    if (!canvas || !widget) throw new Error('画布控件不存在');
+    if (!ending && canvas.revision !== command.revision) throw new Error('画布已更新，请重新操作');
     const key = widgetKey(canvasId, widgetId);
     const variableId = widget.binding && 'variableId' in widget.binding ? widget.binding.variableId : undefined;
     let value: SignalValue = event === 'click' || event === 'press';
@@ -70,7 +77,8 @@ export class CanvasSignals {
       if (variableId) this.write(variableId, value);
       else { this.controls.set(key, value); this.cached = undefined; }
     }
-    const delivered = this.dispatch({ binding, value, label: `${canvas.name} / ${widget.label || widget.text} · ${widgetEventLabels[event]}` });
+    const source = `${canvas.name} / ${widget.label || widget.text}`;
+    const delivered = this.dispatch({ binding, value, label: `${source} · ${widgetEventLabels[event]}` }, pressId);
     this.actions.set(command.actionId, delivered);
     if (this.actions.size > 2048) this.actions.delete(this.actions.keys().next().value!);
     return delivered;

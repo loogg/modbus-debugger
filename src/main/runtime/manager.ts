@@ -100,9 +100,9 @@ export class RuntimeManager {
     this.clock = opts.clock ?? systemClock;
     this.transportFactory = opts.transportFactory ?? defaultTransportFactory;
     this.sampleBuffers = new SampleBuffers(this.cache, this.clock);
-    this.signals = new CanvasSignals(() => this.workspaceService.current, event => {
+    this.signals = new CanvasSignals(() => this.workspaceService.current, (event, pressId) => {
       if (event.binding.kind === 'workspace') this.notifications.publish(event.binding);
-      return this.scripts.dispatch(event);
+      return this.scripts.dispatch(event, pressId);
     });
     this.scripts = new ScriptRuns(() => new MasterScriptRunner({
       signals: this.signals, checkInput: binding => checkInputBinding(this.workspaceService.current, binding),

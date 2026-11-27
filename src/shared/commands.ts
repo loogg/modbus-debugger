@@ -13,7 +13,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('variable.save'), variable: workspaceVariableSchema, expected: workspaceVariableSchema.nullable() }),
   z.object({ type: z.literal('variable.delete'), expected: workspaceVariableSchema }),
   z.object({ type: z.literal('canvas.interact'), epoch: signalId, actionId: signalId, canvasId: signalId, widgetId: signalId,
-    revision: z.number().int().nonnegative(), event: widgetEventSchema, value: signalValueSchema.optional() }),
+    revision: z.number().int().nonnegative(), event: widgetEventSchema, value: signalValueSchema.optional(), pressId: signalId.optional() }),
   dataReadSchema,
   z.object({ type: z.literal('data.demand'), clientId: z.string().min(1).max(100), points: z.array(pointRefSchema).max(320000) }),
   z.object({ type: z.literal('buffer.configure'), config: bufferConfigSchema, expectedCapacity: z.number().int().optional() }),

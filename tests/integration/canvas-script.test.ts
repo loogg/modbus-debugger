@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { LuaFactory } from 'wasmoon';
 import { createScratch } from '../../tools/test-paths.mjs';
-import { canvasScriptFixture } from '../support/canvas-script-fixture';
+import { canvasScriptFixture, heldButtonFixture } from '../support/canvas-script-fixture';
 import { WorkspaceService } from '../../src/main/services/workspace';
 import { HistoryStore } from '../../src/main/services/history';
 import { RuntimeManager } from '../../src/main/runtime/manager';
@@ -12,20 +12,88 @@ import { compileScriptLua } from '../../src/domain/script-lua-program';
 import { type WidgetEvent, type SignalValue } from '../../src/domain/canvas-script';
 import { scriptBlocks as blocks } from '../../src/domain/master-script';
 
-async function fixture() {
+async function fixture(workspace = canvasScriptFixture()) {
   const root = createScratch('canvas-script-'), service = new WorkspaceService(path.join(root, 'data'));
-  const workspace = canvasScriptFixture();
   service.adopt(workspace, null);
   const manager = new RuntimeManager(service, await HistoryStore.open(path.join(root, 'history.db')));
   manager.start();
   const command = (raw: unknown) => manager.handleCommand(commandSchema.parse(raw));
   const epoch = manager.buildSnapshot().canvasSignals!.epoch;
-  const interact = (widgetId: string, event: WidgetEvent, value?: SignalValue, actionId: string = randomUUID(), revision = 0) =>
-    command({ type: 'canvas.interact', epoch, canvasId: 'panel', widgetId, event, value, actionId, revision });
+  const interact = (widgetId: string, event: WidgetEvent, value?: SignalValue, actionId: string = randomUUID(), revision = 0, pressId?: string) =>
+    command({ type: 'canvas.interact', epoch, canvasId: 'panel', widgetId, event, value, actionId, revision, pressId });
   const run = (id: string) => manager.buildSnapshot().scriptRuns?.[id];
   const start = (id: string) => command({ type: 'script.start', scriptId: id, revision: 0 });
   return { workspace, service, manager, command, interact, run, start };
 }
+
+it('pairs a held press across a canvas save and a debug pause, with exactly one activation', async () => {
+  const f = await fixture(heldButtonFixture());
+  const phase = (event: WidgetEvent, id: string, revision = 0) => f.interact('sample', event, undefined, randomUUID(), revision, id);
+  const held = () => f.manager.buildSnapshot().canvasSignals?.variables.held;
+  try {
+    await f.start('capture');
+    expect(await phase('press','first')).toMatchObject({ ok:true,value:1 });
+    await expect.poll(held).toBe(true);
+    await f.command({ type:'canvas.edit', canvasId:'panel', expectedRevision:0, changes:{name:'操作台 B'} });
+    expect(await phase('press','stale')).toMatchObject({ok:false});
+    expect(await f.interact('sample','click')).toMatchObject({ok:false});
+    const run = f.run('capture')!;
+    await f.command({type:'script.pause',runId:run.id});
+    const pause = f.run('capture')!.pause!;
+    expect(await phase('release','first')).toMatchObject({ok:true,value:1});
+    expect(await phase('release','first')).toMatchObject({ok:true,value:0});
+    expect(await phase('cancel','first')).toMatchObject({ok:true,value:0});
+    expect(await phase('click','first')).toMatchObject({ok:true,value:1});
+    expect(await phase('click','first')).toMatchObject({ok:true,value:0});
+    expect(await phase('release','stale')).toMatchObject({ok:true,value:0});
+    expect(held()).toBe(true);
+    await f.command({type:'script.resume',runId:run.id,token:pause.token,mode:'continue'});
+    await expect.poll(() => f.run('capture')?.entries.filter(row=>row.log).map(row=>row.detail)).toEqual(['按下 true','松开 false','点击 true']);
+    expect(held()).toBe(false);
+  } finally { await f.manager.stop(); }
+});
+
+it('keeps concurrent window presses independent and excludes runs started or restarted after a press', async () => {
+  const f = await fixture();
+  const phase = (event: WidgetEvent, id: string) => f.interact('sample', event, undefined, randomUUID(), 0, id);
+  const logs = (id: string) => f.run(id)?.entries.filter(e=>e.log).map(e=>e.detail);
+  try {
+    const src = f.workspace.masterScripts![0]!;
+    await f.command({type:'script.save',script:{...src,id:'another'},expectedRevision:null});
+    await f.start('capture');
+    await phase('press','window-a'); await f.start('another'); await phase('press','window-b');
+    await phase('release','window-a');
+    await phase('click','window-a');
+    await expect.poll(() => logs('capture')).toEqual(['按下 true','按下 true','松开 false','点击 true']);
+    expect(logs('another')).toEqual(['按下 true']);
+    await f.command({type:'script.stop',runId:f.run('capture')!.id}); await f.start('capture');
+    expect(await phase('cancel','window-b')).toMatchObject({ok:true,value:1});
+    await expect.poll(() => logs('another')).toEqual(['按下 true','取消 false']);
+    expect(logs('capture')).toEqual([]);
+    await phase('press','old-workspace');
+    await f.command({type:'workspace.importText',text:JSON.stringify(f.workspace)});
+    await f.start('capture');
+    expect(await phase('release','old-workspace')).toMatchObject({ok:true,value:0});
+    expect(logs('capture')).toEqual([]);
+  } finally { await f.manager.stop(); }
+});
+
+it('allows click-only listeners to activate on a matched release and ignores a removed button', async () => {
+  const ws = canvasScriptFixture(), src = ws.masterScripts![0]!;
+  src.graph.blocks!.blocks = src.graph.blocks!.blocks.filter(b=>b.fields?.EVENT === 'click');
+  const f = await fixture(ws);
+  const phase = (event: WidgetEvent, id: string) => f.interact('sample', event, undefined, randomUUID(), 0, id);
+  try {
+    await f.start('capture');
+    await phase('press','one'); await phase('release','one'); await phase('click','one');
+    await expect.poll(() => f.run('capture')?.entries.filter(e=>e.log)).toHaveLength(1);
+    await phase('press','two');
+    expect((await f.command({type:'canvas.edit',canvasId:'panel',expectedRevision:0,changes:{removeWidgetIds:['sample']}})).ok).toBe(true);
+    expect(await phase('release','two')).toMatchObject({ok:true,value:0});
+    expect(f.run('capture')?.state).toBe('failed');
+    expect(f.run('capture')?.entries.filter(e=>e.log)).toHaveLength(1);
+  } finally { await f.manager.stop(); }
+});
 
 it('routes individual edges and changing values once, preserves ordering and isolates each flow', async () => {
   const f = await fixture();

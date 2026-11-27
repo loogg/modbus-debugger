@@ -38,9 +38,10 @@ export function useCanvasSignal(w: CanvasWidget, canvasId: string, revision: num
       status = row.kind === 'integer64' ? '超出控件数值精度' : '变量与控件类型不匹配';
     }
   }
-  const send = useCallback(async (event: WidgetEvent, value?: SignalValue) => {
+  const send = useCallback(async (event: WidgetEvent, value?: SignalValue, pressId?: string) => {
     if (!epoch) throw new Error('工作区尚未就绪');
-    const reply = await command<number>({ type: 'canvas.interact', epoch, actionId: crypto.randomUUID(), canvasId, widgetId: w.id, revision, event, value });
+    const actionId = pressId ? `${pressId}/${event}` : crypto.randomUUID();
+    const reply = await command<number>({ type: 'canvas.interact', epoch, actionId, canvasId, widgetId: w.id, revision, event, value, pressId });
     if (!reply.ok) throw new Error(reply.error);
     return reply.value;
   }, [epoch, canvasId, w.id, revision, command]);
@@ -52,27 +53,37 @@ export function useCanvasSignal(w: CanvasWidget, canvasId: string, revision: num
 }
 
 export function CanvasEventButton({ text, disabled, send }: {
-  text: string; disabled: boolean; send(event: WidgetEvent): void;
+  text: string; disabled: boolean; send(event: WidgetEvent, pressId?: string): void;
 }) {
   const win = useViewWindow();
-  const pressed = useRef<{ origin: string; send(event: WidgetEvent): void } | null>(null);
-  const suppressClick = useRef(false);
+  type Press = { origin: string; id: string; send: typeof send };
+  const pressed = useRef<Press | null>(null);
+  const released = useRef<Press | null>(null);
   const end = useCallback((event: 'release' | 'cancel') => {
     const held = pressed.current;
     if (!held) return;
     pressed.current = null;
-    suppressClick.current = event === 'cancel';
-    held.send(event);
+    released.current = event === 'release' ? held : null;
+    held.send(event, held.id);
   }, []);
+  const clickReleased = () => {
+    const completed = released.current;
+    released.current = null;
+    if (completed) completed.send('click', completed.id);
+  };
   useEffect(() => {
     if (disabled) return;
-    const cancel = () => end('cancel');
+    const cancel = () => { released.current = null; end('cancel'); };
     win.addEventListener('blur', cancel);
-    return () => { win.removeEventListener('blur', cancel); cancel(); };
+    win.addEventListener('pagehide', cancel);
+    return () => { win.removeEventListener('blur', cancel); win.removeEventListener('pagehide', cancel); cancel(); };
   }, [win, disabled, end]);
   const begin = (origin: string) => {
     if (pressed.current || disabled) return;
-    suppressClick.current = false; pressed.current = { origin, send }; send('press');
+    const id = crypto.randomUUID();
+    released.current = null;
+    pressed.current = { origin, id, send };
+    send('press', id);
   };
   return <button type="button" className="canvas-action focus-ring" disabled={disabled}
     onPointerDown={e => { if (e.button === 0 && e.isPrimary && !pressed.current) { begin(String(e.pointerId)); e.currentTarget.setPointerCapture(e.pointerId); } }}
@@ -85,6 +96,9 @@ export function CanvasEventButton({ text, disabled, send }: {
     onLostPointerCapture={e => { if (pressed.current?.origin === String(e.pointerId)) end('cancel'); }}
     onBlur={() => end('cancel')}
     onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!e.repeat) begin(e.key); } }}
-    onKeyUp={e => { if (pressed.current?.origin === e.key) { e.preventDefault(); end('release'); send('click'); } }}
-    onClick={e => { if (!suppressClick.current || e.detail === 0) send('click'); suppressClick.current = false; }}>{text}</button>;
+    onKeyUp={e => { if (pressed.current?.origin === e.key) { e.preventDefault(); end('release'); clickReleased(); } }}
+    onClick={e => {
+      if (e.detail > 0) clickReleased();
+      else if (!pressed.current) { released.current = null; send('click'); }
+    }}>{text}</button>;
 }

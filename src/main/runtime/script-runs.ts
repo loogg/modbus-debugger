@@ -43,9 +43,9 @@ export class ScriptRuns {
   snapshots(): Record<string, ScriptRunView> {
     return Object.fromEntries(Array.from(this.handles, ([id, handle]) => [id, handle.snapshot!]));
   }
-  dispatch(event: ScriptInputEvent) {
+  dispatch(event: ScriptInputEvent, pressId?: string) {
     let count = 0;
-    for (const handle of this.handles.values()) if (handle.receive(event)) count++;
+    for (const handle of this.handles.values()) if (handle.receive(event, pressId)) count++;
     return count;
   }
   recheckInputs() { for (const handle of this.handles.values()) handle.recheckInputs(); }

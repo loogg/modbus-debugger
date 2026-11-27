@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { $, browser, expect } from '@wdio/globals';
 import type { ModbusApi } from '../../src/shared/preload-api';
-import { canvasScriptFixture } from '../support/canvas-script-fixture';
+import { canvasScriptFixture, heldButtonFixture } from '../support/canvas-script-fixture';
 import { activeView as view } from '../support/workbench-controls';
 
 const state = () => browser.execute(() => (window as unknown as { modbus: ModbusApi }).modbus.getSnapshot());
@@ -115,4 +115,69 @@ it('configures a button in the inspector and cancels a pointer released outside 
   await button.click();
   await expect(widget('total').$('.canvas-value')).toHaveText('1');
   expect((await report('capture'))!.entries.at(-1)?.trigger?.label).toContain('采样触发器');
+});
+
+it('balances a native popup press across a main-window save and cancels a second press on native close', async () => {
+  await $('nav').waitForDisplayed({ timeout: 20000 });
+  const imported = await browser.execute((text: string) => (window as unknown as { modbus: ModbusApi }).modbus.command({
+    type: 'workspace.importText', text,
+  }), JSON.stringify(heldButtonFixture()));
+  expect(imported.ok).toBe(true);
+  await $('//nav//button[normalize-space(.)="主站脚本"]').click();
+  await file('采样逻辑').click(); await view().$('button=运行').click();
+  await browser.waitUntil(async () => (await report('capture'))?.state === 'waiting');
+  await $('//nav//button[normalize-space(.)="组态画布"]').click();
+  const main = await browser.getWindowHandle(), original = await $('.workbench-tab.is-active [role=tab]').getAttribute('id');
+  await $('[aria-label="打开当前页面副本"]').click(); await $('[aria-label="弹出当前页面"]').click();
+  await browser.waitUntil(async () => (await browser.getWindowHandles()).some(h => h !== main));
+  const popup = (await browser.getWindowHandles()).find(h => h !== main)!;
+  const pointer = 'held-canvas-button';
+  const press = async () => {
+    const target = widget('sample').$('button');
+    await target.waitForEnabled();
+    const {x,y} = await target.getLocation(), {width,height} = await target.getSize();
+    await browser.performActions([{type:'pointer',id:pointer,parameters:{pointerType:'mouse'},actions:[
+      {type:'pointerMove',duration:0,x:Math.round(x + width / 2),y:Math.round(y + height / 2)}, {type:'pointerDown',button:0},
+    ]}]);
+    await expect(widget('held-value').$('.canvas-value')).toHaveText('true');
+  };
+  try {
+    await browser.switchToWindow(main); await $(`[id="${original}"]`).click();
+    await view().$('button=编辑').click();
+    const name = view().$('[aria-label="画布名称"]');
+    await name.click(); await browser.keys(['Control','a']); await browser.keys('Backspace'); await name.addValue('异窗保存后的画布');
+    await view().$('button=保存画布').waitForEnabled();
+    // Complete the other editor's real Save action without stealing the popup's pointer capture.
+    await browser.execute(() => {
+      const pane = document.querySelector('.workbench-view:not([style*="display: none"])')!;
+      const save = Array.from(pane.querySelectorAll('button')).find(el => el.textContent?.trim() === '保存画布')!;
+      const api = (window as unknown as {modbus:ModbusApi}).modbus;
+      void (async () => {
+        const deadline = Date.now() + 20000;
+        while (Date.now() < deadline) {
+          if ((await api.getSnapshot()).canvasSignals?.variables.held === true) { save.click(); return; }
+          await new Promise(resolve => setTimeout(resolve, 35));
+        }
+      })();
+    });
+    await browser.switchToWindow(popup); await press();
+    await browser.waitUntil(async () => (await view().getText()).includes('异窗保存后的画布'), {timeout:12000});
+    await browser.performActions([{type:'pointer',id:pointer,parameters:{pointerType:'mouse'},actions:[{type:'pointerUp',button:0}]}]);
+    await browser.releaseActions();
+    await expect(widget('held-value').$('.canvas-value')).toHaveText('false');
+    await expect(widget('total').$('.canvas-value')).toHaveText('1');
+    await press();
+    await browser.electron.execute(electron => { electron.BrowserWindow.getAllWindows().find(w => w.webContents.getURL().includes('viewHost='))?.close(); });
+    await browser.switchToWindow(main);
+    await browser.waitUntil(async () => (await browser.getWindowHandles()).length === 1);
+    await browser.waitUntil(async () => (await state()).canvasSignals?.variables.held === false);
+    expect((await report('capture'))?.entries.filter(e => e.log).map(e => e.detail)).toEqual(['按下 true','松开 false','点击 true','按下 true','取消 false']);
+  } finally {
+    await browser.switchToWindow(main);
+    await browser.releaseActions();
+    const detached = await $('//button[@role="tab" and starts-with(normalize-space(.),"↗")]');
+    if (await detached.isExisting()) { await detached.click(); await $('[aria-label="回入主窗口"]').click(); }
+    const run = await report('capture');
+    if (run) await browser.execute(id => (window as unknown as {modbus:ModbusApi}).modbus.command({type:'script.stop',runId:id}),run.id);
+  }
 });
