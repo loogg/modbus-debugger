@@ -120,6 +120,7 @@
 .is-compact .script-watch { grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 8px 15px; padding: 6px 12px; }
 .is-compact .script-watch header { margin-bottom: 3px; }
 .is-compact .script-watch dl > div { padding: 3px 8px; }
+.is-compact .script-watch dl > div:has(.script-share-variable) { grid-template-columns: minmax(0, 1fr) fit-content(50%) auto; }
 .is-compact > .script-lua-pane:has(.script-watch-body[data-state="active"]) { flex-basis: clamp(128px, 38%, 182px); }
 .script-lua-tabs .is-valid, .script-lua-tabs .has-issue { padding-inline: 4px; border-radius: 4px; }
 .script-lua-tabs .is-valid { color: #126043; background: #e0f2e9; }

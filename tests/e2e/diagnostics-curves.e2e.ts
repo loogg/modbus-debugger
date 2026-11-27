@@ -49,10 +49,23 @@ describe('Scoped diagnostics and bounded live curve windows', () => {
 
   it('retains a real-time zoom while continuing to advance the sample sequence', async () => {
     const first = Number(await chart().getAttribute('data-last-seq'));
-    const size = await chart().getSize();
-    await browser.action('pointer').move({ origin: await chart(), x: 0, y: Math.round(size.height * .12) }).perform();
-    await browser.action('wheel').scroll({ origin: await chart(), x: 0, y: 0, deltaY: -300, deltaX: 0, duration: 150 }).perform();
-    await browser.waitUntil(async () => Number(await chart().getAttribute('data-view-end-ms')) - Number(await chart().getAttribute('data-view-start-ms')) < 4900);
+    const target = await browser.execute(() => {
+      const canvas = document.querySelector('.workbench-view:not([style*="display: none"]) [data-series-count="2"] canvas');
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      const y = Math.round(rect.top + rect.height / 2);
+      for (const fraction of [0.65, 0.35]) {
+        const x = Math.round(rect.left + rect.width * fraction);
+        if (document.elementFromPoint(x, y) === canvas) return { x, y };
+      }
+      return null;
+    });
+    if (!target) throw new Error('No exposed plot surface for wheel zoom');
+    await browser.action('wheel').scroll({ origin: 'viewport', ...target, deltaY: -300, deltaX: 0, duration: 150 }).perform();
+    await browser.waitUntil(() => browser.execute(() => {
+      const host = document.querySelector<HTMLElement>('.workbench-view:not([style*="display: none"]) [data-series-count="2"]');
+      return !!host && Number(host.dataset.viewEndMs) - Number(host.dataset.viewStartMs) < 4900;
+    }));
     await browser.waitUntil(async () => Number(await chart().getAttribute('data-last-seq')) > first);
     await expect(view().$('[aria-label="暂停曲线"]')).toBeDisplayed();
     await expect(view().$('[aria-label="恢复跟随"]')).not.toBeExisting();

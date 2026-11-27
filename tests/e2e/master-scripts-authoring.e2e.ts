@@ -14,12 +14,11 @@ const evidenceDir = path.resolve('out/test-temp/master-script-palette-evidence')
 const hex = (value: string | null | undefined) => (value ?? '').replace(/\s/g, '').toLowerCase();
 
 
-async function blockBounds(label: string, flyout = false) {
-  const bounds = await browser.execute(({ selector, label, flyout }) => {
+async function blockBounds(label: string, surface = '.blocklySvg') {
+  const bounds = await browser.execute(({ selector, label, surface }) => {
     const root = document.querySelector(selector);
-    const surface = root?.querySelector(flyout ? '.blocklyToolboxFlyout' : '.blocklySvg');
-    const title = Array.from(surface?.querySelectorAll('g[data-id] text') ?? [])
-      .find(text => text.textContent === label && (flyout || !text.closest('.blocklyFlyout')));
+    const title = Array.from(root?.querySelectorAll(`${surface} g[data-id] text`) ?? [])
+      .find(text => text.textContent === label && (surface === '.blocklyToolboxFlyout' || !text.closest('.blocklyFlyout')));
     const block = title?.closest('g[data-id]');
     const shape = block?.querySelector<SVGPathElement>(':scope > .blocklyPath');
     const grip = title?.getBoundingClientRect();
@@ -40,30 +39,32 @@ async function blockBounds(label: string, flyout = false) {
       id: block!.getAttribute('data-id')!, x: matrix.e, y: matrix.f, bottom: new DOMPoint(0, low).matrixTransform(matrix).y,
       gripX: grip.x + grip.width / 2, gripY: grip.y + grip.height / 2,
     };
-  }, { selector: viewSelector, label, flyout });
-  if (!bounds) throw new Error(`Unable to find the visible block ${label}`);
+  }, { selector: viewSelector, label, surface });
+  if (!bounds) throw new Error(`Unable to find the visible block ${label} in ${surface}`);
   return bounds;
-}
-
-async function drag(from: { x: number; y: number }, to: { x: number; y: number }) {
-  await browser.action('pointer', { parameters: { pointerType: 'mouse' } })
-    .move({ x: Math.round(from.x), y: Math.round(from.y) })
-    .down({ button: 0 })
-    .move({ x: Math.round(to.x), y: Math.round(to.y), duration: 450 })
-    .up({ button: 0 })
-    .perform();
 }
 
 async function appendAction(label: string, precedingLabel: string) {
   await view().$('.blocklyToolboxCategory*=设备操作').click();
   await view().$('.blocklyToolboxFlyout').waitForDisplayed();
-  const block = await blockBounds(label, true);
+  const block = await blockBounds(label, '.blocklyToolboxFlyout');
   const preceding = await blockBounds(precedingLabel);
   const from = { x: block.gripX, y: block.gripY };
-  await drag(from, {
-    x: preceding.x + from.x - block.x,
-    y: preceding.bottom + from.y - block.y,
-  });
+  const aim = { x: Math.round(preceding.x + from.x - block.x), y: Math.round(preceding.bottom + from.y - block.y) };
+  const pointer = { type: 'pointer' as const, id: 'palette-drag', parameters: { pointerType: 'mouse' as const } };
+  try {
+    await browser.performActions([{ ...pointer, actions: [
+      { type: 'pointerMove', duration: 0, x: Math.round(from.x), y: Math.round(from.y) },
+      { type: 'pointerDown', button: 0 }, { type: 'pointerMove', duration: 450, ...aim },
+    ] }]);
+    // Blockly renders the moving block on a separate SVG layer until release.
+    const moving = await blockBounds(label, '.blocklyBlockDragSurface');
+    const parent = await blockBounds(precedingLabel);
+    await browser.performActions([{ ...pointer, actions: [
+      { type: 'pointerMove', duration: 120, x: Math.round(aim.x + parent.x - moving.x), y: Math.round(aim.y + parent.bottom - moving.y) },
+      { type: 'pointerUp', button: 0 },
+    ] }]);
+  } finally { await browser.releaseActions(); }
   await expect(view().$('.blocklyToolboxFlyout')).toBeDisplayed();
   const added = await blockBounds(label);
   await browser.waitUntil(() => browser.execute((selector, child, parent) => {
@@ -352,7 +353,7 @@ describe('Author and execute a master script in the packaged editor', () => {
     await view().$('.blocklyWorkspace').waitForDisplayed({ timeout: 15000 });
     await view().$('.blocklyToolboxCategory*=条件').click();
     await view().$('.blocklyToolboxFlyout').waitForDisplayed();
-    for (const label of ['确认值', '与', '或', '非', '本次错误是']) await blockBounds(label, true);
+    for (const label of ['确认值', '与', '或', '非', '本次错误是']) await blockBounds(label, '.blocklyToolboxFlyout');
     await browser.saveScreenshot(path.join(evidenceDir, 'condition-toolbox.png'));
     await view().$('[aria-label="收起积木托盘"]').click();
     await view().$('.blocklyToolboxFlyout').waitForDisplayed({ reverse: true });
