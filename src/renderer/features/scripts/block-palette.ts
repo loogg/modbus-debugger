@@ -16,7 +16,8 @@ const categories: Category[] = [
   { name: '事件', colour: blockColours.entry, blocks: [
     ['start', '开始 当脚本启动 on_start 初始化'], ['onRun', '周期运行 on_run 每毫秒'],
     ['onWidget', '当画布控件 按钮 点击 按下 松开 取消 开关切换 输入提交'], ['onWorkspaceChange', '当工作区变量改变时'],
-    ['onPointChange', '当点位确认值改变 设备值变化 采样 订阅'], ['eventValue', '本次事件值 当前值 新值 控件 输入 提交'],
+    ['onPointChange', '当点位确认值改变 设备值变化 采样 订阅'], ['onSlaveState', '当从站上线 离线 通信状态 断线 恢复'],
+    ['eventValue', '本次事件值 当前值 新值 控件 输入 提交'],
     ['previousEventValue', '上次事件值 旧值 上次确认值'],
     ['runPeriod', '设置周期 set_run_period'], ['runControl', '启用 暂停 周期回调 start_run stop_run']] },
   { name: '定时器', colour: blockColours.timer, blocks: [

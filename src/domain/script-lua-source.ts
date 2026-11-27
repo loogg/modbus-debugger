@@ -225,6 +225,7 @@ export function renderScriptLua(graph: ScriptGraph, program: ScriptProgram): Lua
         const fields = binding.kind === 'widget'
           ? `canvas = ${quote(binding.canvasId)}, widget = ${quote(binding.widgetId)}, event = ${quote(binding.event)}`
           : binding.kind === 'point' ? `slave = ${quote(binding.slaveId)}, point = ${quote(binding.pointId)}, event = "value_changed"`
+          : binding.kind === 'slaveState' ? `slave = ${quote(binding.slaveId)}, event = ${quote(binding.state)}`
           : `variable = ${quote(binding.variableId)}`;
         return mark(blockId, `{ ${fields}, handle = function()\n${indent(sequence(blockId, steps))}end }`);
       });

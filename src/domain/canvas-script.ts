@@ -26,7 +26,10 @@ export const widgetEvents: Partial<Record<string, readonly WidgetEvent[]>> = {
 export type CanvasEventBinding =
   | { kind: 'widget'; canvasId: string; widgetId: string; event: WidgetEvent }
   | { kind: 'workspace'; variableId: string };
-export type EventBinding = CanvasEventBinding | { kind: 'point'; slaveId: string; pointId: string };
+export const slaveEventStates = [['上线', 'online'], ['离线', 'offline']] as const;
+export type SlaveEventState = typeof slaveEventStates[number][1];
+export type EventBinding = CanvasEventBinding | { kind: 'point'; slaveId: string; pointId: string }
+  | { kind: 'slaveState'; slaveId: string; state: SlaveEventState };
 export interface ScriptInputEvent {
   binding: EventBinding;
   label: string;
@@ -36,6 +39,7 @@ export interface ScriptInputEvent {
 }
 export function widgetKey(canvasId: string, widgetId: string) { return JSON.stringify([canvasId, widgetId]); }
 export function eventKey(binding: EventBinding) {
+  if (binding.kind === 'slaveState') return JSON.stringify([binding.kind, binding.slaveId, binding.state]);
   if (binding.kind === 'point') return JSON.stringify([binding.kind, binding.slaveId, binding.pointId]);
   return binding.kind === 'widget' ? JSON.stringify([binding.kind, binding.canvasId, binding.widgetId, binding.event])
     : JSON.stringify([binding.kind, binding.variableId]);

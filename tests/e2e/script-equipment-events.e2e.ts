@@ -4,7 +4,7 @@ import { $, browser, expect } from '@wdio/globals';
 import type { MasterScript } from '../../src/domain/master-script';
 import { serializeScriptFile } from '../../src/domain/master-script';
 import type { ModbusApi } from '../../src/shared/preload-api';
-import { pointChangeScript } from '../support/equipment-event-fixture';
+import { pointChangeScript, slaveStateScript } from '../support/equipment-event-fixture';
 import { simulatorRegister } from '../support/tcp-simulator-register';
 import { activeView as view } from '../support/workbench-controls';
 import { readScriptLua } from '../support/script-lua-preview';
@@ -57,5 +57,36 @@ it('reacts exactly twice to 0,0,1,1,0 from an independent TCP slave in the packa
       if (run) await browser.execute(runId => (window as unknown as {modbus:ModbusApi}).modbus.command({type:'script.stop',runId}),run.id);
     }
     simulatorRegister(original);
+  }
+});
+
+it('waits for actual Unit 1 offline and online transitions across a native disconnect and reconnect', async () => {
+  const id = await openScript(slaveStateScript());
+  const control = (connect: boolean) => browser.execute(on => (window as unknown as {modbus:ModbusApi}).modbus.command({
+    type: on ? 'connection.connect' : 'connection.disconnect', connectionId:'conn-tcp',
+  }),connect);
+  const report = async () => (await snapshot()).scriptRuns?.[id];
+  try {
+    await browser.waitUntil(async () => (await snapshot()).slaveStates?.['slave-1']?.state === 'online', {timeout:10000});
+    const lua = await readScriptLua();
+    expect(lua).toContain('event = "online"'); expect(lua).toContain('event = "offline"');
+    await view().$('button=运行').click();
+    await browser.waitUntil(async () => (await report())?.state === 'waiting');
+    expect((await report())!.completed).toBe(0);
+    expect((await control(false)).ok).toBe(true);
+    await browser.waitUntil(async () => (await report())?.completed === 2);
+    expect((await control(false)).ok).toBe(true);
+    expect((await control(true)).ok).toBe(true);
+    await browser.waitUntil(async () => (await report())?.completed === 4, {timeout:10000});
+    await nextRead((await snapshot()).points['slave-1::pt-speed']!.engNumber!);
+    expect((await report())!.entries.map(e=>e.detail)).toEqual(['上次 online','本次 offline','上次 offline','本次 online']);
+    await expect(view().$('[aria-label="运行结果"]')).toHaveText(expect.stringContaining('离线 → 在线'));
+    await view().$('.script-lua-line[data-block-id="on-offline"]').click();
+    await expect(view().$('g.script-selected[data-id="on-offline"]')).toExist();
+    await browser.saveScreenshot(path.join(evidence,'slave-status-desktop.png'));
+  } finally {
+    const run = await report();
+    if (run) await browser.execute(runId=>(window as unknown as {modbus:ModbusApi}).modbus.command({type:'script.stop',runId}),run.id);
+    await control(true);
   }
 });

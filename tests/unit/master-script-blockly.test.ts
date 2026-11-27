@@ -9,7 +9,29 @@ import alarmExample from '../../docs/examples/consecutive-temperature.modbus-scr
 import { synchronizeScriptFunctions } from '../../src/renderer/features/scripts/function-blocks';
 import { searchPalette, variablePalette } from '../../src/renderer/features/scripts/block-palette';
 import { canvasScriptFixture } from '../support/canvas-script-fixture';
+import { slaveStateScript } from '../support/equipment-event-fixture';
 import { widgetKey } from '../../src/domain/canvas-script';
+
+it('offers both slave transitions and preserves the selected unit ID through renaming and missing bindings', () => {
+  const model = templateWorkspace(), graph = slaveStateScript('s2').graph;
+  const workspace = new Blockly.Workspace();
+  try {
+    bindings.set(workspace, makeFieldOptions(model, graph));
+    loadScriptGraph(graph, workspace);
+    const hat = workspace.getBlockById('on-online')!;
+    expect((hat.getField('STATE') as Blockly.FieldDropdown).getOptions(false)).toEqual([['上线','online'],['离线','offline']]);
+    hat.setFieldValue('s1','SLAVE'); hat.setFieldValue('offline','STATE');
+    const saved = graphOf(workspace);
+    expect(inspectScriptDraft(workspace,saved).source?.text).toContain('slave = "s1", event = "offline"');
+    model.slaves[0]!.name = '主驱动器';
+    bindings.set(workspace, makeFieldOptions(model,saved));
+    expect(hat.getField('SLAVE')!.getText()).toContain('主驱动器');
+    model.slaves.shift();
+    bindings.set(workspace, makeFieldOptions(model,saved));
+    expect(inspectScriptDraft(workspace,saved).issue).toMatchObject({blockId:'on-online',message:expect.stringContaining('失效')});
+    expect(hat.getFieldValue('SLAVE')).toBe('s1');
+  } finally { workspace.dispose(); }
+});
 
 it('selects compatible widget events, retains the same control across a rename and diagnoses a removed binding', () => {
   const model = canvasScriptFixture(), graph = model.masterScripts![0]!.graph;

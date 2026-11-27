@@ -1,9 +1,27 @@
-import type { EventBinding, ScriptInputEvent, SignalValue } from '../../domain/canvas-script';
+import type { EventBinding, ScriptInputEvent, SignalValue, SlaveEventState } from '../../domain/canvas-script';
 import type { SlaveCommunicationState } from '../../shared/snapshot';
 import type { ScriptPointBinding } from './master-script-runner';
 import type { RuntimeNotifications } from './runtime-notifications';
 
 export type ObserveEquipment = (receive: (event: ScriptInputEvent) => void) => () => void;
+
+export function observeSlaveState(binding: Extract<EventBinding, { kind: 'slaveState' }>,
+  slave: { label: string; state(): SlaveCommunicationState }, notifications: RuntimeNotifications): ObserveEquipment {
+  return receive => {
+    let observed = slave.state();
+    let stable: SlaveEventState | undefined = observed === 'online' || observed === 'offline' ? observed : undefined;
+    return notifications.subscribe([{ kind: 'slaveState', slaveId: binding.slaveId }], () => {
+      const next = slave.state();
+      if (next === observed) return;
+      const previous = stable ?? observed;
+      observed = next;
+      if (next === 'disabled') { stable = undefined; return; }
+      if ((next !== 'online' && next !== 'offline') || next === stable) return;
+      stable = next;
+      if (next === binding.state) receive({ binding, previous, value: next, label: `${slave.label} · ${next === 'online' ? '上线' : '离线'}` });
+    });
+  };
+}
 
 export function observePoint(binding: Extract<EventBinding, { kind: 'point' }>, point: ScriptPointBinding,
   state: () => SlaveCommunicationState, notifications: RuntimeNotifications): ObserveEquipment {

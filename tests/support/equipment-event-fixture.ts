@@ -12,3 +12,11 @@ export function pointChangeScript(slaveId = 'slave-1', pointId = 'pt-speed'): Ma
     type: b.onPointChange, id: 'point-event', x: 28, y: 36, fields: { POINT: scriptPointKey({ slaveId, pointId }) }, next: transitionValues('point'),
   }] } } };
 }
+
+export function slaveStateScript(slaveId = 'slave-1'): MasterScript {
+  const blocks = (['online', 'offline'] as const).map((state, index): ScriptBlock => ({
+    type: b.onSlaveState, id: `on-${state}`, x: 28, y: 36 + index * 270,
+    fields: { SLAVE: slaveId, STATE: state }, next: transitionValues(state),
+  }));
+  return { id: `slave-events-${slaveId}`, name: '从站通信记录', revision: 0, graph: { blocks: { languageVersion: 0, blocks } } };
+}

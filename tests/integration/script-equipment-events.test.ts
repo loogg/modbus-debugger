@@ -7,7 +7,7 @@ import { loadScriptLua } from '../../src/main/runtime/script-lua-handle';
 import { RuntimeNotifications } from '../../src/main/runtime/runtime-notifications';
 import type { SignalValue } from '../../src/domain/canvas-script';
 import type { SlaveCommunicationState } from '../../src/shared/snapshot';
-import { pointChangeScript } from '../support/equipment-event-fixture';
+import { pointChangeScript, slaveStateScript } from '../support/equipment-event-fixture';
 
 beforeAll(loadScriptLua);
 function harness() {
@@ -81,4 +81,44 @@ it('exports a Lua handler with stable device IDs and rejects previous-value refe
   } finally { engine.global.close(); }
   const root = script.graph.blocks!.blocks[0]!;
   expect(() => compileScriptLua({blocks:{languageVersion:0,blocks:[{...root,type:scriptBlocks.onWorkspaceChange,fields:{TAG:'x'}}]}})).toThrow('上次事件值仅可');
+});
+
+it('queues stable communication edges while paused and suppresses retry churn and notifications after stopping', async () => {
+  const h = harness(), script = slaveStateScript('device');
+  try {
+    const run = h.start(script);
+    h.communication('online');
+    expect(h.logs()).toEqual([]);
+    expect(h.runner.pause(run.id)).toBe(true);
+    h.communication('offline'); h.communication('offline'); h.communication('connecting'); h.communication('offline');
+    h.communication('connecting'); h.communication('pending'); h.communication('online'); h.communication('online');
+    expect(h.runner.snapshot?.completed).toBe(0);
+    h.runner.resume(run.id,h.runner.snapshot!.pause!.token,'continue');
+    await expect.poll(h.logs).toEqual(['上次 online','本次 offline','上次 offline','本次 online']);
+    h.runner.stop(run.id); await h.runner.settle();
+    h.communication('offline'); h.communication('online');
+    expect(h.runner.snapshot?.completed).toBe(4);
+    h.communication('pending'); h.start(script);
+    h.communication('online');
+    await expect.poll(h.logs).toEqual(['上次 pending','本次 online']);
+  } finally { h.runner.stop(); await h.runner.settle(); }
+});
+
+it('validates per-direction state hats and executes both functions in an independent Lua VM', async () => {
+  const model = slaveStateScript();
+  const { source } = compileScriptLua(model.graph);
+  const heads = model.graph.blocks!.blocks;
+  expect(() => compileScriptLua({blocks:{languageVersion:0,blocks:[heads[0]!,{...heads[1]!,fields:{SLAVE:'slave-1',STATE:'online'}}]}})).toThrow('相同入口');
+  expect(() => compileScriptLua({blocks:{languageVersion:0,blocks:[{...heads[0]!,fields:{SLAVE:'slave-1',STATE:'connecting'}}]}})).toThrow('STATE');
+  expect(() => compileScriptLua({blocks:{languageVersion:0,blocks:[{...heads[0]!,fields:{STATE:'online'}}]}})).toThrow('请选择');
+  const engine = await new LuaFactory().createEngine();
+  try {
+    expect(engine.doStringSync(`local previous, current, rows; rows = {}
+      print = function(_,v) table.insert(rows,v) end
+      rt = { previous_event_value=function() return previous end, event_value=function() return current end }
+      local p=(function() ${source.text} end)();local by={}
+      for _,h in ipairs(p.inputs) do assert(h.slave=="slave-1"); by[h.event]=h.handle end
+      previous,current="online","offline";by.offline();previous,current="offline","online";by.online()
+      return table.concat(rows,",")`)).toBe('online,offline,offline,online');
+  } finally { engine.global.close(); }
 });

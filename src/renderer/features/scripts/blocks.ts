@@ -7,7 +7,7 @@ import { compileScriptLua } from '../../../domain/script-lua-program';
 import { luaNumericLiteral } from '../../../domain/script-lua-operators';
 import { fieldText, isScriptDefinition, MAX_SCRIPT_MS, ScriptBlockError, scriptArithmetic, scriptBlocks, scriptErrors, scriptGraphBlocks, scriptPointKey, scriptRelations, scriptStates, splitParameters, type ScriptGraph } from '../../../domain/master-script';
 import type { Workspace } from '../../../domain/model';
-import { widgetEventLabels, widgetEvents, widgetKey, type WidgetEvent, type WorkspaceVariable } from '../../../domain/canvas-script';
+import { slaveEventStates, widgetEventLabels, widgetEvents, widgetKey, type WidgetEvent, type WorkspaceVariable } from '../../../domain/canvas-script';
 import { canReadPoint, canWritePoint } from '../../../domain/point-access';
 import { BooleanSwitch, conditionInput, initBranch, literalShadow, LogValueControl, numberSlot, saveScriptGraph } from './block-controls';
 import type { ScriptPreview } from './lua-source';
@@ -208,6 +208,12 @@ function installBlocks() {
     this.hat = 'cap'; this.setNextStatement(true); this.setColour(blockColours.entry);
     this.appendDummyInput().appendField('当点位').appendField(bindingField(this, 'read'), 'POINT').appendField('确认值改变时');
     this.setTooltip('首笔有效采样建立基线。后续值改变时，可读取上次和本次事件值。');
+  } };
+  Blockly.Blocks[scriptBlocks.onSlaveState] = { init(this: Blockly.Block) {
+    this.hat = 'cap'; this.setNextStatement(true); this.setColour(blockColours.entry);
+    this.appendDummyInput().appendField('当从站').appendField(bindingField(this, 'slave'), 'SLAVE')
+      .appendField(new Blockly.FieldDropdown(slaveEventStates.map(([label, key]) => [label, key])), 'STATE').appendField('时');
+    this.setTooltip('按这个从站的实际通信状态触发。启动时已有的状态只作为基线。');
   } };
   Blockly.Blocks[scriptBlocks.onWorkspaceChange] = { init(this: Blockly.Block) {
     this.hat = 'cap'; this.setNextStatement(true); this.setColour(blockColours.entry);

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { eventKey, signalId, widgetEventSchema, type EventBinding, type WorkspaceVariable } from './canvas-script';
+import { eventKey, signalId, slaveEventStates, widgetEventSchema, type EventBinding, type WorkspaceVariable } from './canvas-script';
 import { compileLuaKernel, lowerLuaExpression, luaNumericLiteral, type LuaHelper, type LuaOperator, type ScriptLuaKernel } from './script-lua-operators';
 import { compileLuaControl } from './script-lua-control';
 import type { SlaveCommunicationState } from '../shared/snapshot';
@@ -11,6 +11,7 @@ export const scriptBlocks = {
   onWidget: 'mb_on_widget',
   onWorkspaceChange: 'mb_on_workspace_change',
   onPointChange: 'mb_on_point_change',
+  onSlaveState: 'mb_on_slave_state',
   workspaceValue: 'mb_workspace_value',
   setWorkspaceValue: 'mb_set_workspace_value',
   eventValue: 'mb_event_value',
@@ -247,6 +248,7 @@ export function normalizeScriptGraph(graph: ScriptGraph): ScriptGraph {
     if (block.type === scriptBlocks.arithmetic) normalizeChoice(block, 'OP', scriptArithmetic.map(([, key]) => key));
     if ([scriptBlocks.compare, scriptBlocks.compareValues, scriptBlocks.compareVariable].some(t => t === block.type))
       normalizeChoice(block, 'OP', scriptRelations.map(([, key]) => key));
+    if (block.type === scriptBlocks.onSlaveState) normalizeChoice(block, 'STATE', slaveEventStates.map(([, state]) => state));
     if (block.type === scriptBlocks.state) normalizeChoice(block, 'STATE', scriptStates.map(([, key]) => key));
     if (block.type === scriptBlocks.error) normalizeChoice(block, 'CODE', scriptErrors.map(([, key]) => key));
     if (block.type === scriptBlocks.boolean) normalizeChoice(block, 'BOOL', ['FALSE', 'TRUE', 'UNSET']);
@@ -438,6 +440,13 @@ function workspaceVariableId(block: ScriptBlock) {
 
 export function scriptInputBinding(block: ScriptBlock): EventBinding {
   if (block.type === scriptBlocks.onPointChange) return { kind: 'point', ...pointRef(block) };
+  if (block.type === scriptBlocks.onSlaveState) {
+    const slave = signalId.safeParse(fieldText(block, 'SLAVE'));
+    if (!slave.success) throw new ScriptBlockError('请选择工作区中的从站', block.id);
+    const state = block.fields?.STATE === undefined ? 'online' : fieldText(block, 'STATE');
+    if (state !== 'online' && state !== 'offline') throw new ScriptBlockError('请选择上线或离线事件', block.id);
+    return { kind: 'slaveState', slaveId: slave.data, state };
+  }
   if (block.type === scriptBlocks.onWorkspaceChange) return { kind: 'workspace', variableId: workspaceVariableId(block) };
   let ref: unknown;
   try { ref = JSON.parse(fieldText(block, 'WIDGET')); } catch { ref = null; }
@@ -447,9 +456,8 @@ export function scriptInputBinding(block: ScriptBlock): EventBinding {
   return { kind: 'widget', canvasId: parsed.data[0], widgetId: parsed.data[1], event: event.data };
 }
 
-function isInputHat(type: string) {
-  return type === scriptBlocks.onWidget || type === scriptBlocks.onWorkspaceChange || type === scriptBlocks.onPointChange;
-}
+function isDeviceEvent(type: string) { return type === scriptBlocks.onPointChange || type === scriptBlocks.onSlaveState; }
+function isInputHat(type: string) { return type === scriptBlocks.onWidget || type === scriptBlocks.onWorkspaceChange || isDeviceEvent(type); }
 
 export function isEventHat(type: string) { return isInputHat(type) || type === scriptBlocks.onRun || type === scriptBlocks.onTimer; }
 
@@ -810,7 +818,7 @@ export function compileScriptModel(input: ScriptGraph): { graph: ScriptGraph; pr
     checkEventValues(block.next?.block, context);
   }
   checkEventValues(start, 'none');
-  for (const root of events) checkEventValues(root, root.type === scriptBlocks.onPointChange ? 'transition' : isInputHat(root.type) ? 'input' : 'none');
+  for (const root of events) checkEventValues(root, isDeviceEvent(root.type) ? 'transition' : isInputHat(root.type) ? 'input' : 'none');
   const handlers: ScriptHandlers<ScriptStep> = { timers: [] };
   const seen = new Set<string>();
   for (const root of events) {

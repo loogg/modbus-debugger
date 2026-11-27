@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { eventKey, type CanvasEventBinding, type ScriptInputEvent, type SignalValue } from '../../domain/canvas-script';
-import { observePoint, type ObserveEquipment } from './script-equipment-events';
+import { observePoint, observeSlaveState, type ObserveEquipment } from './script-equipment-events';
 import type { CanvasSignals } from './canvas-signals';
 import { SCRIPT_SLICE_MS, ScriptHandleFault, ScriptLuaHandle } from './script-lua-handle';
 import { clearImmediate, setImmediate } from 'node:timers';
@@ -661,6 +661,8 @@ export class MasterScriptRunner {
         if (binding.kind === 'point') {
           const point = readPoint(binding);
           observeEquipment.push(observePoint(binding, point, this.host.slave(binding.slaveId).state, this.notifications));
+        } else if (binding.kind === 'slaveState') {
+          observeEquipment.push(observeSlaveState(binding, this.host.slave(binding.slaveId), this.notifications));
         } else {
           if (!this.host.checkInput) throw new Error('画布事件不可用');
           this.host.checkInput(binding);
@@ -699,7 +701,8 @@ export class MasterScriptRunner {
       inFlight: 0, finished, resolveFinished,
     };
     this.active = run;
-    for (const observe of plan.observeEquipment) run.detachEquipment.push(observe(event => this.receive(event)));
+    try { for (const observe of plan.observeEquipment) run.detachEquipment.push(observe(event => this.receive(event))); }
+    catch (e) { this.cancel(run, messageOf(e)); throw e; }
     if (plan.steps.length) this.launch(run, 'on_start', plan.steps);
     this.pump(run, 1);
     return this.snapshot!;

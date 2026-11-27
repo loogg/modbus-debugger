@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Add20Regular, ArrowImport16Regular, Dismiss16Regular, Search16Regular } from '@fluentui/react-icons';
-import { CALLBACK_TIMEOUT_MS, MAX_SCRIPT_FILE_BYTES, callbackTimeoutSchema, checkCallbackContexts, compileScriptProgram, fieldText, isScriptCall, isScriptStatement, newScriptGraph, scriptBlocks, scriptFileSchema, scriptGraphBlocks, scriptVariableGroups, serializeScriptFile, ScriptBlockError, withScriptBreakpoints, type MasterScript } from '../../domain/master-script';
+import { CALLBACK_TIMEOUT_MS, MAX_SCRIPT_FILE_BYTES, callbackTimeoutSchema, checkCallbackContexts, compileScriptProgram, fieldText, isScriptCall, isScriptStatement, newScriptGraph, scriptBlocks, scriptFileSchema, scriptGraphBlocks, scriptStates, scriptVariableGroups, serializeScriptFile, ScriptBlockError, withScriptBreakpoints, type MasterScript } from '../../domain/master-script';
 import type { Workspace } from '../../domain/model';
 import { compileScriptLua } from '../../domain/script-lua-program';
-import { scriptIsActive as ongoing, scriptRunFor, type ScriptApprovalView } from '../../shared/script-run';
+import { scriptIsActive as ongoing, scriptRunFor, type ScriptApprovalView, type ScriptRunEntry } from '../../shared/script-run';
 import { Button, EmptyState, TextInput } from '../components/ui';
 import { ScriptEditor, type ScriptEditorApi } from '../features/scripts/editor';
 import { LuaDivider, LuaPane, type LuaTab, type ScriptSelection } from '../features/scripts/lua-pane';
@@ -23,6 +23,13 @@ interface PanePreferences { wide?: boolean; compact?: boolean; width?: number }
 
 const tabStatus = { running: '运行中', waiting: '运行中', pausing: '暂停中', paused: '已暂停', stopping: '停止中', failed: '失败',
   passed: undefined, stopped: undefined } as const;
+
+function transitionText(trigger: NonNullable<ScriptRunEntry['trigger']>) {
+  if (!trigger.transition) return '';
+  const format = (value: typeof trigger.transition.value) => trigger.binding.kind === 'slaveState'
+    ? scriptStates.find(([, state]) => state === value)?.[0] ?? String(value) : String(value);
+  return `${format(trigger.transition.previous)} → ${format(trigger.transition.value)}`;
+}
 
 function ScriptFileTab({ script, selected, choose }: { script: MasterScript; selected: boolean; choose(id: string): Promise<void> }) {
   const button = useRef<HTMLButtonElement>(null);
@@ -466,7 +473,7 @@ function ScriptDraft({ source, equipment, palette, panes, setPanes, onDirty, onR
             {entry.log && <time className="mono mr-2 text-ink2" dateTime={new Date(entry.atMs).toISOString()}>{logClock?.format(entry.atMs)}</time>}
             <span className={entry.log ? 'text-accent' : entry.result === 'ok' ? 'text-ok' : entry.result === 'failed' ? 'text-err' : 'text-ink2'}>{entry.log ? '日志' : entry.handled ? '已处理失败' : entry.result === 'ok' ? '通过' : entry.result === 'failed' ? '失败' : '停止'}</span>
             {entry.source && <span className="mono"> · {entry.trigger?.label ?? entry.source}</span>}
-            {entry.trigger?.transition && <span className="mono"> · {String(entry.trigger.transition.previous)} → {String(entry.trigger.transition.value)}</span>}
+            {entry.trigger?.transition && <span className="mono"> · {transitionText(entry.trigger)}</span>}
             {!entry.log && <> · {entry.label}</>} · {entry.detail}
           </button>
           {entry.trigger?.binding.kind === 'widget' && <button className="focus-ring shrink-0 text-accent" type="button" onClick={() => {
